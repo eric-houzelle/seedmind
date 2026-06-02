@@ -1,0 +1,6 @@
+torch>=2.2
+numpy>=1.26
+pyyaml>=6.0
+matplotlib>=3.8
+websockets>=13.0
+pytest>=8.0

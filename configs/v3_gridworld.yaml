@@ -1,0 +1,55 @@
+project:
+  name: SeedMind
+
+env:
+  type: colored_gridworld
+  size: 7
+  max_steps: 50
+  procedural: true
+  colored: true
+  num_distractor_doors: 1
+  num_distractor_keys: 0
+  num_dangers: 0
+  partial_observation: true
+  visibility_radius: 2
+
+agent:
+  latent_dim: 64
+  memory_top_k: 5
+
+world_model:
+  enabled: true
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+
+curiosity:
+  enabled: true
+  weight: 0.1
+  max_reward: 1.0
+
+policy:
+  type: epsilon_greedy
+  epsilon_start: 1.0
+  epsilon_end: 0.1
+  epsilon_decay_steps: 50000
+
+dqn:
+  enabled: true
+  conv_channels: 32
+  hidden_dim: 128
+  learning_rate: 0.0005
+  gamma: 0.95
+  batch_size: 64
+  target_update: 300
+  double_dqn: true
+  sampler: uniform
+  curiosity_weight: 0.0
+  bc_warmup_updates: 0
+  updates_per_train: 8
+
+training:
+  episodes: 5000
+  train_every: 1
+  checkpoint_every: 1000

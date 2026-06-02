@@ -1,0 +1,61 @@
+project:
+  name: SeedMind
+
+env:
+  type: colored_gridworld
+  size: 5
+  max_steps: 25
+  procedural: true
+  colored: true
+  # One distractor door of another color forces the agent to learn the
+  # color-matching rule (open the door matching its key), which is what
+  # transfers to unseen colors. A distractor key is much harder to learn, so
+  # it is off by default.
+  num_distractor_doors: 1
+  num_distractor_keys: 0
+  num_dangers: 0
+  partial_observation: false
+
+agent:
+  latent_dim: 64
+  memory_top_k: 5
+
+world_model:
+  enabled: true
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+
+curiosity:
+  enabled: true
+  weight: 0.1
+  max_reward: 1.0
+
+policy:
+  type: epsilon_greedy
+  epsilon_start: 1.0
+  epsilon_end: 0.1
+  epsilon_decay_steps: 35000
+
+dqn:
+  enabled: true
+  conv_channels: 32
+  hidden_dim: 128
+  learning_rate: 0.0005
+  gamma: 0.95
+  batch_size: 64
+  # target sync period, counted in gradient updates
+  target_update: 300
+  double_dqn: true
+  sampler: uniform
+  # curiosity bonus weight inside the TD reward (0 = pure task reward)
+  curiosity_weight: 0.0
+  # optional behavioral-cloning warm-start (0 = disabled; pure DQN is reliable)
+  bc_warmup_updates: 0
+  updates_per_train: 8
+
+training:
+  episodes: 3000
+  train_every: 1
+  checkpoint_every: 1000

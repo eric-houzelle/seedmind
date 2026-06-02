@@ -1,0 +1,36 @@
+project:
+  name: SeedMind
+
+env:
+  type: gridworld
+  size: 10
+  max_steps: 100
+  procedural: true
+  partial_observation: false
+
+agent:
+  latent_dim: 128
+  memory_top_k: 5
+
+world_model:
+  enabled: true
+  hidden_dim: 256
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+
+curiosity:
+  enabled: true
+  weight: 0.1
+  max_reward: 1.0
+
+policy:
+  type: epsilon_greedy
+  epsilon_start: 1.0
+  epsilon_end: 0.1
+  epsilon_decay_steps: 10000
+
+training:
+  episodes: 10000
+  train_every: 10
+  checkpoint_every: 500
