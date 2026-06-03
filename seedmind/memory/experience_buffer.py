@@ -33,6 +33,8 @@ def make_experience(
     action_index: Optional[int] = None,
     obs_state: Optional[Dict[str, Any]] = None,
     next_obs_state: Optional[Dict[str, Any]] = None,
+    event: Optional[str] = None,
+    event_amount: int = 0,
     timestamp: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build a transition dict in the universal experience format.
@@ -63,6 +65,9 @@ def make_experience(
         # --- V2 policy-learning extras ---
         "obs_state": obs_state,
         "next_obs_state": next_obs_state,
+        # --- causal-event extras for sparse composed behaviors ---
+        "event": event,
+        "event_amount": int(event_amount),
     }
 
 
@@ -122,6 +127,36 @@ class ExperienceBuffer:
 
         order = sorted(range(len(self._data)), key=total_reward, reverse=True)
         return [self._data[i] for i in order[:batch_size]]
+
+    def sample_causal(self, batch_size: int) -> List[Dict[str, Any]]:
+        """Sample rare transitions that expose useful causal chains.
+
+        This does not change rewards. It only makes sparse but important
+        transitions appear more often in gradient batches.
+        """
+        priority = {
+            "harvest_food_tool": 5,
+            "craft_tool": 4,
+            "eat_ok": 3,
+            "harvest_stone": 2,
+            "harvest_wood": 2,
+            "harvest_food": 1,
+        }
+        indices = [
+            i for i, e in enumerate(self._data)
+            if e.get("event") in priority
+        ]
+        if not indices:
+            return []
+        weights = np.asarray([
+            priority.get(self._data[i].get("event"), 1)
+            + max(0, int(self._data[i].get("event_amount", 0))) * 0.1
+            for i in indices
+        ], dtype=np.float64)
+        weights = weights / weights.sum()
+        take = min(batch_size, len(indices))
+        chosen = self.rng.choice(np.asarray(indices), size=take, replace=False, p=weights)
+        return [self._data[i] for i in chosen]
 
     # ------------------------------------------------------------------
     # Persistence

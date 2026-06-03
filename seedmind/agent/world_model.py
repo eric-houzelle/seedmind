@@ -56,11 +56,12 @@ class WorldModel(nn.Module):
     ) -> Tuple[np.ndarray, float, float]:
         """Single-step prediction from numpy inputs."""
         self.eval()
-        latent_t = torch.as_tensor(latent, dtype=torch.float32).unsqueeze(0)
-        action_t = torch.as_tensor([action_index], dtype=torch.long)
+        device = next(self.parameters()).device
+        latent_t = torch.as_tensor(latent, dtype=torch.float32, device=device).unsqueeze(0)
+        action_t = torch.as_tensor([action_index], dtype=torch.long, device=device)
         next_state, reward, uncertainty = self.forward(latent_t, action_t)
         return (
-            next_state.squeeze(0).numpy().astype(np.float32),
+            next_state.squeeze(0).cpu().numpy().astype(np.float32),
             float(reward.item()),
             float(uncertainty.item()),
         )
@@ -71,11 +72,12 @@ class WorldModel(nn.Module):
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Vectorised multi-particle prediction (used by the planner)."""
         self.eval()
-        latents_t = torch.as_tensor(latents, dtype=torch.float32)
-        actions_t = torch.as_tensor(action_indices, dtype=torch.long)
+        device = next(self.parameters()).device
+        latents_t = torch.as_tensor(latents, dtype=torch.float32, device=device)
+        actions_t = torch.as_tensor(action_indices, dtype=torch.long, device=device)
         next_state, reward, uncertainty = self.forward(latents_t, actions_t)
         return (
-            next_state.numpy().astype(np.float32),
-            reward.numpy().astype(np.float32),
-            uncertainty.numpy().astype(np.float32),
+            next_state.cpu().numpy().astype(np.float32),
+            reward.cpu().numpy().astype(np.float32),
+            uncertainty.cpu().numpy().astype(np.float32),
         )

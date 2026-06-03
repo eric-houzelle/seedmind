@@ -38,8 +38,11 @@ def sync_target(q_network: QNetwork, target_network: QNetwork) -> None:
     target_network.load_state_dict(q_network.state_dict())
 
 
-def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float):
+def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float,
+                        batch_fn=None):
     """Build TD tensors from experiences; skip those lacking observations."""
+    if batch_fn is None:
+        batch_fn = obs_batch_to_tensors
     obs, next_obs, actions, rewards, dones = [], [], [], [], []
     for e in batch:
         if e.get("obs_state") is None or e.get("next_obs_state") is None:
@@ -57,8 +60,8 @@ def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float):
     if not obs:
         return None
 
-    channels, inventory = obs_batch_to_tensors(obs)
-    next_channels, next_inventory = obs_batch_to_tensors(next_obs)
+    channels, inventory = batch_fn(obs)
+    next_channels, next_inventory = batch_fn(next_obs)
     return (
         channels,
         inventory,
@@ -75,6 +78,10 @@ def _sample_batch(buffer: ExperienceBuffer, batch_size: int, sampler: str) -> Li
         # Oversample successful transitions to cope with sparse rewards.
         half = max(1, batch_size // 2)
         return buffer.sample(batch_size - half) + buffer.sample_high_reward(half)
+    if sampler == "causal":
+        half = max(1, batch_size // 2)
+        causal = buffer.sample_causal(half)
+        return buffer.sample(batch_size - len(causal)) + causal
     return buffer.sample(batch_size)
 
 
@@ -99,12 +106,21 @@ def train_dqn(
     total_loss = 0.0
     done_updates = 0
 
+    batch_fn = getattr(q_network, '_obs_batch_fn', obs_batch_to_tensors)
     for _ in range(num_updates):
         batch = _sample_batch(buffer, batch_size, sampler)
-        assembled = _assemble_dqn_batch(batch, curiosity_weight)
+        assembled = _assemble_dqn_batch(batch, curiosity_weight, batch_fn=batch_fn)
         if assembled is None:
             continue
         channels, inventory, actions, rewards, next_channels, next_inventory, dones = assembled
+        device = next(q_network.parameters()).device
+        channels = channels.to(device)
+        inventory = inventory.to(device)
+        actions = actions.to(device)
+        rewards = rewards.to(device)
+        next_channels = next_channels.to(device)
+        next_inventory = next_inventory.to(device)
+        dones = dones.to(device)
 
         q_values = q_network(channels, inventory)
         q_taken = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
@@ -166,9 +182,13 @@ def train_bc(
         if not obs:
             continue
 
-        channels, inventory = obs_batch_to_tensors(obs)
+        batch_fn = getattr(q_network, '_obs_batch_fn', obs_batch_to_tensors)
+        channels, inventory = batch_fn(obs)
+        device = next(q_network.parameters()).device
+        channels = channels.to(device)
+        inventory = inventory.to(device)
         logits = q_network(channels, inventory)
-        loss = F.cross_entropy(logits, torch.tensor(actions, dtype=torch.long))
+        loss = F.cross_entropy(logits, torch.tensor(actions, dtype=torch.long, device=device))
 
         optimizer.zero_grad()
         loss.backward()

@@ -7,7 +7,7 @@ text or multimodal inputs.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
@@ -164,7 +164,19 @@ def observation_to_vector(observation: Dict[str, Any], num_entities: int = NUM_E
 
 
 class Encoder(nn.Module):
-    """Frozen MLP encoder producing a fixed-size latent vector."""
+    """Frozen MLP encoder producing a fixed-size latent vector.
+
+    Parameters
+    ----------
+    grid_size, latent_dim, num_entities, hidden_dim, seed :
+        Standard constructor args (see V1 SPEC).
+    input_dim : int or None
+        Override the input dimension. When ``None`` it is computed from
+        *grid_size*, *num_entities* and ``INVENTORY_DIM``.
+    obs_to_vec_fn : callable or None
+        Custom vectorisation ``observation -> np.ndarray``. When ``None``
+        the default gridworld ``observation_to_vector`` is used.
+    """
 
     def __init__(
         self,
@@ -173,12 +185,17 @@ class Encoder(nn.Module):
         num_entities: int = NUM_ENTITIES,
         hidden_dim: int = 256,
         seed: int = 0,
+        input_dim: Optional[int] = None,
+        obs_to_vec_fn: Optional[Any] = None,
     ) -> None:
         super().__init__()
         self.grid_size = grid_size
         self.latent_dim = latent_dim
         self.num_entities = num_entities
-        self.input_dim = grid_size * grid_size * num_entities + INVENTORY_DIM
+        self.input_dim = input_dim if input_dim is not None else (
+            grid_size * grid_size * num_entities + INVENTORY_DIM
+        )
+        self._obs_to_vec_fn = obs_to_vec_fn
 
         torch.manual_seed(seed)
         self.net = nn.Sequential(
@@ -193,19 +210,26 @@ class Encoder(nn.Module):
             p.requires_grad_(False)
         self.eval()
 
+    def _vectorise(self, observation: Dict[str, Any]) -> np.ndarray:
+        if self._obs_to_vec_fn is not None:
+            return self._obs_to_vec_fn(observation)
+        return observation_to_vector(observation, self.num_entities)
+
     @torch.no_grad()
     def encode(self, observation: Dict[str, Any]) -> np.ndarray:
         """Encode a single observation into a latent numpy vector."""
-        vec = observation_to_vector(observation, self.num_entities)
-        tensor = torch.from_numpy(vec).unsqueeze(0)
+        vec = self._vectorise(observation)
+        device = next(self.parameters()).device
+        tensor = torch.from_numpy(vec).unsqueeze(0).to(device)
         latent = self.net(tensor).squeeze(0)
-        return latent.numpy().astype(np.float32)
+        return latent.cpu().numpy().astype(np.float32)
 
     @torch.no_grad()
     def encode_batch(self, observations) -> np.ndarray:
-        vecs = np.stack([observation_to_vector(o, self.num_entities) for o in observations])
-        tensor = torch.from_numpy(vecs)
-        return self.net(tensor).numpy().astype(np.float32)
+        vecs = np.stack([self._vectorise(o) for o in observations])
+        device = next(self.parameters()).device
+        tensor = torch.from_numpy(vecs).to(device)
+        return self.net(tensor).cpu().numpy().astype(np.float32)
 
     def forward(self, observation: Dict[str, Any]) -> np.ndarray:  # pragma: no cover
         return self.encode(observation)

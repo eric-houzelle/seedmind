@@ -1,0 +1,72 @@
+project:
+  name: SeedMind
+
+env:
+  type: sandbox
+  size: 16
+  max_steps: 500
+  energy_max: 120.0
+  energy_start: 60.0
+  energy_decay: 1.0
+  food_energy: 15.0
+  num_food_sources: 12
+  num_wood_sources: 8
+  num_stone_sources: 8
+  num_workbenches: 0
+  regrow_delay: 20
+  visibility_radius: 4
+
+craft:
+  enabled: true
+  tool_food_bonus: 1
+
+agent:
+  latent_dim: 64
+  memory_top_k: 5
+
+world_model:
+  enabled: true
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+
+curiosity:
+  enabled: true
+  weight: 0.5
+  max_reward: 1.0
+
+policy:
+  type: epsilon_greedy
+  epsilon_start: 1.0
+  epsilon_end: 0.1
+  epsilon_decay_steps: 100000
+
+planning:
+  enabled: false
+  weight: 0.0
+  horizon: 3
+  num_samples: 8
+
+dyna:
+  enabled: false
+  imagined_per_step: 0
+
+dqn:
+  enabled: true
+  conv_channels: 64
+  hidden_dim: 256
+  learning_rate: 0.0005
+  gamma: 0.97
+  batch_size: 64
+  target_update: 500
+  double_dqn: true
+  sampler: uniform
+  curiosity_weight: 0.0
+  bc_warmup_updates: 0
+  updates_per_train: 8
+
+training:
+  episodes: 10000
+  train_every: 1
+  checkpoint_every: 2000

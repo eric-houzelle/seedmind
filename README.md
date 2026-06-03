@@ -65,6 +65,11 @@ seedmind/
   tests/                         # pytest suite
 ```
 
+## Documentation
+
+- [docs/PROGRESSION.md](docs/PROGRESSION.md) — historique, résultats mesurés, roadmap sandbox
+- [docs/GOAL_WORLD_MODEL_FOULOIDES.md](docs/GOAL_WORLD_MODEL_FOULOIDES.md) — objectif long terme : prouver l'efficacité du World Model (cible fouloïdes)
+
 ## Design principles
 
 - The agent never hardcodes a solution. All world rules (e.g. `key -> door`)

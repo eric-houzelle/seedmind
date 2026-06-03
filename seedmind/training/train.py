@@ -80,6 +80,11 @@ def train_world_model(
         if assembled is None:
             continue
         latents, actions, next_latents, rewards = assembled
+        device = next(world_model.parameters()).device
+        latents = latents.to(device)
+        actions = actions.to(device)
+        next_latents = next_latents.to(device)
+        rewards = rewards.to(device)
 
         predicted_next, predicted_reward, _ = world_model(latents, actions)
         losses = world_model_loss(predicted_next, next_latents, predicted_reward, rewards)

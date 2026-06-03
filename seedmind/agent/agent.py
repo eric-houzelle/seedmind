@@ -33,6 +33,9 @@ class Agent:
         memory_top_k: int = 5,
         use_planner: bool = True,
         q_network: Optional[QNetwork] = None,
+        planning_weight: float = 0.0,
+        planner_horizon: int = 4,
+        planner_samples: int = 16,
     ) -> None:
         self.encoder = encoder
         self.world_model = world_model
@@ -44,10 +47,14 @@ class Agent:
         self.action_index = {a: i for i, a in enumerate(actions)}
         self.memory_top_k = memory_top_k
         self.use_planner = use_planner
-        self.planner = Planner(world_model, actions, curiosity)
-        # V2: a learned action-value network. When present it drives the greedy
-        # branch of the epsilon-greedy policy instead of the planner.
+        self.planner = Planner(
+            world_model, actions, curiosity,
+            horizon=planner_horizon, num_samples=planner_samples,
+        )
         self.q_network = q_network
+        # When both Q-network and planner are active, the greedy branch
+        # uses: score = (1 - planning_weight) * Q + planning_weight * WM
+        self.planning_weight = planning_weight
 
     # ------------------------------------------------------------------
     # Decision pieces (used by the main loop, SPEC section 17)
@@ -69,13 +76,29 @@ class Agent:
         available_actions: List[str],
         observation: Optional[Dict[str, Any]] = None,
     ) -> str:
-        # Greedy-branch scorer priority: learned Q-network > planner > random.
-        if self.q_network is not None and observation is not None:
+        scorer = None
+
+        has_q = self.q_network is not None and observation is not None
+        has_wm = self.use_planner and self.planning_weight > 0
+
+        if has_q and has_wm:
+            q_scorer = self.q_network.make_scorer(observation, available_actions)
+            wm_values = self.planner.action_values(latent_state, available_actions)
+            q_vals = {a: q_scorer(a) for a in available_actions}
+            # Normalise each score set to [0, 1] to make the weight meaningful
+            q_arr = np.array([q_vals[a] for a in available_actions])
+            wm_arr = np.array([wm_values[a] for a in available_actions])
+            q_norm = self._normalise(q_arr)
+            wm_norm = self._normalise(wm_arr)
+            alpha = self.planning_weight
+            combined = {a: float((1 - alpha) * q_norm[i] + alpha * wm_norm[i])
+                        for i, a in enumerate(available_actions)}
+            scorer = lambda action: combined[action]
+        elif has_q:
             scorer = self.q_network.make_scorer(observation, available_actions)
         elif self.use_planner:
             scorer = self.planner.make_scorer(latent_state, available_actions)
-        else:
-            scorer = None
+
         return self.policy.choose(
             latent_state=latent_state,
             goal=goal,
@@ -83,6 +106,13 @@ class Agent:
             available_actions=available_actions,
             action_scorer=scorer,
         )
+
+    @staticmethod
+    def _normalise(arr: np.ndarray) -> np.ndarray:
+        rng = arr.max() - arr.min()
+        if rng < 1e-8:
+            return np.ones_like(arr) * 0.5
+        return (arr - arr.min()) / rng
 
     # ------------------------------------------------------------------
     # Factory
