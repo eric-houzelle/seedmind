@@ -24,7 +24,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from seedmind.agent.curiosity import compute_prediction_error
+from seedmind.agent.curiosity import CausalCuriosityModule, compute_prediction_error
 from seedmind.agent.encoder import Encoder
 from seedmind.agent.goal_generator import GoalGenerator
 from seedmind.agent.policy import EpsilonGreedyPolicy
@@ -42,7 +42,7 @@ from seedmind.agent.agent import Agent
 from seedmind.envs.sandbox_world import ACTIONS, CRAFT_ACTIONS, SandboxWorld
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.memory.persistent_memory import PersistentMemory
-from seedmind.training.checkpointing import save_checkpoint
+from seedmind.training.checkpointing import load_checkpoint, save_checkpoint
 from seedmind.training.device import resolve_device
 from seedmind.training.imagination import imagine_experiences
 from seedmind.training.dqn import (
@@ -73,6 +73,35 @@ def sandbox_actions(config: dict) -> list[str]:
     return list(CRAFT_ACTIONS if craft_enabled(config) else ACTIONS)
 
 
+def causal_feature_names(config: dict) -> list[str]:
+    names = ["energy", "inventory_food"]
+    if craft_enabled(config):
+        names += ["inventory_wood", "inventory_stone", "inventory_tool"]
+    return names
+
+
+def causal_event_names(config: dict) -> list[str]:
+    if not craft_enabled(config):
+        return [
+            "MOVE_UP", "MOVE_DOWN", "MOVE_LEFT", "MOVE_RIGHT", "WAIT",
+            "harvest_food", "eat_ok", "harvest_noop", "eat_noop",
+        ]
+    return [
+        "MOVE_UP", "MOVE_DOWN", "MOVE_LEFT", "MOVE_RIGHT", "WAIT",
+        "harvest_food", "harvest_food_tool", "harvest_wood", "harvest_stone",
+        "craft_tool", "eat_ok", "harvest_noop", "craft_noop", "eat_noop",
+    ]
+
+
+def causal_feature_weight_vector(config: dict) -> np.ndarray:
+    cwm = config.get("causal_world_model", {})
+    weights = cwm.get("planner_feature_weights", {})
+    return np.asarray(
+        [float(weights.get(name, 0.0)) for name in causal_feature_names(config)],
+        dtype=np.float32,
+    )
+
+
 def build_env(config: dict, seed: int) -> SandboxWorld:
     ec = config.get("env", {})
     cc = config.get("craft", {})
@@ -100,6 +129,7 @@ def build_env(config: dict, seed: int) -> SandboxWorld:
 def build_agent(config: dict, seed: int) -> Agent:
     ac = config.get("agent", {})
     wmc = config.get("world_model", {})
+    cwm = config.get("causal_world_model", {})
     cc = config.get("curiosity", {})
     pc = config.get("policy", {})
     dc = config.get("dqn", {})
@@ -131,6 +161,14 @@ def build_agent(config: dict, seed: int) -> Agent:
         latent_dim=latent_dim, num_actions=len(actions),
         hidden_dim=int(wmc.get("hidden_dim", 128)),
         num_layers=int(wmc.get("num_layers", 2)),
+        causal_feature_dim=(
+            len(causal_feature_names(config))
+            if bool(cwm.get("enabled", False)) else 0
+        ),
+        num_events=(
+            len(causal_event_names(config))
+            if bool(cwm.get("predict_events", False)) else 0
+        ),
     )
     from seedmind.agent.curiosity import CuriosityModule
     curiosity = CuriosityModule(
@@ -168,6 +206,10 @@ def build_agent(config: dict, seed: int) -> Agent:
         planning_weight=planning_weight,
         planner_horizon=int(plc.get("horizon", 4)),
         planner_samples=int(plc.get("num_samples", 16)),
+        causal_feature_weights=(
+            causal_feature_weight_vector(config)
+            if bool(cwm.get("enabled", False)) else None
+        ),
     )
 
 
@@ -199,6 +241,22 @@ def _count_recent(metrics: list[Dict[str, Any]], key: str, window: int = 100) ->
     return float(sum(m.get(key, 0) for m in recent)) / len(recent)
 
 
+def _move_optimizer_state(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(device)
+
+
+def _load_metrics_history(path: Path) -> list[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    episodes = payload.get("episodes", [])
+    return episodes if isinstance(episodes, list) else []
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="SeedMind Sandbox training")
     parser.add_argument("--config", default="configs/sandbox_v0.yaml")
@@ -212,6 +270,11 @@ def main() -> None:
         choices=["cpu", "auto", "cuda", "mps"],
         help="Device for step-by-step inference. Defaults to --device.",
     )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="Checkpoint to resume from. --episodes remains the total target episode count.",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -221,6 +284,7 @@ def main() -> None:
     ec = config.get("env", {})
     tc = config.get("training", {})
     wmc = config.get("world_model", {})
+    cwm = config.get("causal_world_model", {})
     dc = config.get("dqn", {})
 
     episodes = args.episodes or int(tc.get("episodes", 5000))
@@ -230,6 +294,9 @@ def main() -> None:
 
     wm_batch = int(wmc.get("batch_size", 64))
     wm_lr = float(wmc.get("learning_rate", 3e-4))
+    causal_wm_enabled = bool(cwm.get("enabled", False))
+    causal_feature_weight = float(cwm.get("feature_loss_weight", 0.0))
+    causal_event_weight = float(cwm.get("event_loss_weight", 0.0))
     q_batch = int(dc.get("batch_size", 64))
     q_lr = float(dc.get("learning_rate", 5e-4))
     gamma = float(dc.get("gamma", 0.95))
@@ -238,10 +305,22 @@ def main() -> None:
     updates_per_train = int(dc.get("updates_per_train", 8))
     sampler = str(dc.get("sampler", "uniform"))
     curiosity_weight = float(dc.get("curiosity_weight", 0.0))
+    n_step = int(dc.get("n_step", 1))
+    causal_cfg = config.get("causal_curiosity", {})
+    causal_curiosity = CausalCuriosityModule(
+        enabled=bool(causal_cfg.get("enabled", False)),
+        weight=float(causal_cfg.get("weight", 0.0)),
+        max_reward=float(causal_cfg.get("max_reward", 0.2)),
+        novelty_bonus=float(causal_cfg.get("novelty_bonus", 1.0)),
+        repeat_bonus=float(causal_cfg.get("repeat_bonus", 0.2)),
+    )
 
     dyna_cfg = config.get("dyna", {})
     dyna_enabled = bool(dyna_cfg.get("enabled", False))
     dyna_imagined = int(dyna_cfg.get("imagined_per_step", 16))
+    event_to_index = {
+        event: i for i, event in enumerate(causal_event_names(config))
+    }
 
     out_dir = Path(args.out_dir or f"runs/sandbox_{args.seed}")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -270,13 +349,67 @@ def main() -> None:
     recent_lifespan: deque = deque(maxlen=100)
     metrics_history: list[Dict[str, Any]] = []
     metrics_path = out_dir / "metrics.json"
+    start_episode = 0
+
+    if args.resume:
+        resume_path = Path(args.resume)
+        resume_info = load_checkpoint(
+            str(resume_path), agent, wm_optimizer, buffer,
+            q_optimizer=q_optimizer, target_network=target_network,
+        )
+        agent.encoder.to(inference_device)
+        agent.world_model.to(inference_device)
+        target_network.to(device)
+        _move_optimizer_state(wm_optimizer, inference_device)
+        _move_optimizer_state(q_optimizer, device)
+
+        if agent.q_network is not train_q_network:
+            train_q_network.load_state_dict(agent.q_network.state_dict())
+            train_q_network.to(device)
+            agent.q_network.to(inference_device)
+            agent.q_network.eval()
+        else:
+            agent.q_network = train_q_network.to(device)
+
+        resume_metrics = resume_info.get("metrics", {})
+        causal_curiosity.load_state_dict(resume_metrics.get("causal_curiosity", {}))
+        total_q_updates = int(resume_metrics.get("total_q_updates", total_q_updates))
+        next_target_sync = int(resume_metrics.get("next_target_sync", next_target_sync))
+        resume_episode = resume_metrics.get("episode")
+
+        metrics_history = _load_metrics_history(metrics_path)
+        if not metrics_history and resume_path.parent != out_dir:
+            metrics_history = _load_metrics_history(resume_path.parent / "metrics.json")
+        if resume_episode is not None:
+            resume_episode = int(resume_episode)
+            metrics_history = [
+                m for m in metrics_history
+                if int(m.get("episode", -1)) <= resume_episode
+            ]
+        if metrics_history:
+            start_episode = int(metrics_history[-1].get("episode", len(metrics_history) - 1)) + 1
+            recent_lifespan.extend(
+                int(m.get("lifespan", 0)) for m in metrics_history[-100:]
+            )
+            last_td_loss = float(metrics_history[-1].get("td_loss", last_td_loss))
+            last_wm_loss = float(metrics_history[-1].get("world_model_loss", last_wm_loss))
+        elif resume_episode is not None:
+            start_episode = resume_episode + 1
+
+        print(f"Resuming from {resume_path} at life {start_episode}.")
+        if start_episode >= episodes:
+            print(
+                f"Checkpoint already reached target: start_episode={start_episode}, "
+                f"episodes={episodes}."
+            )
+            return
 
     print(
         f"Running SeedMind Sandbox: {episodes} lives, max_steps={max_steps}, "
         f"device={device}, inference_device={inference_device}"
     )
 
-    for ep in range(episodes):
+    for ep in range(start_episode, episodes):
         env = build_env(config, seed=args.seed + ep)
         observation = env.reset()
         latent_state = agent.encode(observation)
@@ -290,6 +423,8 @@ def main() -> None:
         max_wood = 0
         max_stone = 0
         max_tool = 0
+        ep_intrinsic_prediction = 0.0
+        ep_intrinsic_causal = 0.0
 
         for step in range(max_steps):
             memories = agent.retrieve(latent_state)
@@ -304,6 +439,15 @@ def main() -> None:
             next_latent = agent.encode(next_obs)
             event = str(info.get("event", "unknown"))
             amount = int(info.get("event_amount", 0))
+            causal_features = (
+                env.causal_features(observation)
+                if causal_wm_enabled else None
+            )
+            next_causal_features = (
+                env.causal_features(next_obs)
+                if causal_wm_enabled else None
+            )
+            event_index = event_to_index.get(event) if causal_wm_enabled else None
             event_counts[event] += 1
             if event in {"harvest_food", "harvest_food_tool"}:
                 food_harvested += amount
@@ -317,7 +461,11 @@ def main() -> None:
 
             predicted, _, _ = agent.world_model.predict(latent_state, action_index)
             pred_err = compute_prediction_error(predicted, next_latent)
-            reward_int = agent.curiosity.compute(pred_err)
+            reward_int_prediction = agent.curiosity.compute(pred_err)
+            reward_int_causal = causal_curiosity.compute(event, amount)
+            reward_int = reward_int_prediction + reward_int_causal
+            ep_intrinsic_prediction += reward_int_prediction
+            ep_intrinsic_causal += reward_int_causal
 
             experience = make_experience(
                 episode_id=f"sandbox_{ep:06d}", world_id=env.world_id,
@@ -331,6 +479,9 @@ def main() -> None:
                 next_obs_state=_compact_obs(next_obs),
                 event=event,
                 event_amount=amount,
+                event_index=event_index,
+                causal_features=causal_features,
+                next_causal_features=next_causal_features,
             )
             buffer.add(experience)
             agent.memory.store_if_important(experience)
@@ -349,6 +500,8 @@ def main() -> None:
             "episode": ep,
             "lifespan": ep_steps,
             "reward_external": float(ep_reward),
+            "reward_intrinsic_prediction": float(ep_intrinsic_prediction),
+            "reward_intrinsic_causal": float(ep_intrinsic_causal),
             "dead": bool(info.get("dead", False)),
             "timeout": bool(info.get("timeout", False)),
             "epsilon": float(agent.policy.epsilon),
@@ -375,6 +528,8 @@ def main() -> None:
             wm_losses = train_world_model(
                 agent.world_model, buffer, wm_optimizer,
                 batch_size=wm_batch, num_updates=updates_per_train,
+                causal_feature_weight=causal_feature_weight,
+                causal_event_weight=causal_event_weight,
             )
             last_wm_loss = wm_losses["total"]
 
@@ -391,7 +546,8 @@ def main() -> None:
             q_losses = train_dqn(
                 train_q_network, target_network, buffer, q_optimizer,
                 batch_size=q_batch, gamma=gamma, curiosity_weight=curiosity_weight,
-                double_dqn=double_dqn, num_updates=updates_per_train, sampler=sampler,
+                double_dqn=double_dqn, num_updates=updates_per_train,
+                sampler=sampler, n_step=n_step,
             )
             last_td_loss = q_losses["td_loss"]
             total_q_updates += int(q_losses["updates"])
@@ -408,9 +564,13 @@ def main() -> None:
             save_checkpoint(
                 str(out_dir / f"checkpoint_{ep}.pt"), agent, wm_optimizer, buffer,
                 metrics={
+                    "episode": ep,
                     "mean_lifespan": mean_life,
                     "device": str(device),
                     "inference_device": str(inference_device),
+                    "causal_curiosity": causal_curiosity.state_dict(),
+                    "total_q_updates": total_q_updates,
+                    "next_target_sync": next_target_sync,
                 }, config=config,
                 q_optimizer=q_optimizer, target_network=target_network,
             )
@@ -418,6 +578,7 @@ def main() -> None:
                 "config_path": args.config,
                 "device": str(device),
                 "inference_device": str(inference_device),
+                "causal_curiosity": causal_curiosity.state_dict(),
                 "episodes": metrics_history,
             })
 
@@ -426,17 +587,20 @@ def main() -> None:
             craft100 = _count_recent(metrics_history, "craft_tool")
             tool_food100 = _count_recent(metrics_history, "harvest_food_tool")
             eat100 = _count_recent(metrics_history, "eat_ok")
+            causal100 = _count_recent(metrics_history, "reward_intrinsic_causal")
             print(
                 f"  life {ep:5d} | lifespan(100)={mean_life:5.1f} "
                 f"r={ep_reward:6.2f} dead={dead} "
                 f"td={last_td_loss:.4f} wm={last_wm_loss:.4f} "
                 f"eps={agent.policy.epsilon:.2f} mem={len(agent.memory)} "
-                f"craft100={craft100:.2f} toolfood100={tool_food100:.2f} eat100={eat100:.2f}"
+                f"craft100={craft100:.2f} toolfood100={tool_food100:.2f} "
+                f"eat100={eat100:.2f} causal100={causal100:.3f}"
             )
             _save_metrics(metrics_path, {
                 "config_path": args.config,
                 "device": str(device),
                 "inference_device": str(inference_device),
+                "causal_curiosity": causal_curiosity.state_dict(),
                 "episodes": metrics_history,
             })
 
@@ -445,9 +609,13 @@ def main() -> None:
     save_checkpoint(
         str(out_dir / "checkpoint_final.pt"), agent, wm_optimizer, buffer,
         metrics={
+            "episode": episodes - 1,
             "mean_lifespan": float(np.mean(recent_lifespan)),
             "device": str(device),
             "inference_device": str(inference_device),
+            "causal_curiosity": causal_curiosity.state_dict(),
+            "total_q_updates": total_q_updates,
+            "next_target_sync": next_target_sync,
         },
         config=config, q_optimizer=q_optimizer, target_network=target_network,
     )
@@ -455,6 +623,7 @@ def main() -> None:
         "config_path": args.config,
         "device": str(device),
         "inference_device": str(inference_device),
+        "causal_curiosity": causal_curiosity.state_dict(),
         "episodes": metrics_history,
     })
     print(f"\nFinal mean lifespan (last 100): {float(np.mean(recent_lifespan)):.1f}")

@@ -110,3 +110,15 @@ def test_sample_causal_returns_event_transitions():
     events = {e["event"] for e in sample}
     assert events <= {"craft_tool", "harvest_food_tool"}
     assert events
+
+
+def test_n_step_sequence_stays_within_episode_and_stops_at_done():
+    buf = ExperienceBuffer(seed=0)
+    for i in range(4):
+        e = _exp(i, 0.0, reward=1.0)
+        e["episode_id"] = "a"
+        e["done"] = i == 2
+        buf.add(e)
+    start = buf.sample_recent(4)[0]
+    seq = buf.n_step_sequence(start, 4)
+    assert [e["step"] for e in seq] == [0, 1, 2]

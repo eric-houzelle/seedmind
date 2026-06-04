@@ -257,6 +257,33 @@ class SandboxWorld(EnvironmentAdapter):
     def available_actions(self) -> List[str]:
         return list(CRAFT_ACTIONS if self.craft_enabled else BASE_ACTIONS)
 
+    def causal_feature_names(self) -> List[str]:
+        names = ["energy", "inventory_food"]
+        if self.craft_enabled:
+            names += ["inventory_wood", "inventory_stone", "inventory_tool"]
+        return names
+
+    def causal_features(self, observation: Dict[str, Any]) -> np.ndarray:
+        energy_max = float(observation.get("energy_max", self.energy_max))
+        values = [
+            float(observation.get("energy", 0.0)) / max(energy_max, 1.0),
+            min(float(observation.get("inventory_food", 0)), 10.0) / 10.0,
+        ]
+        if self.craft_enabled:
+            values += [
+                min(float(observation.get("inventory_wood", 0)), 10.0) / 10.0,
+                min(float(observation.get("inventory_stone", 0)), 10.0) / 10.0,
+                min(float(observation.get("inventory_tool", 0)), 10.0) / 10.0,
+            ]
+        return np.asarray(values, dtype=np.float32)
+
+    def causal_event_names(self) -> List[str]:
+        return [
+            "MOVE_UP", "MOVE_DOWN", "MOVE_LEFT", "MOVE_RIGHT", "WAIT",
+            "harvest_food", "harvest_food_tool", "harvest_wood", "harvest_stone",
+            "craft_tool", "eat_ok", "harvest_noop", "craft_noop", "eat_noop",
+        ]
+
     def step(self, action: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         self.steps += 1
         self._last_event = action

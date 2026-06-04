@@ -90,6 +90,8 @@ def load_checkpoint(
         buffer.capacity = b["capacity"]
         buffer._data = b["data"]
         buffer._cursor = b.get("cursor", 0)
+        if hasattr(buffer, "_rebuild_index"):
+            buffer._rebuild_index()
 
     # V2: learned policy.
     if agent.q_network is not None and "q_network_state" in payload:

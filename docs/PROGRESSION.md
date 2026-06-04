@@ -302,6 +302,8 @@ Ordre retenu : chaque étape s'appuie sur la précédente, avec validation **tra
 - Config pression craft : `configs/sandbox_v2_craft_pressure.yaml`
 - Config intermédiaire : `configs/sandbox_v2_craft_balanced.yaml`
 - Config intermédiaire + replay causal : `configs/sandbox_v2_craft_balanced_causal.yaml`
+- Config intermédiaire + n-step DQN : `configs/sandbox_v2_craft_balanced_nstep.yaml`
+- Config intermédiaire + curiosité causale : `configs/sandbox_v2_craft_balanced_intrinsic.yaml`
 
 **Chaîne causale à tester :**
 
@@ -365,6 +367,22 @@ sur-échantillonne les transitions rares `craft_tool`, `harvest_food_tool`,
 `eat_ok`, `harvest_wood`, `harvest_stone` pour éviter que les chaînes causales
 découvertes brièvement soient noyées dans le replay uniforme.
 
+`sandbox_v2_craft_balanced_nstep.yaml` garde le même monde que balanced et
+active `dqn.n_step=8`. Le but est de corriger le credit assignment long-horizon
+de manière générale : la valeur d'une action comme `CRAFT` peut être propagée
+depuis les conséquences plusieurs pas plus tard, sans reward artificiel.
+
+`sandbox_v2_craft_balanced_intrinsic.yaml` teste une autre hypothèse : l'agent
+ne doit pas seulement optimiser la survie, il doit aussi s'intéresser aux
+actions qui produisent de nouvelles conséquences causales. La curiosité causale
+ajoute un reward intrinsèque borné pour les vrais événements d'état
+(`harvest_*`, `craft_tool`, `eat_ok`), sans modifier le reward externe.
+
+L'évaluation sandbox peut maintenant comparer `Q only` vs `Q + World Model
+planner` sur le même checkpoint avec `--compare-planner`. C'est le test le plus
+direct de la thèse centrale : le World Model doit améliorer la décision ou
+l'exploitation d'une chaîne causale différée, à poids entraînés identiques.
+
 ### D — Multi-pulsions homéostatiques
 
 **Pourquoi :** forcer l'**arbitrage** entre besoins concurrents (énergie, soif, chaleur).
@@ -398,6 +416,8 @@ configs/
   sandbox_v2_craft.yaml      # v1 + ressources/craft
   sandbox_v2_craft_balanced.yaml # intermédiaire craft
   sandbox_v2_craft_balanced_causal.yaml # balanced + replay causal
+  sandbox_v2_craft_balanced_nstep.yaml # balanced + n-step DQN
+  sandbox_v2_craft_balanced_intrinsic.yaml # balanced + curiosité causale
   sandbox_v2_craft_pressure.yaml # craft sous pression causale
 
 runs/                        # gitignored

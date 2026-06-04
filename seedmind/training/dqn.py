@@ -39,23 +39,45 @@ def sync_target(q_network: QNetwork, target_network: QNetwork) -> None:
 
 
 def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float,
-                        batch_fn=None):
+                        batch_fn=None, buffer: Optional[ExperienceBuffer] = None,
+                        n_step: int = 1, gamma: float = 0.95):
     """Build TD tensors from experiences; skip those lacking observations."""
     if batch_fn is None:
         batch_fn = obs_batch_to_tensors
-    obs, next_obs, actions, rewards, dones = [], [], [], [], []
+    obs, next_obs, actions, rewards, dones, n_steps = [], [], [], [], [], []
     for e in batch:
         if e.get("obs_state") is None or e.get("next_obs_state") is None:
             continue
         if e.get("action_index") is None:
             continue
+        if buffer is not None and n_step > 1:
+            sequence = buffer.n_step_sequence(e, n_step)
+            if not sequence:
+                continue
+            reward = 0.0
+            discount = 1.0
+            last = sequence[-1]
+            for current in sequence:
+                reward += discount * (
+                    float(current["reward_external"])
+                    + curiosity_weight * float(current.get("reward_intrinsic", 0.0))
+                )
+                discount *= gamma
+        else:
+            reward = (
+                float(e["reward_external"])
+                + curiosity_weight * float(e.get("reward_intrinsic", 0.0))
+            )
+            last = e
+        if last.get("next_obs_state") is None:
+            continue
+
         obs.append(e["obs_state"])
-        next_obs.append(e["next_obs_state"])
+        next_obs.append(last["next_obs_state"])
         actions.append(int(e["action_index"]))
-        rewards.append(
-            float(e["reward_external"]) + curiosity_weight * float(e.get("reward_intrinsic", 0.0))
-        )
-        dones.append(1.0 if e.get("done", False) else 0.0)
+        rewards.append(reward)
+        dones.append(1.0 if last.get("done", False) else 0.0)
+        n_steps.append(len(sequence) if buffer is not None and n_step > 1 else 1)
 
     if not obs:
         return None
@@ -70,6 +92,7 @@ def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float,
         next_channels,
         next_inventory,
         torch.tensor(dones, dtype=torch.float32),
+        torch.tensor(n_steps, dtype=torch.float32),
     )
 
 
@@ -97,6 +120,7 @@ def train_dqn(
     num_updates: int = 1,
     sampler: str = "uniform",
     grad_clip: float = 10.0,
+    n_step: int = 1,
 ) -> Dict[str, float]:
     """Run ``num_updates`` TD gradient steps; return the mean TD loss."""
     if len(buffer) == 0:
@@ -109,10 +133,16 @@ def train_dqn(
     batch_fn = getattr(q_network, '_obs_batch_fn', obs_batch_to_tensors)
     for _ in range(num_updates):
         batch = _sample_batch(buffer, batch_size, sampler)
-        assembled = _assemble_dqn_batch(batch, curiosity_weight, batch_fn=batch_fn)
+        assembled = _assemble_dqn_batch(
+            batch, curiosity_weight, batch_fn=batch_fn,
+            buffer=buffer, n_step=n_step, gamma=gamma,
+        )
         if assembled is None:
             continue
-        channels, inventory, actions, rewards, next_channels, next_inventory, dones = assembled
+        (
+            channels, inventory, actions, rewards,
+            next_channels, next_inventory, dones, n_steps,
+        ) = assembled
         device = next(q_network.parameters()).device
         channels = channels.to(device)
         inventory = inventory.to(device)
@@ -121,6 +151,7 @@ def train_dqn(
         next_channels = next_channels.to(device)
         next_inventory = next_inventory.to(device)
         dones = dones.to(device)
+        n_steps = n_steps.to(device)
 
         q_values = q_network(channels, inventory)
         q_taken = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
@@ -132,7 +163,7 @@ def train_dqn(
                 next_q = next_q_target.gather(1, next_actions).squeeze(1)
             else:
                 next_q = next_q_target.max(dim=1).values
-            td_target = rewards + gamma * next_q * (1.0 - dones)
+            td_target = rewards + (gamma ** n_steps) * next_q * (1.0 - dones)
 
         loss = F.smooth_l1_loss(q_taken, td_target)
 

@@ -31,6 +31,7 @@ class Planner:
         num_samples: int = 16,
         gamma: float = 0.95,
         goal_progress_weight: float = 0.0,
+        causal_feature_weights: Optional[np.ndarray] = None,
         seed: Optional[int] = None,
     ) -> None:
         self.world_model = world_model
@@ -41,7 +42,19 @@ class Planner:
         self.num_samples = max(1, num_samples)
         self.gamma = gamma
         self.goal_progress_weight = goal_progress_weight
+        self.causal_feature_weights = (
+            np.asarray(causal_feature_weights, dtype=np.float32)
+            if causal_feature_weights is not None else None
+        )
         self.rng = np.random.default_rng(seed)
+
+    def _causal_value(self, latents: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        if self.causal_feature_weights is None or self.causal_feature_weights.size == 0:
+            return np.zeros(len(actions), dtype=np.float32)
+        delta, _ = self.world_model.predict_causal_batch(latents, actions)
+        if delta.shape[1] != self.causal_feature_weights.shape[0]:
+            return np.zeros(len(actions), dtype=np.float32)
+        return delta @ self.causal_feature_weights
 
     def action_values(
         self, latent_state: np.ndarray, available_actions: List[str]
@@ -57,14 +70,23 @@ class Planner:
         first_actions = np.repeat(first_idx, n)
 
         next_l, reward, uncertainty = self.world_model.predict_batch(particles, first_actions)
-        value = reward + self.curiosity.compute_array(uncertainty)
+        value = (
+            reward
+            + self.curiosity.compute_array(uncertainty)
+            + self._causal_value(particles, first_actions)
+        )
 
         cur = next_l
         disc = self.gamma
         for _ in range(self.horizon - 1):
             rand_actions = self.rng.integers(0, num_actions, size=a * n)
-            cur, reward, uncertainty = self.world_model.predict_batch(cur, rand_actions)
-            value = value + disc * (reward + self.curiosity.compute_array(uncertainty))
+            prev = cur
+            cur, reward, uncertainty = self.world_model.predict_batch(prev, rand_actions)
+            value = value + disc * (
+                reward
+                + self.curiosity.compute_array(uncertainty)
+                + self._causal_value(prev, rand_actions)
+            )
             disc *= self.gamma
 
         agg = value.reshape(a, n).mean(axis=1)

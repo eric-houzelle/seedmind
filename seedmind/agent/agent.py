@@ -36,6 +36,7 @@ class Agent:
         planning_weight: float = 0.0,
         planner_horizon: int = 4,
         planner_samples: int = 16,
+        causal_feature_weights: Optional[np.ndarray] = None,
     ) -> None:
         self.encoder = encoder
         self.world_model = world_model
@@ -50,6 +51,7 @@ class Agent:
         self.planner = Planner(
             world_model, actions, curiosity,
             horizon=planner_horizon, num_samples=planner_samples,
+            causal_feature_weights=causal_feature_weights,
         )
         self.q_network = q_network
         # When both Q-network and planner are active, the greedy branch
