@@ -17,7 +17,12 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.run_sandbox import build_env, observation_causal_features, sandbox_actions
+from scripts.run_sandbox import (
+    build_env,
+    causal_event_names,
+    observation_causal_features,
+    sandbox_actions,
+)
 from seedmind.envs.sandbox_world import CRAFT, EAT, HARVEST
 from seedmind.training.device import resolve_device
 
