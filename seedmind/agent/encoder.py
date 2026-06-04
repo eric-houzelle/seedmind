@@ -216,13 +216,17 @@ class Encoder(nn.Module):
         return observation_to_vector(observation, self.num_entities)
 
     @torch.no_grad()
-    def encode(self, observation: Dict[str, Any]) -> np.ndarray:
-        """Encode a single observation into a latent numpy vector."""
+    def encode_tensor(self, observation: Dict[str, Any]) -> torch.Tensor:
+        """Encode a single observation into a latent vector on the module device."""
         vec = self._vectorise(observation)
         device = next(self.parameters()).device
         tensor = torch.from_numpy(vec).unsqueeze(0).to(device)
-        latent = self.net(tensor).squeeze(0)
-        return latent.cpu().numpy().astype(np.float32)
+        return self.net(tensor).squeeze(0)
+
+    @torch.no_grad()
+    def encode(self, observation: Dict[str, Any]) -> np.ndarray:
+        """Encode a single observation into a latent numpy vector."""
+        return self.encode_tensor(observation).cpu().numpy().astype(np.float32)
 
     @torch.no_grad()
     def encode_batch(self, observations) -> np.ndarray:

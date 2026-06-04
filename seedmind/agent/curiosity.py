@@ -5,11 +5,25 @@ A cap prevents the agent from chasing pure chaos.
 """
 from __future__ import annotations
 
+from typing import Union
+
 import numpy as np
+import torch
+
+LatentLike = Union[np.ndarray, torch.Tensor]
 
 
-def compute_prediction_error(predicted_next: np.ndarray, actual_next: np.ndarray) -> float:
+def compute_prediction_error_tensor(
+    predicted_next: torch.Tensor, actual_next: torch.Tensor
+) -> torch.Tensor:
+    """Mean-squared error on device (scalar tensor)."""
+    return torch.mean((predicted_next - actual_next) ** 2)
+
+
+def compute_prediction_error(predicted_next: LatentLike, actual_next: LatentLike) -> float:
     """Mean-squared error between predicted and actual next latent states."""
+    if isinstance(predicted_next, torch.Tensor) and isinstance(actual_next, torch.Tensor):
+        return float(compute_prediction_error_tensor(predicted_next, actual_next).item())
     pred = np.asarray(predicted_next, dtype=np.float32)
     actual = np.asarray(actual_next, dtype=np.float32)
     return float(np.mean((pred - actual) ** 2))

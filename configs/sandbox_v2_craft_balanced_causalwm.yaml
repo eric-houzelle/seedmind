@@ -31,6 +31,7 @@ world_model:
   num_layers: 2
   learning_rate: 0.0003
   batch_size: 64
+  sampler: uniform
 
 causal_world_model:
   enabled: true

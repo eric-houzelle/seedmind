@@ -80,17 +80,29 @@ class WorldModel(nn.Module):
         return out
 
     @torch.no_grad()
+    def predict_tensor(
+        self, latent: torch.Tensor, action_index: int
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Single-step prediction; latents stay on the module device."""
+        self.eval()
+        device = next(self.parameters()).device
+        latent_t = latent.to(device)
+        if latent_t.dim() == 1:
+            latent_t = latent_t.unsqueeze(0)
+        action_t = torch.as_tensor([action_index], dtype=torch.long, device=device)
+        next_state, reward, uncertainty = self.forward(latent_t, action_t)
+        return next_state.squeeze(0), reward.squeeze(0), uncertainty.squeeze(0)
+
+    @torch.no_grad()
     def predict(
         self, latent: np.ndarray, action_index: int
     ) -> Tuple[np.ndarray, float, float]:
         """Single-step prediction from numpy inputs."""
-        self.eval()
         device = next(self.parameters()).device
-        latent_t = torch.as_tensor(latent, dtype=torch.float32, device=device).unsqueeze(0)
-        action_t = torch.as_tensor([action_index], dtype=torch.long, device=device)
-        next_state, reward, uncertainty = self.forward(latent_t, action_t)
+        latent_t = torch.as_tensor(latent, dtype=torch.float32, device=device)
+        next_state, reward, uncertainty = self.predict_tensor(latent_t, action_index)
         return (
-            next_state.squeeze(0).cpu().numpy().astype(np.float32),
+            next_state.cpu().numpy().astype(np.float32),
             float(reward.item()),
             float(uncertainty.item()),
         )

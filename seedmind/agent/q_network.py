@@ -101,19 +101,24 @@ class QNetwork(nn.Module):
         return self.head(x)
 
     @torch.no_grad()
-    def q_values(self, observation: Dict[str, Any]) -> np.ndarray:
-        """Q-values (one per action index) for a single observation."""
+    def q_values_tensor(self, observation: Dict[str, Any]) -> torch.Tensor:
+        """Q-values on the module device (one value per action index)."""
         self.eval()
         channels, scalars = self._obs_batch_fn([observation])
         device = next(self.parameters()).device
         channels = channels.to(device)
         scalars = scalars.to(device)
-        return self.forward(channels, scalars).squeeze(0).cpu().numpy().astype(np.float32)
+        return self.forward(channels, scalars).squeeze(0)
+
+    @torch.no_grad()
+    def q_values(self, observation: Dict[str, Any]) -> np.ndarray:
+        """Q-values (one per action index) for a single observation."""
+        return self.q_values_tensor(observation).cpu().numpy().astype(np.float32)
 
     def make_scorer(
         self, observation: Dict[str, Any], actions: List[str]
     ) -> Callable[[str], float]:
         """Return a scorer ``action -> Q-value`` for the epsilon-greedy policy."""
-        values = self.q_values(observation)
+        values = self.q_values_tensor(observation).detach().cpu().numpy().astype(np.float32)
         action_index = {a: i for i, a in enumerate(actions)}
         return lambda action: float(values[action_index[action]])

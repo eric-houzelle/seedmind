@@ -24,7 +24,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from seedmind.agent.curiosity import CausalCuriosityModule, compute_prediction_error
+from seedmind.agent.curiosity import CausalCuriosityModule, compute_prediction_error_tensor
 from seedmind.agent.encoder import Encoder
 from seedmind.agent.goal_generator import GoalGenerator
 from seedmind.agent.policy import EpsilonGreedyPolicy
@@ -51,6 +51,7 @@ from seedmind.training.dqn import (
     sync_target,
     train_dqn,
 )
+from seedmind.training.latent_utils import latent_to_numpy
 from seedmind.training.train import make_optimizer, train_world_model
 
 
@@ -294,6 +295,7 @@ def main() -> None:
 
     wm_batch = int(wmc.get("batch_size", 64))
     wm_lr = float(wmc.get("learning_rate", 3e-4))
+    wm_sampler = str(wmc.get("sampler", "uniform"))
     causal_wm_enabled = bool(cwm.get("enabled", False))
     causal_feature_weight = float(cwm.get("feature_loss_weight", 0.0))
     causal_event_weight = float(cwm.get("event_loss_weight", 0.0))
@@ -406,13 +408,14 @@ def main() -> None:
 
     print(
         f"Running SeedMind Sandbox: {episodes} lives, max_steps={max_steps}, "
-        f"device={device}, inference_device={inference_device}"
+        f"device={device}, inference_device={inference_device}, "
+        f"wm_sampler={wm_sampler}"
     )
 
     for ep in range(start_episode, episodes):
         env = build_env(config, seed=args.seed + ep)
         observation = env.reset()
-        latent_state = agent.encode(observation)
+        latent_state = agent.encoder.encode_tensor(observation)
 
         ep_reward = 0.0
         ep_steps = 0
@@ -427,16 +430,17 @@ def main() -> None:
         ep_intrinsic_causal = 0.0
 
         for step in range(max_steps):
-            memories = agent.retrieve(latent_state)
-            goal = agent.choose_goal(latent_state, memories)
+            latent_np = latent_to_numpy(latent_state)
+            memories = agent.retrieve(latent_np)
+            goal = agent.choose_goal(latent_np, memories)
             action = agent.choose_action(
-                latent_state, goal, memories, env.available_actions(),
+                latent_np, goal, memories, env.available_actions(),
                 observation=observation,
             )
             action_index = agent.action_index[action]
 
             next_obs, reward_ext, done, info = env.step(action)
-            next_latent = agent.encode(next_obs)
+            next_latent = agent.encoder.encode_tensor(next_obs)
             event = str(info.get("event", "unknown"))
             amount = int(info.get("event_amount", 0))
             causal_features = (
@@ -459,8 +463,8 @@ def main() -> None:
             max_stone = max(max_stone, int(inv.get("stone", 0)))
             max_tool = max(max_tool, int(inv.get("tool", 0)))
 
-            predicted, _, _ = agent.world_model.predict(latent_state, action_index)
-            pred_err = compute_prediction_error(predicted, next_latent)
+            predicted, _, _ = agent.world_model.predict_tensor(latent_state, action_index)
+            pred_err = float(compute_prediction_error_tensor(predicted, next_latent).item())
             reward_int_prediction = agent.curiosity.compute(pred_err)
             reward_int_causal = causal_curiosity.compute(event, amount)
             reward_int = reward_int_prediction + reward_int_causal
@@ -469,12 +473,13 @@ def main() -> None:
 
             experience = make_experience(
                 episode_id=f"sandbox_{ep:06d}", world_id=env.world_id,
-                step=step, observation=observation["grid"].tolist(),
-                action=action, next_observation=next_obs["grid"].tolist(),
+                step=step, observation=None, action=action, next_observation=None,
                 reward_external=reward_ext, reward_intrinsic=reward_int,
                 goal=goal, prediction_error=pred_err, done=done,
-                memory_used=[], latent_state=latent_state,
-                next_latent_state=next_latent, action_index=action_index,
+                memory_used=[],
+                latent_state=latent_np,
+                next_latent_state=latent_to_numpy(next_latent),
+                action_index=action_index,
                 obs_state=_compact_obs(observation),
                 next_obs_state=_compact_obs(next_obs),
                 event=event,
@@ -528,6 +533,7 @@ def main() -> None:
             wm_losses = train_world_model(
                 agent.world_model, buffer, wm_optimizer,
                 batch_size=wm_batch, num_updates=updates_per_train,
+                sampler=wm_sampler,
                 causal_feature_weight=causal_feature_weight,
                 causal_event_weight=causal_event_weight,
             )
