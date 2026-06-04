@@ -31,13 +31,14 @@ world_model:
   num_layers: 2
   learning_rate: 0.0003
   batch_size: 64
-  sampler: uniform
+  sampler: causal
 
 causal_world_model:
   enabled: true
   predict_events: true
-  feature_loss_weight: 1.0
-  event_loss_weight: 0.05
+  feature_loss_weight: 2.0
+  event_loss_weight: 0.2
+  event_class_balance: true
   planner_feature_weights:
     energy: 4.0
     inventory_food: 2.0

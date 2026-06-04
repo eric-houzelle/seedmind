@@ -165,29 +165,30 @@ class ExperienceBuffer:
         return [self._data[i] for i in order[:batch_size]]
 
     def sample_causal(self, batch_size: int) -> List[Dict[str, Any]]:
-        """Sample rare transitions that expose useful causal chains.
+        """Sample informative causal transitions without world-specific rules.
 
-        This does not change rewards. It only makes sparse but important
-        transitions appear more often in gradient batches.
+        Transitions with explicit event ids/labels are weighted by inverse event
+        frequency so rare consequences are replayed more often. This keeps the
+        mechanism generic: the buffer does not know what an event means.
         """
-        priority = {
-            "harvest_food_tool": 5,
-            "craft_tool": 4,
-            "eat_ok": 3,
-            "harvest_stone": 2,
-            "harvest_wood": 2,
-            "harvest_food": 1,
-        }
-        indices = [
-            i for i, e in enumerate(self._data)
-            if e.get("event") in priority
-        ]
+        indices = []
+        keys = []
+        for i, e in enumerate(self._data):
+            key = e.get("event_index")
+            if key is None:
+                key = e.get("event")
+            if key is None:
+                continue
+            indices.append(i)
+            keys.append(str(key))
         if not indices:
             return []
+        counts: Dict[str, int] = {}
+        for key in keys:
+            counts[key] = counts.get(key, 0) + 1
         weights = np.asarray([
-            priority.get(self._data[i].get("event"), 1)
-            + max(0, int(self._data[i].get("event_amount", 0))) * 0.1
-            for i in indices
+            1.0 / np.sqrt(float(counts[key]))
+            for key in keys
         ], dtype=np.float64)
         weights = weights / weights.sum()
         take = min(batch_size, len(indices))

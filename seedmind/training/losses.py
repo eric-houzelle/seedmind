@@ -30,6 +30,7 @@ def world_model_aux_loss(
     target_reward: torch.Tensor,
     target_feature_delta: torch.Tensor | None = None,
     target_event: torch.Tensor | None = None,
+    event_class_weight: torch.Tensor | None = None,
     reward_weight: float = 1.0,
     feature_weight: float = 0.0,
     event_weight: float = 0.0,
@@ -52,7 +53,10 @@ def world_model_aux_loss(
         losses["feature"] = torch.zeros((), device=target_next.device)
 
     if target_event is not None and "event_logits" in outputs and event_weight > 0.0:
-        event_loss = F.cross_entropy(outputs["event_logits"], target_event)
+        event_loss = F.cross_entropy(
+            outputs["event_logits"], target_event,
+            weight=event_class_weight,
+        )
         losses["event"] = event_loss
         losses["total"] = losses["total"] + event_weight * event_loss
     else:

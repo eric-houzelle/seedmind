@@ -75,6 +75,7 @@ def train_world_model(
     sampler: str = "mixed",
     causal_feature_weight: float = 0.0,
     causal_event_weight: float = 0.0,
+    event_class_balance: bool = False,
 ) -> Dict[str, float]:
     """Run ``num_updates`` gradient steps; return mean loss components."""
     if len(buffer) == 0:
@@ -101,6 +102,10 @@ def train_world_model(
                 + buffer.sample_high_error(third)
                 + buffer.sample_high_reward(batch_size - 2 * third)
             )
+        elif sampler == "causal":
+            half = max(1, batch_size // 2)
+            causal = buffer.sample_causal(half)
+            batch = buffer.sample(batch_size - len(causal)) + causal
         else:
             batch = buffer.sample(batch_size)
 
@@ -117,6 +122,19 @@ def train_world_model(
             feature_deltas = feature_deltas.to(device)
         if events is not None:
             events = events.to(device)
+        event_class_weight = None
+        if (
+            event_class_balance
+            and events is not None
+            and getattr(world_model, "num_events", 0) > 0
+        ):
+            counts = torch.bincount(events, minlength=world_model.num_events).float()
+            weights = torch.zeros_like(counts)
+            present = counts > 0
+            weights[present] = 1.0 / torch.sqrt(counts[present])
+            if weights[present].numel() > 0:
+                weights[present] = weights[present] / weights[present].mean()
+            event_class_weight = weights.to(device)
 
         if causal_feature_weight > 0.0 or causal_event_weight > 0.0:
             outputs = world_model.forward_aux(latents, actions)
@@ -124,6 +142,7 @@ def train_world_model(
                 outputs, next_latents, rewards,
                 target_feature_delta=feature_deltas,
                 target_event=events,
+                event_class_weight=event_class_weight,
                 feature_weight=causal_feature_weight,
                 event_weight=causal_event_weight,
             )

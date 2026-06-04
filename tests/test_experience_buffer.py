@@ -100,7 +100,7 @@ def test_save_and_load(tmp_path):
     assert len(other) == 6
 
 
-def test_sample_causal_returns_event_transitions():
+def test_sample_causal_returns_event_transitions_by_generic_event_key():
     buf = ExperienceBuffer(seed=0)
     for i in range(5):
         buf.add(_event_exp(i, "wait"))
@@ -108,8 +108,9 @@ def test_sample_causal_returns_event_transitions():
     buf.add(_event_exp(11, "harvest_food_tool"))
     sample = buf.sample_causal(10)
     events = {e["event"] for e in sample}
-    assert events <= {"craft_tool", "harvest_food_tool"}
     assert events
+    assert all(e.get("event") is not None for e in sample)
+    assert {"craft_tool", "harvest_food_tool"} <= events
 
 
 def test_n_step_sequence_stays_within_episode_and_stops_at_done():

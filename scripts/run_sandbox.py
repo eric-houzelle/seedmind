@@ -331,6 +331,7 @@ def main() -> None:
     causal_wm_enabled = bool(cwm.get("enabled", False))
     causal_feature_weight = float(cwm.get("feature_loss_weight", 0.0))
     causal_event_weight = float(cwm.get("event_loss_weight", 0.0))
+    causal_event_class_balance = bool(cwm.get("event_class_balance", False))
     q_batch = int(dc.get("batch_size", 64))
     q_lr = float(dc.get("learning_rate", 5e-4))
     gamma = float(dc.get("gamma", 0.95))
@@ -568,6 +569,7 @@ def main() -> None:
                 sampler=wm_sampler,
                 causal_feature_weight=causal_feature_weight,
                 causal_event_weight=causal_event_weight,
+                event_class_balance=causal_event_class_balance,
             )
             last_wm_loss = wm_losses["total"]
 
