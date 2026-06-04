@@ -443,6 +443,77 @@ def diagnose_decisions(
         )
 
 
+def diagnose_causal_action_predictions(
+    config: dict,
+    checkpoint_path: str,
+    device: torch.device,
+    max_samples: int = 2000,
+) -> None:
+    from scripts.run_sandbox import build_agent, causal_feature_names
+
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    buffer = ckpt.get("buffer", {}).get("data", [])
+    actions = sandbox_actions(config)
+    tracked = [a for a in (CRAFT, HARVEST, EAT) if a in actions]
+    feature_names = causal_feature_names(config)
+
+    agent = build_agent(config, seed=0)
+    agent.world_model.to(device)
+    agent.world_model.load_state_dict(ckpt["world_model_state"])
+
+    candidates = []
+    for e in buffer:
+        obs = _obs_from_replay(e)
+        if obs is None or e.get("latent_state") is None:
+            continue
+        candidates.append((e, obs))
+    if max_samples > 0 and len(candidates) > max_samples:
+        rng = np.random.default_rng(24680)
+        indices = rng.choice(np.arange(len(candidates)), size=max_samples, replace=False)
+        candidates = [candidates[int(i)] for i in indices]
+
+    buckets: dict[str, list[tuple[dict, dict]]] = {
+        "craft_ready": [
+            x for x in candidates
+            if x[1].get("inventory_wood", 0) >= 1 and x[1].get("inventory_stone", 0) >= 1
+        ],
+        "has_tool": [x for x in candidates if x[1].get("inventory_tool", 0) >= 1],
+        "has_food": [x for x in candidates if x[1].get("inventory_food", 0) >= 1],
+        "actual_craft_tool": [x for x in candidates if x[0].get("event") == "craft_tool"],
+        "actual_tool_food": [x for x in candidates if x[0].get("event") == "harvest_food_tool"],
+        "actual_eat_ok": [x for x in candidates if x[0].get("event") == "eat_ok"],
+    }
+
+    print("\n=== Causal action prediction diagnostic ===")
+    print(f"  samples={len(candidates)} features={','.join(feature_names)}")
+    for bucket, rows in buckets.items():
+        if not rows:
+            print(f"  {bucket}: n=0")
+            continue
+        print(f"  {bucket}: n={len(rows)}")
+        latents = np.stack([
+            np.asarray(e["latent_state"], dtype=np.float32)
+            for e, _ in rows
+        ])
+        for action in tracked:
+            action_indices = np.full(len(rows), agent.action_index[action], dtype=np.int64)
+            delta, event_logits = agent.world_model.predict_causal_batch(latents, action_indices)
+            mean_delta = delta.mean(axis=0) if delta.size else np.zeros(0, dtype=np.float32)
+            parts = [
+                f"{name}={value:+.3f}"
+                for name, value in zip(feature_names, mean_delta)
+            ]
+            event_part = ""
+            if event_logits.size:
+                probs = torch.softmax(torch.as_tensor(event_logits), dim=1).numpy().mean(axis=0)
+                event_names = causal_event_names(config)
+                top_indices = np.argsort(probs)[-3:][::-1]
+                event_part = " events=" + ",".join(
+                    f"{event_names[i]}:{probs[i]:.2f}" for i in top_indices
+                )
+            print(f"    {action:<8} " + " ".join(parts) + event_part)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
@@ -462,6 +533,7 @@ def main():
     parser.add_argument("--diagnostic-samples", type=int, default=20000)
     parser.add_argument("--diagnose-decisions", action="store_true")
     parser.add_argument("--decision-samples", type=int, default=2000)
+    parser.add_argument("--diagnose-causal-actions", action="store_true")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -479,6 +551,11 @@ def main():
             planning_weight=args.planning_weight,
             planner_horizon=args.planner_horizon,
             planner_samples=args.planner_samples,
+        )
+    if args.diagnose_causal_actions:
+        diagnose_causal_action_predictions(
+            config, args.checkpoint, device=device,
+            max_samples=args.decision_samples,
         )
 
     print("=== Naive (random) agent ===")
