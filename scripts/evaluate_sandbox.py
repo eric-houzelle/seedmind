@@ -17,7 +17,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.run_sandbox import build_env, sandbox_actions
+from scripts.run_sandbox import build_env, observation_causal_features, sandbox_actions
 from seedmind.envs.sandbox_world import CRAFT, EAT, HARVEST
 from seedmind.training.device import resolve_device
 
@@ -408,7 +408,10 @@ def diagnose_decisions(
             latent = np.asarray(e["latent_state"], dtype=np.float32)
             q_raw = agent.q_network.q_values(obs)
             q_scores = {a: float(q_raw[agent.action_index[a]]) for a in actions}
-            wm_scores = agent.planner.action_values(latent, actions)
+            current_features = observation_causal_features(config, obs)
+            wm_scores = agent.planner.action_values(
+                latent, actions, current_features=current_features,
+            )
             q_norm = _normalise_scores(q_scores, actions)
             wm_norm = _normalise_scores(wm_scores, actions)
             combined = {

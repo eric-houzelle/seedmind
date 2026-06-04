@@ -103,6 +103,30 @@ def causal_feature_weight_vector(config: dict) -> np.ndarray:
     )
 
 
+def causal_feature_target_vector(config: dict) -> np.ndarray:
+    cwm = config.get("causal_world_model", {})
+    targets = cwm.get("planner_feature_targets", {})
+    return np.asarray(
+        [float(targets.get(name, 1.0)) for name in causal_feature_names(config)],
+        dtype=np.float32,
+    )
+
+
+def observation_causal_features(config: dict, observation: Dict[str, Any]) -> np.ndarray:
+    energy_max = float(observation.get("energy_max", 100.0))
+    values = [
+        float(observation.get("energy", 0.0)) / max(energy_max, 1.0),
+        min(float(observation.get("inventory_food", 0)), 10.0) / 10.0,
+    ]
+    if craft_enabled(config):
+        values += [
+            min(float(observation.get("inventory_wood", 0)), 10.0) / 10.0,
+            min(float(observation.get("inventory_stone", 0)), 10.0) / 10.0,
+            min(float(observation.get("inventory_tool", 0)), 10.0) / 10.0,
+        ]
+    return np.asarray(values, dtype=np.float32)
+
+
 def build_env(config: dict, seed: int) -> SandboxWorld:
     ec = config.get("env", {})
     cc = config.get("craft", {})
@@ -209,6 +233,14 @@ def build_agent(config: dict, seed: int) -> Agent:
         planner_samples=int(plc.get("num_samples", 16)),
         causal_feature_weights=(
             causal_feature_weight_vector(config)
+            if bool(cwm.get("enabled", False)) else None
+        ),
+        causal_feature_targets=(
+            causal_feature_target_vector(config)
+            if bool(cwm.get("enabled", False)) else None
+        ),
+        causal_features_fn=(
+            (lambda observation: observation_causal_features(config, observation))
             if bool(cwm.get("enabled", False)) else None
         ),
     )

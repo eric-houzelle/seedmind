@@ -37,6 +37,8 @@ class Agent:
         planner_horizon: int = 4,
         planner_samples: int = 16,
         causal_feature_weights: Optional[np.ndarray] = None,
+        causal_feature_targets: Optional[np.ndarray] = None,
+        causal_features_fn: Optional[Any] = None,
     ) -> None:
         self.encoder = encoder
         self.world_model = world_model
@@ -52,11 +54,13 @@ class Agent:
             world_model, actions, curiosity,
             horizon=planner_horizon, num_samples=planner_samples,
             causal_feature_weights=causal_feature_weights,
+            causal_feature_targets=causal_feature_targets,
         )
         self.q_network = q_network
         # When both Q-network and planner are active, the greedy branch
         # uses: score = (1 - planning_weight) * Q + planning_weight * WM
         self.planning_weight = planning_weight
+        self.causal_features_fn = causal_features_fn
 
     # ------------------------------------------------------------------
     # Decision pieces (used by the main loop, SPEC section 17)
@@ -85,7 +89,14 @@ class Agent:
 
         if has_q and has_wm:
             q_scorer = self.q_network.make_scorer(observation, available_actions)
-            wm_values = self.planner.action_values(latent_state, available_actions)
+            current_features = (
+                self.causal_features_fn(observation)
+                if self.causal_features_fn is not None and observation is not None
+                else None
+            )
+            wm_values = self.planner.action_values(
+                latent_state, available_actions, current_features=current_features,
+            )
             q_vals = {a: q_scorer(a) for a in available_actions}
             # Normalise each score set to [0, 1] to make the weight meaningful
             q_arr = np.array([q_vals[a] for a in available_actions])
@@ -99,7 +110,15 @@ class Agent:
         elif has_q:
             scorer = self.q_network.make_scorer(observation, available_actions)
         elif self.use_planner:
-            scorer = self.planner.make_scorer(latent_state, available_actions)
+            current_features = (
+                self.causal_features_fn(observation)
+                if self.causal_features_fn is not None and observation is not None
+                else None
+            )
+            values = self.planner.action_values(
+                latent_state, available_actions, current_features=current_features,
+            )
+            scorer = lambda action: values.get(action, float("-inf"))
 
         return self.policy.choose(
             latent_state=latent_state,

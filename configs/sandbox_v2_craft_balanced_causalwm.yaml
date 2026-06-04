@@ -39,11 +39,17 @@ causal_world_model:
   feature_loss_weight: 1.0
   event_loss_weight: 0.05
   planner_feature_weights:
-    energy: 0.2
-    inventory_food: 0.8
-    inventory_wood: 0.15
-    inventory_stone: 0.15
-    inventory_tool: 1.2
+    energy: 4.0
+    inventory_food: 2.0
+    inventory_wood: 1.0
+    inventory_stone: 1.0
+    inventory_tool: 8.0
+  planner_feature_targets:
+    energy: 0.8
+    inventory_food: 0.3
+    inventory_wood: 0.1
+    inventory_stone: 0.1
+    inventory_tool: 0.1
 
 curiosity:
   enabled: true
