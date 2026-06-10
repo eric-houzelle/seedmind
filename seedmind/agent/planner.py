@@ -18,6 +18,7 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 
 from seedmind.agent.curiosity import CuriosityModule
+from seedmind.agent.value_model import ValueModel
 from seedmind.agent.world_model import WorldModel
 
 
@@ -33,6 +34,8 @@ class Planner:
         goal_progress_weight: float = 0.0,
         causal_feature_weights: Optional[np.ndarray] = None,
         causal_feature_targets: Optional[np.ndarray] = None,
+        value_model: Optional[ValueModel] = None,
+        terminal_value_weight: float = 0.0,
         seed: Optional[int] = None,
     ) -> None:
         self.world_model = world_model
@@ -51,6 +54,8 @@ class Planner:
             np.asarray(causal_feature_targets, dtype=np.float32)
             if causal_feature_targets is not None else None
         )
+        self.value_model = value_model
+        self.terminal_value_weight = float(terminal_value_weight)
         self.rng = np.random.default_rng(seed)
 
     def _causal_value(
@@ -85,6 +90,17 @@ class Planner:
         available_actions: List[str],
         current_features: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
+        values, _ = self.action_values_with_stats(
+            latent_state, available_actions, current_features=current_features,
+        )
+        return values
+
+    def action_values_with_stats(
+        self,
+        latent_state: np.ndarray,
+        available_actions: List[str],
+        current_features: Optional[np.ndarray] = None,
+    ) -> tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
         """Vectorised random-shooting value estimate for each first action."""
         num_actions = self.world_model.num_actions
         first_idx = np.array([self.action_index[a] for a in available_actions])
@@ -103,6 +119,8 @@ class Planner:
             )
 
         next_l, reward, uncertainty = self.world_model.predict_batch(particles, first_actions)
+        uncertainty_sum = uncertainty.astype(np.float32).copy()
+        uncertainty_count = np.ones_like(uncertainty_sum, dtype=np.float32)
         causal_value, feature_particles = self._causal_value(
             particles, first_actions, feature_particles,
         )
@@ -118,6 +136,8 @@ class Planner:
             rand_actions = self.rng.integers(0, num_actions, size=a * n)
             prev = cur
             cur, reward, uncertainty = self.world_model.predict_batch(prev, rand_actions)
+            uncertainty_sum = uncertainty_sum + uncertainty.astype(np.float32)
+            uncertainty_count = uncertainty_count + 1.0
             causal_value, feature_particles = self._causal_value(
                 prev, rand_actions, feature_particles,
             )
@@ -128,8 +148,18 @@ class Planner:
             )
             disc *= self.gamma
 
+        if self.value_model is not None and self.terminal_value_weight != 0.0:
+            terminal = self.value_model.predict_batch(cur)
+            value = value + disc * self.terminal_value_weight * terminal
+
         agg = value.reshape(a, n).mean(axis=1)
-        return {action: float(agg[i]) for i, action in enumerate(available_actions)}
+        unc = (uncertainty_sum / np.maximum(uncertainty_count, 1.0)).reshape(a, n).mean(axis=1)
+        values = {action: float(agg[i]) for i, action in enumerate(available_actions)}
+        stats = {
+            action: {"uncertainty": float(unc[i])}
+            for i, action in enumerate(available_actions)
+        }
+        return values, stats
 
     def score_action(self, latent_state: np.ndarray, action: str) -> float:
         """Single-action score (1-step), kept for convenience/tests."""

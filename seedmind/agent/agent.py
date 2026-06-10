@@ -16,6 +16,7 @@ from seedmind.agent.goal_generator import GoalGenerator
 from seedmind.agent.planner import Planner
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
+from seedmind.agent.value_model import ValueModel
 from seedmind.agent.world_model import WorldModel
 from seedmind.memory.persistent_memory import PersistentMemory
 
@@ -39,6 +40,11 @@ class Agent:
         causal_feature_weights: Optional[np.ndarray] = None,
         causal_feature_targets: Optional[np.ndarray] = None,
         causal_features_fn: Optional[Any] = None,
+        value_model: Optional[ValueModel] = None,
+        planner_terminal_value_weight: float = 0.0,
+        planner_seed: Optional[int] = None,
+        planner_uncertainty_threshold: Optional[float] = None,
+        planner_margin_threshold: float = 0.0,
     ) -> None:
         self.encoder = encoder
         self.world_model = world_model
@@ -55,12 +61,19 @@ class Agent:
             horizon=planner_horizon, num_samples=planner_samples,
             causal_feature_weights=causal_feature_weights,
             causal_feature_targets=causal_feature_targets,
+            value_model=value_model,
+            terminal_value_weight=planner_terminal_value_weight,
+            seed=planner_seed,
         )
         self.q_network = q_network
+        self.value_model = value_model
         # When both Q-network and planner are active, the greedy branch
         # uses: score = (1 - planning_weight) * Q + planning_weight * WM
         self.planning_weight = planning_weight
         self.causal_features_fn = causal_features_fn
+        self.planner_uncertainty_threshold = planner_uncertainty_threshold
+        self.planner_margin_threshold = float(planner_margin_threshold)
+        self.last_planner_used = False
 
     # ------------------------------------------------------------------
     # Decision pieces (used by the main loop, SPEC section 17)
@@ -83,6 +96,7 @@ class Agent:
         observation: Optional[Dict[str, Any]] = None,
     ) -> str:
         scorer = None
+        self.last_planner_used = False
 
         has_q = self.q_network is not None and observation is not None
         has_wm = self.use_planner and self.planning_weight > 0
@@ -94,7 +108,7 @@ class Agent:
                 if self.causal_features_fn is not None and observation is not None
                 else None
             )
-            wm_values = self.planner.action_values(
+            wm_values, wm_stats = self.planner.action_values_with_stats(
                 latent_state, available_actions, current_features=current_features,
             )
             q_vals = {a: q_scorer(a) for a in available_actions}
@@ -104,6 +118,10 @@ class Agent:
             q_norm = self._normalise(q_arr)
             wm_norm = self._normalise(wm_arr)
             alpha = self.planning_weight
+            if not self._planner_gate_allows(available_actions, wm_arr, wm_stats):
+                alpha = 0.0
+            else:
+                self.last_planner_used = alpha > 0.0
             combined = {a: float((1 - alpha) * q_norm[i] + alpha * wm_norm[i])
                         for i, a in enumerate(available_actions)}
             scorer = lambda action: combined[action]
@@ -118,6 +136,7 @@ class Agent:
             values = self.planner.action_values(
                 latent_state, available_actions, current_features=current_features,
             )
+            self.last_planner_used = True
             scorer = lambda action: values.get(action, float("-inf"))
 
         return self.policy.choose(
@@ -134,6 +153,28 @@ class Agent:
         if rng < 1e-8:
             return np.ones_like(arr) * 0.5
         return (arr - arr.min()) / rng
+
+    def _planner_gate_allows(
+        self,
+        actions: List[str],
+        wm_values: np.ndarray,
+        wm_stats: Dict[str, Dict[str, float]],
+    ) -> bool:
+        if len(actions) == 0:
+            return False
+        order = np.argsort(wm_values)
+        best_idx = int(order[-1])
+        if len(order) > 1:
+            margin = float(wm_values[order[-1]] - wm_values[order[-2]])
+        else:
+            margin = float("inf")
+        if margin < self.planner_margin_threshold:
+            return False
+        if self.planner_uncertainty_threshold is None:
+            return True
+        best_action = actions[best_idx]
+        uncertainty = float(wm_stats.get(best_action, {}).get("uncertainty", float("inf")))
+        return uncertainty <= self.planner_uncertainty_threshold
 
     # ------------------------------------------------------------------
     # Factory

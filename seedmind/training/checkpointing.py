@@ -25,6 +25,11 @@ def save_checkpoint(
     config: Optional[Dict[str, Any]] = None,
     q_optimizer: Optional[torch.optim.Optimizer] = None,
     target_network: Optional[Any] = None,
+    value_optimizer: Optional[torch.optim.Optimizer] = None,
+    target_value_model: Optional[Any] = None,
+    latent_q_network: Optional[Any] = None,
+    latent_q_optimizer: Optional[torch.optim.Optimizer] = None,
+    target_latent_q_network: Optional[Any] = None,
 ) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -59,6 +64,18 @@ def save_checkpoint(
         payload["target_network_state"] = target_network.state_dict()
     if q_optimizer is not None:
         payload["q_optimizer_state"] = q_optimizer.state_dict()
+    if getattr(agent, "value_model", None) is not None:
+        payload["value_model_state"] = agent.value_model.state_dict()
+    if target_value_model is not None:
+        payload["target_value_model_state"] = target_value_model.state_dict()
+    if value_optimizer is not None:
+        payload["value_optimizer_state"] = value_optimizer.state_dict()
+    if latent_q_network is not None:
+        payload["latent_q_network_state"] = latent_q_network.state_dict()
+    if target_latent_q_network is not None:
+        payload["target_latent_q_network_state"] = target_latent_q_network.state_dict()
+    if latent_q_optimizer is not None:
+        payload["latent_q_optimizer_state"] = latent_q_optimizer.state_dict()
 
     torch.save(payload, p)
 
@@ -70,6 +87,11 @@ def load_checkpoint(
     buffer: Optional[ExperienceBuffer] = None,
     q_optimizer: Optional[torch.optim.Optimizer] = None,
     target_network: Optional[Any] = None,
+    value_optimizer: Optional[torch.optim.Optimizer] = None,
+    target_value_model: Optional[Any] = None,
+    latent_q_network: Optional[Any] = None,
+    latent_q_optimizer: Optional[torch.optim.Optimizer] = None,
+    target_latent_q_network: Optional[Any] = None,
 ) -> Dict[str, Any]:
     payload = torch.load(path, map_location="cpu", weights_only=False)
 
@@ -100,9 +122,23 @@ def load_checkpoint(
         target_network.load_state_dict(payload["target_network_state"])
     if q_optimizer is not None and "q_optimizer_state" in payload:
         q_optimizer.load_state_dict(payload["q_optimizer_state"])
+    if getattr(agent, "value_model", None) is not None and "value_model_state" in payload:
+        agent.value_model.load_state_dict(payload["value_model_state"])
+    if target_value_model is not None and "target_value_model_state" in payload:
+        target_value_model.load_state_dict(payload["target_value_model_state"])
+    if value_optimizer is not None and "value_optimizer_state" in payload:
+        value_optimizer.load_state_dict(payload["value_optimizer_state"])
+    if latent_q_network is not None and "latent_q_network_state" in payload:
+        latent_q_network.load_state_dict(payload["latent_q_network_state"])
+    if target_latent_q_network is not None and "target_latent_q_network_state" in payload:
+        target_latent_q_network.load_state_dict(payload["target_latent_q_network_state"])
+    if latent_q_optimizer is not None and "latent_q_optimizer_state" in payload:
+        latent_q_optimizer.load_state_dict(payload["latent_q_optimizer_state"])
 
     return {
         "metrics": payload.get("metrics", {}),
         "config": payload.get("config", {}),
         "has_q_network": "q_network_state" in payload,
+        "has_value_model": "value_model_state" in payload,
+        "has_latent_q_network": "latent_q_network_state" in payload,
     }

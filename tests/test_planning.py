@@ -22,9 +22,19 @@ from seedmind.envs.sandbox_world import ACTIONS, SandboxWorld, NUM_ENTITIES
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.memory.persistent_memory import PersistentMemory
 from seedmind.training.imagination import imagine_experiences
+from scripts.evaluate_micro_fouloide import (
+    _parse_int_sweep,
+    _rank01,
+    _top_capture_score,
+    _validate_quantile,
+)
 
 
-def _make_agent(planning_weight: float = 0.0) -> Agent:
+def _make_agent(
+    planning_weight: float = 0.0,
+    planner_uncertainty_threshold=None,
+    planner_margin_threshold: float = 0.0,
+) -> Agent:
     torch.manual_seed(0)
     grid_size = 6
     latent_dim = 32
@@ -51,6 +61,8 @@ def _make_agent(planning_weight: float = 0.0) -> Agent:
         use_planner=planning_weight > 0, q_network=q_net,
         planning_weight=planning_weight,
         planner_horizon=2, planner_samples=4,
+        planner_uncertainty_threshold=planner_uncertainty_threshold,
+        planner_margin_threshold=planner_margin_threshold,
     )
 
 
@@ -72,6 +84,29 @@ class TestCombinedScorer:
         action = agent.choose_action(latent, "explore", [], ACTIONS, observation=obs)
         assert action in ACTIONS
 
+    def test_planner_action_values_include_uncertainty_stats(self):
+        agent = _make_agent(planning_weight=0.5)
+        env = SandboxWorld(size=6, seed=0)
+        obs = env.reset()
+        latent = agent.encode(obs)
+
+        values, stats = agent.planner.action_values_with_stats(latent, ACTIONS)
+
+        assert set(values) == set(ACTIONS)
+        assert set(stats) == set(ACTIONS)
+        assert all("uncertainty" in stats[action] for action in ACTIONS)
+
+    def test_planner_gate_blocks_high_uncertainty(self):
+        agent = _make_agent(planning_weight=0.5, planner_uncertainty_threshold=-1.0)
+        env = SandboxWorld(size=6, seed=0)
+        obs = env.reset()
+        latent = agent.encode(obs)
+
+        action = agent.choose_action(latent, "explore", [], ACTIONS, observation=obs)
+
+        assert action in ACTIONS
+        assert agent.last_planner_used is False
+
     def test_different_weights_may_change_action(self):
         """With extreme weights, the chosen action can differ."""
         env = SandboxWorld(size=6, seed=42)
@@ -87,6 +122,34 @@ class TestCombinedScorer:
         # Both should be valid actions regardless of weight
         assert action_q in ACTIONS
         assert action_wm in ACTIONS
+
+
+class TestCalibrationHelpers:
+
+    def test_rank01_maps_values_to_unit_ranks(self):
+        ranks = _rank01(np.asarray([3.0, 1.0, 2.0], dtype=np.float32))
+
+        np.testing.assert_allclose(ranks, np.asarray([1.0, 0.0, 0.5], dtype=np.float32))
+
+    def test_top_capture_score_measures_overlap(self):
+        priority = np.asarray([0.0, 0.1, 0.2, 0.9, 1.0], dtype=np.float32)
+        target = np.asarray([0.0, 0.1, 0.8, 0.9, 1.0], dtype=np.float32)
+
+        assert _top_capture_score(priority, target, fraction=0.4) == 1.0
+
+    def test_validate_quantile_bounds(self):
+        assert _validate_quantile(0.0) == 0.0
+        assert _validate_quantile(1.0) == 1.0
+        with pytest.raises(ValueError):
+            _validate_quantile(-0.1)
+        with pytest.raises(ValueError):
+            _validate_quantile(1.1)
+
+    def test_parse_int_sweep_requires_positive_values(self):
+        assert _parse_int_sweep(None) == []
+        assert _parse_int_sweep("2, 3,5") == [2, 3, 5]
+        with pytest.raises(ValueError):
+            _parse_int_sweep("2,0,4")
 
 
 class TestImagination:

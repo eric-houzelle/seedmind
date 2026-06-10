@@ -243,6 +243,7 @@ def build_agent(config: dict, seed: int) -> Agent:
             (lambda observation: observation_causal_features(config, observation))
             if bool(cwm.get("enabled", False)) else None
         ),
+        planner_seed=seed,
     )
 
 

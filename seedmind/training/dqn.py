@@ -5,8 +5,10 @@ a periodically-synced target network for stability. An optional behavioral
 cloning warm-start imitates the actions taken in successful (high-reward)
 transitions, which bootstraps learning under sparse rewards.
 
-The training reward is ``reward_external + curiosity_weight * reward_intrinsic``
-so curiosity acts as an exploration bonus.
+The default training reward is
+``reward_external + curiosity_weight * reward_intrinsic`` so curiosity acts as
+an exploration bonus. Callers can provide another reward field for value
+learning while keeping the environment reward unchanged in the replay buffer.
 """
 from __future__ import annotations
 
@@ -38,9 +40,14 @@ def sync_target(q_network: QNetwork, target_network: QNetwork) -> None:
     target_network.load_state_dict(q_network.state_dict())
 
 
+def _transition_reward(experience: Dict[str, Any], reward_key: str) -> float:
+    return float(experience.get(reward_key, experience.get("reward_external", 0.0)))
+
+
 def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float,
                         batch_fn=None, buffer: Optional[ExperienceBuffer] = None,
-                        n_step: int = 1, gamma: float = 0.95):
+                        n_step: int = 1, gamma: float = 0.95,
+                        reward_key: str = "reward_external"):
     """Build TD tensors from experiences; skip those lacking observations."""
     if batch_fn is None:
         batch_fn = obs_batch_to_tensors
@@ -59,13 +66,13 @@ def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float,
             last = sequence[-1]
             for current in sequence:
                 reward += discount * (
-                    float(current["reward_external"])
+                    _transition_reward(current, reward_key)
                     + curiosity_weight * float(current.get("reward_intrinsic", 0.0))
                 )
                 discount *= gamma
         else:
             reward = (
-                float(e["reward_external"])
+                _transition_reward(e, reward_key)
                 + curiosity_weight * float(e.get("reward_intrinsic", 0.0))
             )
             last = e
@@ -121,6 +128,7 @@ def train_dqn(
     sampler: str = "uniform",
     grad_clip: float = 10.0,
     n_step: int = 1,
+    reward_key: str = "reward_external",
 ) -> Dict[str, float]:
     """Run ``num_updates`` TD gradient steps; return the mean TD loss."""
     if len(buffer) == 0:
@@ -136,6 +144,7 @@ def train_dqn(
         assembled = _assemble_dqn_batch(
             batch, curiosity_weight, batch_fn=batch_fn,
             buffer=buffer, n_step=n_step, gamma=gamma,
+            reward_key=reward_key,
         )
         if assembled is None:
             continue

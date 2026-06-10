@@ -51,27 +51,36 @@ class WorldModel(nn.Module):
     def _action_onehot(self, action_index: torch.Tensor) -> torch.Tensor:
         return F.one_hot(action_index.long(), num_classes=self.num_actions).float()
 
-    def forward(
-        self, latent: torch.Tensor, action_index: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _trunk_features(self, latent: torch.Tensor, action_index: torch.Tensor) -> torch.Tensor:
         onehot = self._action_onehot(action_index)
         x = torch.cat([latent, onehot], dim=-1)
-        h = self.trunk(x)
+        return self.trunk(x)
+
+    def forward(
+        self,
+        latent: torch.Tensor,
+        action_index: torch.Tensor,
+        detach_uncertainty: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        h = self._trunk_features(latent, action_index)
         next_state = self.next_state_head(h)
         reward = self.reward_head(h).squeeze(-1)
-        uncertainty = F.softplus(self.uncertainty_head(h)).squeeze(-1)
+        uncertainty_h = h.detach() if detach_uncertainty else h
+        uncertainty = F.softplus(self.uncertainty_head(uncertainty_h)).squeeze(-1)
         return next_state, reward, uncertainty
 
     def forward_aux(
-        self, latent: torch.Tensor, action_index: torch.Tensor
+        self,
+        latent: torch.Tensor,
+        action_index: torch.Tensor,
+        detach_uncertainty: bool = False,
     ) -> dict[str, torch.Tensor]:
-        onehot = self._action_onehot(action_index)
-        x = torch.cat([latent, onehot], dim=-1)
-        h = self.trunk(x)
+        h = self._trunk_features(latent, action_index)
+        uncertainty_h = h.detach() if detach_uncertainty else h
         out: dict[str, torch.Tensor] = {
             "next_state": self.next_state_head(h),
             "reward": self.reward_head(h).squeeze(-1),
-            "uncertainty": F.softplus(self.uncertainty_head(h)).squeeze(-1),
+            "uncertainty": F.softplus(self.uncertainty_head(uncertainty_h)).squeeze(-1),
         }
         if self.causal_feature_delta_head is not None:
             out["causal_feature_delta"] = self.causal_feature_delta_head(h)
