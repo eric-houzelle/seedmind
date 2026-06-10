@@ -44,7 +44,11 @@ from seedmind.training.latent_dqn import (
     train_latent_dqn_dyna,
 )
 from seedmind.training.latent_utils import latent_to_numpy
-from seedmind.training.train import make_optimizer, train_world_model
+from seedmind.training.train import (
+    make_optimizer,
+    train_world_model,
+    train_world_model_uncertainty_head,
+)
 from seedmind.training.value import (
     make_value_optimizer,
     sync_value_target,
@@ -287,6 +291,9 @@ def main() -> None:
     checkpoint_every = int(tc.get("checkpoint_every", 1000))
     wm_batch = int(wmc.get("batch_size", 64))
     wm_sampler = str(wmc.get("sampler", "uniform"))
+    wm_uncertainty_head_updates = int(wmc.get("uncertainty_head_updates_per_train", 0))
+    wm_uncertainty_head_batch = int(wmc.get("uncertainty_head_batch_size", wm_batch))
+    wm_uncertainty_head_sampler = str(wmc.get("uncertainty_head_sampler", wm_sampler))
     q_batch = int(dc.get("batch_size", 64))
     updates_per_train = int(dc.get("updates_per_train", 8))
     gamma = float(dc.get("gamma", 0.97))
@@ -328,6 +335,10 @@ def main() -> None:
         agent.q_network = train_q_network
     buffer = ExperienceBuffer(seed=args.seed)
     wm_optimizer = make_optimizer(agent.world_model, learning_rate=float(wmc.get("learning_rate", 3e-4)))
+    wm_uncertainty_optimizer = torch.optim.Adam(
+        agent.world_model.uncertainty_head.parameters(),
+        lr=float(wmc.get("uncertainty_head_learning_rate", wmc.get("learning_rate", 3e-4))),
+    )
     q_optimizer = make_q_optimizer(train_q_network, learning_rate=float(dc.get("learning_rate", 5e-4)))
     target_network = make_target_network(train_q_network)
     value_optimizer = None
@@ -357,6 +368,7 @@ def main() -> None:
         )
 
     last_wm_loss = 0.0
+    last_wm_uncertainty_loss = 0.0
     last_td_loss = 0.0
     last_value_loss = 0.0
     last_value_dyna_loss = 0.0
@@ -521,6 +533,7 @@ def main() -> None:
             "epsilon": float(agent.policy.epsilon),
             "td_loss": float(last_td_loss),
             "world_model_loss": float(last_wm_loss),
+            "world_model_uncertainty_loss": float(last_wm_uncertainty_loss),
             "value_loss": float(last_value_loss),
             "memory_items": len(agent.memory),
             "drive_regulation": float(np.mean(drive_scores)) if drive_scores else 0.0,
@@ -554,6 +567,22 @@ def main() -> None:
                 uncertainty_detach=bool(wmc.get("uncertainty_detach", False)),
             )
             last_wm_loss = wm_losses["total"]
+            if wm_uncertainty_head_updates > 0:
+                uncertainty_losses = train_world_model_uncertainty_head(
+                    agent.world_model,
+                    buffer,
+                    wm_uncertainty_optimizer,
+                    batch_size=wm_uncertainty_head_batch,
+                    num_updates=wm_uncertainty_head_updates,
+                    sampler=wm_uncertainty_head_sampler,
+                    causal_feature_weight=float(cwm.get("feature_loss_weight", 0.0)),
+                    causal_event_weight=float(cwm.get("event_loss_weight", 0.0)),
+                    event_class_balance=bool(cwm.get("event_class_balance", False)),
+                    event_class_balance_power=float(cwm.get("event_class_balance_power", 0.5)),
+                    reward_abs_weight=float(wmc.get("reward_abs_weight", 0.0)),
+                    reward_done_weight=float(wmc.get("reward_done_weight", 0.0)),
+                )
+                last_wm_uncertainty_loss = uncertainty_losses["uncertainty"]
             q_losses = train_dqn(
                 train_q_network, target_network, buffer, q_optimizer,
                 batch_size=q_batch, gamma=gamma,
@@ -673,6 +702,7 @@ def main() -> None:
                 f"water100={_mean_recent(metrics_history, 'interact_water'):.2f} "
                 f"dmg100={_mean_recent(metrics_history, 'damage'):.2f} "
                 f"td={last_td_loss:.4f} wm={last_wm_loss:.4f} "
+                f"{f'wu={last_wm_uncertainty_loss:.4f} ' if wm_uncertainty_head_updates > 0 else ''}"
                 f"v={last_value_loss:.4f} "
                 f"{f'vd={last_value_dyna_loss:.4f} ' if value_dyna_enabled else ''}"
                 f"{f'lq={last_latent_q_loss:.4f} ' if latent_policy_enabled else ''}"

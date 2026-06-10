@@ -3336,10 +3336,88 @@ Conclusion expérimentale micro-fouloïde rough posthoc :
 Q-only > naive est robuste.
 WM planner non calibré ≈ Q-only.
 WM planner avec incertitude calibrée posthoc > Q-only en moyenne 3 seeds
-sur 300 épisodes, avec un gain faible mais cohérent.
+sur 1000 épisodes, avec un gain faible mais cohérent.
 
 Statut : preuve minimale positive du rôle du World Model calibré.
-Non encore preuve forte : l'effet reste autour de +0.9 lifespan moyen.
+Non encore preuve forte : l'effet reste autour de +2.2 lifespan moyen.
+```
+
+Étape 4 — passage du posthoc vers l'apprentissage continu :
+
+```text
+Objectif : réduire la dépendance à la calibration posthoc en entraînant la tête
+d'incertitude pendant l'apprentissage, à partir des expériences de l'agent.
+
+Principe :
+  - continuer à entraîner le World Model complet comme avant ;
+  - ajouter ensuite quelques updates head-only sur uncertainty_head ;
+  - geler implicitement le tronc pendant ces updates via
+    train_world_model_uncertainty_head ;
+  - ne pas injecter de règle du monde : la cible reste l'erreur de prédiction
+    observée dans le replay.
+```
+
+Config ajoutée :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_online_uncertainty.yaml
+```
+
+Différence principale avec la baseline valueplanner :
+
+```yaml
+world_model:
+  uncertainty_head_updates_per_train: 1
+  uncertainty_head_learning_rate: 0.0003
+  uncertainty_head_batch_size: 64
+  uncertainty_head_sampler: causal
+```
+
+Premier protocole recommandé :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_online_uncertainty.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_online_uncertainty_seed1
+```
+
+Puis diagnostic :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_online_uncertainty_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_online_uncertainty.yaml \
+  --device mps \
+  --diagnose-wm-calibration \
+  --diagnostic-samples 20000 \
+  --diagnostics-only
+```
+
+Puis évaluation avec le preset validé :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_online_uncertainty_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_online_uncertainty.yaml \
+  --num-episodes 1000 \
+  --device mps \
+  --compare-planner \
+  --planner-preset wm-calibrated
+```
+
+Critères de décision :
+
+```text
+1. Q-only ne doit pas régresser fortement vs valueplanner baseline.
+2. diagnose-wm-calibration doit montrer une uncertainty utile
+   (composite_rank corr et top20 capture au moins proches du posthoc).
+3. Le planner preset doit rester positif vs Q-only sans posthoc.
+4. Si seed1 est neutre/négatif, ne pas lancer seeds 2/3 ; revenir à la cible
+   d'incertitude ou au rythme d'updates.
 ```
 
 ---
@@ -3366,6 +3444,7 @@ configs/
   micro_fouloide_v0_rough_wmfocus.yaml # rough + WM focalisé rare/terminal
   micro_fouloide_v0_rough_wmfocus_light.yaml # rough + WM focus modéré
   micro_fouloide_v0_rough_valueplanner.yaml # rough + ValueModel pour planner
+  micro_fouloide_v0_rough_valueplanner_online_uncertainty.yaml # étape 4: calibration incertitude online
 
 runs/                        # gitignored
   sandbox_0/                   # v0 entraîné
@@ -3392,9 +3471,9 @@ runs/                        # gitignored
 | Sandbox craft simple | 16×16 craft optionnel | Lifespan eval | 64.7 | 222.3 | **3.44×**, craft faible |
 | Sandbox causal-WM rebalanced | 16×16 craft + causal features | Lifespan eval | 62.2 | 115.7 Q-only / 124.0 Q+WM | **WM/Q 1.07×** |
 | Micro-fouloïde V0 | 16×16 multi-drives | Lifespan eval | 120.5 | 157.6 Q-only moy. 3 seeds | **Q/naïf 1.31×**, WM/Q ~0.98× |
-| Micro-fouloïde rough | 16×16 multi-drives plus dur | Lifespan eval | 88.1 | 108.3 Q-only moy. 3 seeds | **Q/naïf 1.23×**, WM/Q ~0.97× |
+| Micro-fouloïde rough | 16×16 multi-drives plus dur | Lifespan eval | 89.0 | 107.9 Q-only / 110.0 Q+WM calibré moy. 3 seeds | **Q/naïf 1.21×**, **WM/Q 1.02×** |
 
-**Conclusion actuelle :** la preuve de concept « apprendre seul à survivre par causalité » tient sur v0 et v1. Le monde plus grand avec vision partielle est **plus difficile mais mieux résolu** (ratio 4.24× vs 2.89×). Le craft simple prouve que l'agent sait survivre, mais pas qu'il exploite spontanément les outils. Le causal-WM rebalanced fournit le premier signal positif direct pour la thèse centrale : **à checkpoint identique, Q + World Model planner bat Q-only**. Le signal reste fragile. Micro-fouloïde V0 et rough valident maintenant une autre étape : l'agent apprend des routines adaptatives dans des mondes à plusieurs drives internes, y compris sur une variante plus dure, mais le planner World Model manuel n'apporte pas encore de gain dans ce cadre.
+**Conclusion actuelle :** la preuve de concept « apprendre seul à survivre par causalité » tient sur v0 et v1. Le monde plus grand avec vision partielle est **plus difficile mais mieux résolu** (ratio 4.24× vs 2.89×). Le craft simple prouve que l'agent sait survivre, mais pas qu'il exploite spontanément les outils. Le causal-WM rebalanced a fourni le premier signal positif direct pour la thèse centrale. Micro-fouloïde rough donne maintenant une preuve minimale plus proche de l'objectif : **à checkpoint identique, Q + World Model planner calibré bat Q-only sur 3 seeds et 1000 épisodes**. Le signal reste modeste ; l'étape suivante est de rendre cette calibration moins posthoc et plus apprise en continu.
 
 ---
 
