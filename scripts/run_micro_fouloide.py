@@ -5,7 +5,7 @@ import argparse
 import copy
 import json
 import sys
-from collections import Counter, deque
+from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict
 
@@ -50,10 +50,12 @@ from seedmind.training.train import (
     train_world_model_uncertainty_head,
 )
 from seedmind.training.value import (
+    evaluate_value_model_on_returns,
     make_value_optimizer,
     sync_value_target,
     train_value_model,
     train_value_model_dyna,
+    train_value_model_on_returns,
 )
 
 
@@ -259,6 +261,132 @@ def _drive_regulation_from_values(drives: Dict[str, Any]) -> float:
 
 def _drive_regulation_from_observation(obs: Dict[str, Any]) -> float:
     return _drive_regulation_from_values(obs)
+
+
+def _discounted_returns_by_episode(rows: list[dict], reward_key: str, gamma: float) -> dict[int, float]:
+    grouped: dict[str, list[tuple[int, int, float]]] = defaultdict(list)
+    row_lookup: dict[int, dict] = {}
+    for idx, row in enumerate(rows):
+        episode_id = str(row.get("episode_id", "unknown"))
+        step = int(row.get("step", len(grouped[episode_id])))
+        reward = float(row.get(reward_key, row.get("reward_external", 0.0)))
+        grouped[episode_id].append((step, idx, reward))
+        row_lookup[idx] = row
+
+    returns: dict[int, float] = {}
+    for episode_rows in grouped.values():
+        running = 0.0
+        for _, idx, reward in sorted(episode_rows, reverse=True):
+            row = row_lookup[idx]
+            if row.get("done", False):
+                running = reward
+            else:
+                running = reward + gamma * running
+            returns[idx] = running
+    return returns
+
+
+def _run_final_calibration(
+    agent: Agent,
+    buffer: ExperienceBuffer,
+    config: dict,
+    device: torch.device,
+) -> dict[str, Any]:
+    fcc = config.get("final_calibration", {})
+    if not bool(fcc.get("enabled", False)):
+        return {}
+
+    metrics: dict[str, Any] = {}
+    wmc = config.get("world_model", {})
+    cwm = config.get("causal_world_model", {})
+    uncertainty_cfg = fcc.get("uncertainty", {})
+    if bool(uncertainty_cfg.get("enabled", True)):
+        agent.world_model.to(device)
+        optimizer = torch.optim.Adam(
+            agent.world_model.uncertainty_head.parameters(),
+            lr=float(uncertainty_cfg.get("learning_rate", 3e-4)),
+        )
+        result = train_world_model_uncertainty_head(
+            agent.world_model,
+            buffer,
+            optimizer,
+            batch_size=int(uncertainty_cfg.get("batch_size", wmc.get("batch_size", 64))),
+            num_updates=int(uncertainty_cfg.get("updates", 2000)),
+            sampler=str(uncertainty_cfg.get("sampler", wmc.get("sampler", "causal"))),
+            causal_feature_weight=float(cwm.get("feature_loss_weight", 0.0)),
+            causal_event_weight=float(cwm.get("event_loss_weight", 0.0)),
+            event_class_balance=bool(cwm.get("event_class_balance", False)),
+            event_class_balance_power=float(cwm.get("event_class_balance_power", 0.5)),
+            reward_abs_weight=float(wmc.get("reward_abs_weight", 0.0)),
+            reward_done_weight=float(wmc.get("reward_done_weight", 0.0)),
+        )
+        metrics["final_uncertainty_calibration"] = {
+            "updates": result["updates"],
+            "uncertainty_loss": result["uncertainty"],
+        }
+
+    value_cfg = fcc.get("value", {})
+    if bool(value_cfg.get("enabled", True)):
+        if agent.value_model is None:
+            raise ValueError("final_calibration.value requires value_model.enabled=true.")
+        rows = [
+            row for row in buffer._data
+            if row.get("latent_state") is not None
+        ]
+        if not rows:
+            raise ValueError("Cannot run final value calibration without latent replay rows.")
+        vc = config.get("value_model", {})
+        reward_key = str(value_cfg.get(
+            "reward_key",
+            vc.get("reward_key", config.get("dqn", {}).get("reward_key", "reward_external")),
+        ))
+        gamma = float(value_cfg.get("gamma", vc.get("gamma", config.get("dqn", {}).get("gamma", 0.97))))
+        returns_by_idx = _discounted_returns_by_episode(rows, reward_key, gamma)
+        paired = [
+            (row, returns_by_idx[idx])
+            for idx, row in enumerate(rows)
+            if idx in returns_by_idx
+        ]
+        if not paired:
+            raise ValueError("Could not compute replay returns for final value calibration.")
+        max_samples = int(value_cfg.get("max_samples", 0))
+        if max_samples > 0 and len(paired) > max_samples:
+            rng = np.random.default_rng(int(value_cfg.get("seed", 0)))
+            indices = rng.choice(np.arange(len(paired)), size=max_samples, replace=False)
+            paired = [paired[int(i)] for i in indices]
+
+        latents = np.stack([
+            np.asarray(row["latent_state"], dtype=np.float32)
+            for row, _ in paired
+        ])
+        returns = np.asarray([ret for _, ret in paired], dtype=np.float32)
+        agent.value_model.to(device)
+        before = evaluate_value_model_on_returns(agent.value_model, latents, returns)
+        optimizer = make_value_optimizer(
+            agent.value_model,
+            learning_rate=float(value_cfg.get("learning_rate", vc.get("learning_rate", 3e-4))),
+        )
+        result = train_value_model_on_returns(
+            agent.value_model,
+            latents,
+            returns,
+            optimizer,
+            batch_size=int(value_cfg.get("batch_size", vc.get("batch_size", 64))),
+            num_updates=int(value_cfg.get("updates", 5000)),
+            seed=int(value_cfg.get("seed", 0)),
+        )
+        after = evaluate_value_model_on_returns(agent.value_model, latents, returns)
+        metrics["final_value_calibration"] = {
+            "samples": len(paired),
+            "updates": result["updates"],
+            "value_return_loss": result["value_return_loss"],
+            "reward_key": reward_key,
+            "gamma": gamma,
+            "before": before,
+            "after": after,
+        }
+
+    return metrics
 
 
 def main() -> None:
@@ -718,20 +846,21 @@ def main() -> None:
 
     if agent.q_network is not train_q_network:
         agent.q_network.load_state_dict(train_q_network.state_dict())
+    final_metrics = {
+        "episode": episodes - 1,
+        "mean_lifespan": float(np.mean(recent_lifespan)),
+        "device": str(device),
+        "inference_device": str(inference_device),
+        "total_q_updates": total_q_updates,
+        "next_target_sync": next_target_sync,
+        "total_value_updates": total_value_updates,
+        "next_value_target_sync": next_value_target_sync,
+        "total_latent_q_updates": total_latent_q_updates,
+        "next_latent_target_sync": next_latent_target_sync,
+    }
     save_checkpoint(
         str(out_dir / "checkpoint_final.pt"), agent, wm_optimizer, buffer,
-        metrics={
-            "episode": episodes - 1,
-            "mean_lifespan": float(np.mean(recent_lifespan)),
-            "device": str(device),
-            "inference_device": str(inference_device),
-            "total_q_updates": total_q_updates,
-            "next_target_sync": next_target_sync,
-            "total_value_updates": total_value_updates,
-            "next_value_target_sync": next_value_target_sync,
-            "total_latent_q_updates": total_latent_q_updates,
-            "next_latent_target_sync": next_latent_target_sync,
-        },
+        metrics=final_metrics,
         config=config, q_optimizer=q_optimizer, target_network=target_network,
         value_optimizer=value_optimizer, target_value_model=target_value_model,
         latent_q_network=latent_q_network,
@@ -747,6 +876,37 @@ def main() -> None:
     print(f"\nFinal mean lifespan (last 100): {float(np.mean(recent_lifespan)):.1f}")
     print(f"Checkpoint saved to {out_dir}/")
     print(f"Metrics saved to {metrics_path}")
+
+    final_calibration_metrics = _run_final_calibration(agent, buffer, config, device)
+    if final_calibration_metrics:
+        if target_value_model is not None and agent.value_model is not None:
+            sync_value_target(agent.value_model, target_value_model)
+        calibrated_metrics = dict(final_metrics)
+        calibrated_metrics["final_calibration"] = final_calibration_metrics
+        calibrated_name = str(
+            config.get("final_calibration", {}).get(
+                "output_name",
+                "checkpoint_final_calibrated.pt",
+            )
+        )
+        calibrated_path = out_dir / calibrated_name
+        save_checkpoint(
+            str(calibrated_path), agent, wm_optimizer, buffer,
+            metrics=calibrated_metrics,
+            config=config, q_optimizer=q_optimizer, target_network=target_network,
+            value_optimizer=value_optimizer, target_value_model=target_value_model,
+            latent_q_network=latent_q_network,
+            latent_q_optimizer=latent_q_optimizer,
+            target_latent_q_network=target_latent_q_network,
+        )
+        _save_metrics(metrics_path, {
+            "config_path": args.config,
+            "device": str(device),
+            "inference_device": str(inference_device),
+            "episodes": metrics_history,
+            "final_calibration": final_calibration_metrics,
+        })
+        print(f"Final calibration saved to {calibrated_path}")
 
 
 if __name__ == "__main__":

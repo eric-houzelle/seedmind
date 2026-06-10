@@ -3420,6 +3420,100 @@ Critères de décision :
    d'incertitude ou au rythme d'updates.
 ```
 
+Résultat seed1 online uncertainty, 1000 épisodes :
+
+```text
+Resolved uncertainty q0.60 threshold: 0.25645
+
+Q-only:
+  lifespan=102.0
+  food=0.12
+  water=0.39
+
+Q+WM planner preset:
+  lifespan=102.1
+  planner_used=49.2%
+  food=0.21
+  water=0.46
+```
+
+Comparaison au meilleur seed1 posthoc :
+
+```text
+posthoc uncertainty+value:
+  Q-only=116.6
+  Q+WM=119.6
+
+online uncertainty:
+  Q-only=102.0
+  Q+WM=102.1
+```
+
+Lecture :
+
+```text
+La calibration d'incertitude online à chaque train perturbe l'apprentissage
+comportemental. Le problème n'est pas le planner seul : la policy Q finale est
+nettement plus faible. Ne pas lancer seeds 2/3 sur cette config.
+```
+
+Décision :
+
+```text
+Passer à une consolidation de fin de run :
+  - apprendre normalement comme valueplanner ;
+  - sauvegarder checkpoint_final.pt brut ;
+  - calibrer uncertainty_head puis ValueModel sur le replay final ;
+  - sauvegarder checkpoint_final_calibrated.pt.
+
+Cette étape garde l'objectif "apprendre de ses expériences", mais évite de
+modifier le World Model pendant que la policy se forme.
+```
+
+Config ajoutée :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_late_calibrated.yaml
+```
+
+Elle active :
+
+```yaml
+final_calibration:
+  enabled: true
+  output_name: checkpoint_final_calibrated.pt
+  uncertainty:
+    updates: 2000
+    learning_rate: 0.0003
+  value:
+    updates: 5000
+    learning_rate: 0.0003
+```
+
+Commande :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_late_calibrated.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_late_calibrated_seed1
+```
+
+Évaluation du checkpoint calibré :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_late_calibrated_seed1/checkpoint_final_calibrated.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_late_calibrated.yaml \
+  --num-episodes 1000 \
+  --device mps \
+  --compare-planner \
+  --planner-preset wm-calibrated
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
@@ -3445,6 +3539,7 @@ configs/
   micro_fouloide_v0_rough_wmfocus_light.yaml # rough + WM focus modéré
   micro_fouloide_v0_rough_valueplanner.yaml # rough + ValueModel pour planner
   micro_fouloide_v0_rough_valueplanner_online_uncertainty.yaml # étape 4: calibration incertitude online
+  micro_fouloide_v0_rough_valueplanner_late_calibrated.yaml # étape 4: consolidation finale intégrée
 
 runs/                        # gitignored
   sandbox_0/                   # v0 entraîné
