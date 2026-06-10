@@ -224,6 +224,7 @@ def run_trained(
     terminal_value_weight: float | None = None,
     planner_uncertainty_threshold: float | None = None,
     planner_margin_threshold: float = 0.0,
+    planner_q_advantage_threshold: float = 0.0,
     seed: int = 9999,
 ) -> Dict[str, float]:
     if decision_mode == "planner":
@@ -236,6 +237,7 @@ def run_trained(
             "num_samples": planner_samples,
             "uncertainty_threshold": planner_uncertainty_threshold,
             "margin_threshold": planner_margin_threshold,
+            "q_advantage_threshold": planner_q_advantage_threshold,
         })
         if terminal_value_weight is not None:
             planning["terminal_value_weight"] = terminal_value_weight
@@ -1066,6 +1068,12 @@ def main() -> None:
     parser.add_argument("--config", default="configs/micro_fouloide_v0.yaml")
     parser.add_argument("--num-episodes", type=int, default=100)
     parser.add_argument("--device", default="cpu", choices=["cpu", "auto", "cuda", "mps"])
+    parser.add_argument(
+        "--planner-preset",
+        choices=["wm-calibrated"],
+        default=None,
+        help="Apply a validated planner evaluation preset.",
+    )
     parser.add_argument("--compare-planner", action="store_true")
     parser.add_argument("--compare-latent-q", action="store_true")
     parser.add_argument("--planning-weight", type=float, default=0.1)
@@ -1100,6 +1108,7 @@ def main() -> None:
         help="Replay rows used to estimate uncertainty quantile thresholds.",
     )
     parser.add_argument("--planner-margin-threshold", type=float, default=0.0)
+    parser.add_argument("--planner-q-advantage-threshold", type=float, default=0.0)
     parser.add_argument(
         "--terminal-value-weight",
         type=float,
@@ -1126,6 +1135,11 @@ def main() -> None:
         default=None,
         help="Comma-separated planner best-action margin thresholds to evaluate, e.g. 0,0.01,0.02.",
     )
+    parser.add_argument(
+        "--planner-q-advantage-sweep",
+        default=None,
+        help="Comma-separated Q-vs-WM override thresholds on normalised WM advantage, e.g. 0,0.02,0.05.",
+    )
     parser.add_argument("--diagnose-world-model", action="store_true")
     parser.add_argument("--diagnose-wm-calibration", action="store_true")
     parser.add_argument("--diagnose-value-model", action="store_true")
@@ -1134,6 +1148,15 @@ def main() -> None:
     parser.add_argument("--diagnostics-only", action="store_true")
     parser.add_argument("--diagnostic-samples", type=int, default=20000)
     args = parser.parse_args()
+
+    if args.planner_preset == "wm-calibrated":
+        args.planning_weight = 0.25
+        args.terminal_value_weight = 1.0
+        args.planner_uncertainty_quantile = 0.60
+        args.planner_margin_threshold = 0.01
+        args.planner_q_advantage_threshold = 0.02
+        args.planner_horizon = 5
+        args.planner_samples = 8
 
     config = load_config(args.config)
     device = resolve_device(args.device)
@@ -1199,12 +1222,13 @@ def main() -> None:
     uncertainty_thresholds = _parse_float_sweep(args.planner_uncertainty_sweep)
     uncertainty_quantiles = _parse_float_sweep(args.planner_uncertainty_quantile_sweep)
     margin_thresholds = _parse_float_sweep(args.planner_margin_sweep)
+    q_advantage_thresholds = _parse_float_sweep(args.planner_q_advantage_sweep)
     planner_horizons = _parse_int_sweep(args.planner_horizon_sweep)
     planner_samples = _parse_int_sweep(args.planner_samples_sweep)
     if (
         planner_weights or terminal_weights or uncertainty_thresholds
         or uncertainty_quantiles or margin_thresholds
-        or planner_horizons or planner_samples
+        or q_advantage_thresholds or planner_horizons or planner_samples
     ):
         if not planner_weights:
             planner_weights = [args.planning_weight]
@@ -1235,9 +1259,11 @@ def main() -> None:
                 threshold_labels.append((threshold, f"{threshold:.3f}"))
         if not margin_thresholds:
             margin_thresholds = [args.planner_margin_threshold]
+        if not q_advantage_thresholds:
+            q_advantage_thresholds = [args.planner_q_advantage_threshold]
         print("\n=== Planner sweep ===")
         print(
-            "  p_weight  tv_weight  horizon  samples  unc_thr  margin  "
+            "  p_weight  tv_weight  horizon  samples  unc_thr  margin  q_adv  "
             "lifespan  planner/Q  drive   food  water  damage  used   max"
         )
         for planning_weight in planner_weights:
@@ -1246,28 +1272,31 @@ def main() -> None:
                     for sample_count in planner_samples:
                         for uncertainty_threshold, unc_label in threshold_labels:
                             for margin_threshold in margin_thresholds:
-                                planned = run_trained(
-                                    config, args.checkpoint, args.num_episodes, device,
-                                    decision_mode="planner",
-                                    planning_weight=planning_weight,
-                                    planner_horizon=horizon,
-                                    planner_samples=sample_count,
-                                    terminal_value_weight=terminal_weight,
-                                    planner_uncertainty_threshold=uncertainty_threshold,
-                                    planner_margin_threshold=margin_threshold,
-                                )
-                                ratio = planned["mean_lifespan"] / max(trained["mean_lifespan"], 1)
-                                tv_label = "cfg" if terminal_weight is None else f"{terminal_weight:.3f}"
-                                print(
-                                    f"  {planning_weight:8.3f}  {tv_label:>9}  "
-                                    f"{horizon:7d}  {sample_count:7d}  "
-                                    f"{unc_label:>7}  {margin_threshold:6.3f}  "
-                                    f"{planned['mean_lifespan']:8.1f}  {ratio:9.2f}  "
-                                    f"{planned['drive_regulation']:.3f}  "
-                                    f"{planned['interact_food']:5.2f}  {planned['interact_water']:5.2f}  "
-                                    f"{planned['damage']:6.2f}  {planned['planner_used']:5.1%}  "
-                                    f"{planned['max_lifespan']:3.0f}"
-                                )
+                                for q_advantage_threshold in q_advantage_thresholds:
+                                    planned = run_trained(
+                                        config, args.checkpoint, args.num_episodes, device,
+                                        decision_mode="planner",
+                                        planning_weight=planning_weight,
+                                        planner_horizon=horizon,
+                                        planner_samples=sample_count,
+                                        terminal_value_weight=terminal_weight,
+                                        planner_uncertainty_threshold=uncertainty_threshold,
+                                        planner_margin_threshold=margin_threshold,
+                                        planner_q_advantage_threshold=q_advantage_threshold,
+                                    )
+                                    ratio = planned["mean_lifespan"] / max(trained["mean_lifespan"], 1)
+                                    tv_label = "cfg" if terminal_weight is None else f"{terminal_weight:.3f}"
+                                    print(
+                                        f"  {planning_weight:8.3f}  {tv_label:>9}  "
+                                        f"{horizon:7d}  {sample_count:7d}  "
+                                        f"{unc_label:>7}  {margin_threshold:6.3f}  "
+                                        f"{q_advantage_threshold:5.3f}  "
+                                        f"{planned['mean_lifespan']:8.1f}  {ratio:9.2f}  "
+                                        f"{planned['drive_regulation']:.3f}  "
+                                        f"{planned['interact_food']:5.2f}  {planned['interact_water']:5.2f}  "
+                                        f"{planned['damage']:6.2f}  {planned['planner_used']:5.1%}  "
+                                        f"{planned['max_lifespan']:3.0f}"
+                                    )
     if args.compare_planner:
         planned = run_trained(
             config, args.checkpoint, args.num_episodes, device,
@@ -1276,6 +1305,7 @@ def main() -> None:
             terminal_value_weight=args.terminal_value_weight,
             planner_uncertainty_threshold=planner_uncertainty_threshold,
             planner_margin_threshold=args.planner_margin_threshold,
+            planner_q_advantage_threshold=args.planner_q_advantage_threshold,
         )
         print_stats("Trained Q + WM planner", planned)
         print(

@@ -45,6 +45,7 @@ class Agent:
         planner_seed: Optional[int] = None,
         planner_uncertainty_threshold: Optional[float] = None,
         planner_margin_threshold: float = 0.0,
+        planner_q_advantage_threshold: float = 0.0,
     ) -> None:
         self.encoder = encoder
         self.world_model = world_model
@@ -73,6 +74,7 @@ class Agent:
         self.causal_features_fn = causal_features_fn
         self.planner_uncertainty_threshold = planner_uncertainty_threshold
         self.planner_margin_threshold = float(planner_margin_threshold)
+        self.planner_q_advantage_threshold = float(planner_q_advantage_threshold)
         self.last_planner_used = False
 
     # ------------------------------------------------------------------
@@ -119,6 +121,8 @@ class Agent:
             wm_norm = self._normalise(wm_arr)
             alpha = self.planning_weight
             if not self._planner_gate_allows(available_actions, wm_arr, wm_stats):
+                alpha = 0.0
+            elif not self._planner_q_advantage_allows(q_norm, wm_norm):
                 alpha = 0.0
             else:
                 self.last_planner_used = alpha > 0.0
@@ -175,6 +179,16 @@ class Agent:
         best_action = actions[best_idx]
         uncertainty = float(wm_stats.get(best_action, {}).get("uncertainty", float("inf")))
         return uncertainty <= self.planner_uncertainty_threshold
+
+    def _planner_q_advantage_allows(self, q_norm: np.ndarray, wm_norm: np.ndarray) -> bool:
+        if self.planner_q_advantage_threshold <= 0.0:
+            return True
+        if q_norm.size == 0 or wm_norm.size == 0:
+            return False
+        q_best_idx = int(np.argmax(q_norm))
+        wm_best_idx = int(np.argmax(wm_norm))
+        advantage = float(wm_norm[wm_best_idx] - wm_norm[q_best_idx])
+        return advantage >= self.planner_q_advantage_threshold
 
     # ------------------------------------------------------------------
     # Factory

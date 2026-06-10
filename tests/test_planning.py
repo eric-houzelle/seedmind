@@ -34,6 +34,7 @@ def _make_agent(
     planning_weight: float = 0.0,
     planner_uncertainty_threshold=None,
     planner_margin_threshold: float = 0.0,
+    planner_q_advantage_threshold: float = 0.0,
 ) -> Agent:
     torch.manual_seed(0)
     grid_size = 6
@@ -63,6 +64,7 @@ def _make_agent(
         planner_horizon=2, planner_samples=4,
         planner_uncertainty_threshold=planner_uncertainty_threshold,
         planner_margin_threshold=planner_margin_threshold,
+        planner_q_advantage_threshold=planner_q_advantage_threshold,
     )
 
 
@@ -98,6 +100,17 @@ class TestCombinedScorer:
 
     def test_planner_gate_blocks_high_uncertainty(self):
         agent = _make_agent(planning_weight=0.5, planner_uncertainty_threshold=-1.0)
+        env = SandboxWorld(size=6, seed=0)
+        obs = env.reset()
+        latent = agent.encode(obs)
+
+        action = agent.choose_action(latent, "explore", [], ACTIONS, observation=obs)
+
+        assert action in ACTIONS
+        assert agent.last_planner_used is False
+
+    def test_planner_gate_blocks_low_q_advantage(self):
+        agent = _make_agent(planning_weight=0.5, planner_q_advantage_threshold=1.1)
         env = SandboxWorld(size=6, seed=0)
         obs = env.reset()
         latent = agent.encode(obs)

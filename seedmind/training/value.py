@@ -193,6 +193,7 @@ def train_value_model_on_returns(
     latents: np.ndarray,
     returns: np.ndarray,
     optimizer: torch.optim.Optimizer,
+    sample_weights: np.ndarray | None = None,
     batch_size: int = 64,
     num_updates: int = 1000,
     grad_clip: float = 10.0,
@@ -208,6 +209,13 @@ def train_value_model_on_returns(
     device = next(value_model.parameters()).device
     latents_np = np.asarray(latents, dtype=np.float32)
     returns_np = np.asarray(returns, dtype=np.float32)
+    weights_np = (
+        np.asarray(sample_weights, dtype=np.float32)
+        if sample_weights is not None
+        else np.ones(n, dtype=np.float32)
+    )
+    if len(weights_np) != n:
+        raise ValueError("sample_weights must match latents length.")
     total_loss = 0.0
     updates = 0
 
@@ -216,9 +224,11 @@ def train_value_model_on_returns(
         indices = rng.choice(n, size=min(batch_size, n) if not replace else batch_size, replace=replace)
         batch_latents = torch.as_tensor(latents_np[indices], dtype=torch.float32, device=device)
         batch_returns = torch.as_tensor(returns_np[indices], dtype=torch.float32, device=device)
+        batch_weights = torch.as_tensor(weights_np[indices], dtype=torch.float32, device=device)
 
         values = value_model(batch_latents)
-        loss = F.smooth_l1_loss(values, batch_returns)
+        element_loss = F.smooth_l1_loss(values, batch_returns, reduction="none")
+        loss = torch.mean(element_loss * batch_weights / torch.clamp(torch.mean(batch_weights), min=1e-6))
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(value_model.parameters(), grad_clip)

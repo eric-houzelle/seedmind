@@ -2746,6 +2746,564 @@ Protocole à tester :
 4. Réévaluer planner avec q0.60/margin=0.01/horizon=5/samples=8.
 ```
 
+Résultat seed1 :
+
+```text
+Posthoc value calibration:
+  samples=100000
+  updates=5000
+  loss=0.043099
+
+ValueModel avant:
+  mae=0.2703
+  bias=-0.0212
+  corr=0.438
+
+ValueModel après:
+  mae=0.2107
+  bias=-0.0082
+  corr=0.675
+```
+
+Diagnostic replay 20k après calibration :
+
+```text
+all:           mae=0.2117 bias=-0.0074 corr=0.674
+low_energy:    mae=0.2378 bias=+0.1390 corr=0.590
+low_hydration: mae=0.2387 bias=+0.1179 corr=0.594
+low_health:    mae=0.2757 bias=+0.1731 corr=0.471
+terminal:      mae=0.3786 bias=+0.3624 corr=-0.033
+```
+
+Évaluation seed1, 300 épisodes, q0.60/margin=0.01/horizon=5/samples=8 :
+
+```text
+Q-only:                         116.6
+Q+planner incertitude seule:    117.6
+Q+planner incertitude + valeur: 118.8
+delta vs Q-only:                +2.2
+planner_used:                   71.6%
+```
+
+Lecture :
+
+```text
+La calibration posthoc du ValueModel améliore nettement la corrélation aux
+retours observés et augmente le gain planner sur seed1. Le biais terminal reste
+mauvais : les états de mort sont encore sous-pénalisés, ce qui peut expliquer
+la hausse de damage malgré un meilleur lifespan.
+
+À valider sur seeds 2/3 avant adoption.
+```
+
+Validation seeds 1-3, posthoc incertitude + valeur, 300 épisodes :
+
+```text
+seed | value corr before -> after | value mae before -> after | Q-only | Q+planner | delta | planner_used
+1    | 0.438 -> 0.675           | 0.270 -> 0.211            | 116.6  | 118.8     | +2.2  | 71.6%
+2    | 0.504 -> 0.733           | 0.232 -> 0.174            | 102.9  | 104.6     | +1.7  | 70.1%
+3    | 0.506 -> 0.718           | 0.246 -> 0.187            | 105.5  | 106.3     | +0.8  | 74.8%
+
+mean Q-only:    108.3
+mean Q+planner: 109.9
+mean delta:     +1.6
+```
+
+Comparaison à `horizon=5/samples=8` sans calibration valeur :
+
+```text
+seed | incertitude seule | incertitude + valeur | diff
+1    | 117.6             | 118.8                | +1.2
+2    | 104.4             | 104.6                | +0.2
+3    | 107.0             | 106.3                | -0.7
+
+mean diff: +0.2
+```
+
+Lecture :
+
+```text
+La calibration valeur améliore fortement le diagnostic sur les 3 seeds et
+augmente légèrement le gain moyen planner (+1.6 vs +1.3). En revanche, l'effet
+lifespan n'est pas homogène : seed3 régresse par rapport à l'incertitude seule.
+
+Conclusion : utile comme direction technique, mais pas encore assez décisif pour
+remplacer automatiquement le baseline h5/s8 incertitude seule. Le problème
+restant semble être la valeur des états terminaux/dangereux, pas la corrélation
+globale aux retours.
+```
+
+Extension ajoutée au calibrateur valeur :
+
+```text
+scripts/calibrate_micro_fouloide_value.py
+  --terminal-weight <w>
+  --low-feature-weight feature:threshold:weight
+```
+
+But :
+
+```text
+Pondérer posthoc les états rares/terminaux sans changer la policy ni le WM.
+Premier test raisonnable :
+  terminal_weight=3.0
+  low-feature health:0.5:2.0
+
+Hypothèse : améliorer la pénalisation des états terminal/low-health, où le
+ValueModel reste biaisé, peut réduire les dégâts du planner tout en gardant le
+gain food/water.
+```
+
+Résultat seed1 avec `terminal_weight=3.0` et `health:0.5:2.0` :
+
+```text
+Weights:
+  mean=1.413
+  max=6.000
+
+ValueModel avant:
+  mae=0.2703 bias=-0.0212 corr=0.438
+
+ValueModel après:
+  mae=0.2281 bias=-0.0682 corr=0.634
+
+Buckets dangereux:
+  low_health mae: 0.2757 -> 0.2269
+  low_health bias: +0.1731 -> +0.0915
+  terminal mae: 0.3786 -> 0.2874
+  terminal bias: +0.3624 -> +0.2638
+```
+
+Évaluation seed1, 300 épisodes :
+
+```text
+Q-only:                                116.6
+Q+planner incertitude seule h5/s8:     117.6
+Q+planner valeur simple:               118.8
+Q+planner valeur terminal/health:      117.0
+planner_used:                          73.2%
+```
+
+Lecture :
+
+```text
+La pondération terminal/low-health améliore les buckets dangereux, mais rend la
+valeur trop pessimiste globalement (`bias=-0.0682`) et dégrade le planner par
+rapport à la calibration valeur simple. C'est une ablation utile : la direction
+est bonne localement, mais le poids testé est trop fort.
+
+Ne pas valider ce réglage. Si on continue cette piste, tester plus doux :
+terminal_weight=1.0 et health:0.5:1.0, ou corriger le sampling plutôt que la
+loss globale.
+```
+
+Résultat seed1 avec pondération douce `terminal_weight=1.0` et `health:0.5:1.0` :
+
+```text
+Weights:
+  mean=1.202
+  max=3.000
+
+ValueModel après:
+  mae=0.2193
+  bias=-0.0435
+  corr=0.654
+
+Évaluation 300 épisodes:
+  Q-only:                           116.6
+  Q+planner valeur simple:          118.8
+  Q+planner terminal/health soft:   116.9
+  planner_used:                     72.8%
+```
+
+Lecture :
+
+```text
+Même une pondération douce reste moins bonne que la calibration valeur simple.
+Elle rend la valeur plus pessimiste et ne réduit pas suffisamment les dégâts
+pour compenser. Arrêter cette branche posthoc pondérée pour l'instant.
+
+Baseline à conserver :
+  checkpoint_uncertainty_value_calibrated.pt
+  q0.60 / margin=0.01 / horizon=5 / samples=8
+```
+
+Nouvelle piste ajoutée : calibration posthoc du World Model sur transitions rares.
+
+Motivation :
+
+```text
+La calibration valeur simple donne un petit gain planner, mais le modèle reste
+fragile sur les conséquences rares : dégâts, perte de santé, mort.
+
+Pondérer seulement le ValueModel ne suffit pas : cela rend la valeur trop
+pessimiste sans améliorer assez l'imagination du World Model. La prochaine
+hypothèse testable est donc de réentraîner le World Model lui-même sur ces
+transitions rares, tout en gardant le planner générique.
+```
+
+Changements techniques :
+
+```text
+- train_world_model accepte maintenant des poids génériques par transition :
+  event_sample_names
+  event_sample_name_weight
+  event_sample_done_weight
+  event_sample_reward_abs_weight
+
+- Ces poids affectent la prédiction next_state/reward/features/events.
+  Ce point est important : le planner n'utilise pas directement event_logits,
+  donc pondérer uniquement la tête d'événement ne suffirait pas.
+
+- scripts/calibrate_micro_fouloide_wm_events.py permet de tester cette
+  calibration sur un checkpoint existant sans relancer 3000 épisodes.
+```
+
+Premier test recommandé :
+
+```bash
+python scripts/calibrate_micro_fouloide_wm_events.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_uncertainty_value_calibrated.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --device mps \
+  --updates 3000 \
+  --batch-size 64 \
+  --learning-rate 0.0001 \
+  --event-loss-weight 0.5 \
+  --event-sample-name damage \
+  --event-sample-name health_loss \
+  --event-sample-name death \
+  --event-sample-name-weight 3.0 \
+  --event-sample-done-weight 3.0 \
+  --reward-done-weight 2.0 \
+  --out runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_uncertainty_value_wm_events.pt
+```
+
+Critère :
+
+```text
+Comparer au meilleur seed1 actuel :
+  Q+planner valeur simple h5/s8 = 118.8
+
+On valide seulement si le planner gagne ou si les dégâts/health_loss baissent
+sans perte de lifespan. Sinon, il faudra corriger la calibration WM plus
+finement plutôt que forcer plus fort les poids.
+```
+
+Résultat seed1 :
+
+```text
+Posthoc WM event calibration:
+  updates=3000
+  total=1.179395
+  reward=0.283546
+  feature=0.042365
+  event=1.618385
+  events pondérés: damage, health_loss, death
+
+Évaluation 300 épisodes:
+  Q-only:                         116.6
+  Q+planner valeur simple:        118.8
+  Q+planner WM rare-events:       119.2
+  planner_used:                   80.6%
+  food/water:                     0.82 / 0.88
+  damage / health_loss:           1.16 / 31.11
+```
+
+Lecture :
+
+```text
+Signal positif mais encore faible. Le gain seed1 est supérieur à la meilleure
+calibration valeur simple (+0.4 lifespan) et le planner est plus utilisé
+(80.6%). Les dégâts ne baissent pas clairement, donc l'amélioration semble
+venir surtout d'une meilleure collecte food/water et d'une sélection d'actions
+un peu plus robuste.
+
+Décision : valider sur seeds 2 et 3 avant de modifier les configs longues.
+```
+
+Validation seeds 2 et 3 avec le même protocole :
+
+```text
+seed | Q-only | value simple h5/s8 | WM rare-events h5/s8 | delta WM/Q
+1    | 116.6  | 118.8             | 119.2                | +2.6
+2    | 102.9  | 104.6             | 103.4                | +0.5
+3    | 105.5  | 106.3             | 106.3                | +0.8
+
+moy. | 108.3  | 109.9             | 109.6                | +1.3
+```
+
+Lecture :
+
+```text
+La calibration WM rare-events est positive vs Q-only sur les 3 seeds, mais elle
+ne bat pas la calibration valeur simple en moyenne. Elle augmente fortement
+planner_used (seed2 78.7%, seed3 86.5%), mais cela ne se transforme pas encore
+en gain robuste de lifespan.
+
+Décision : ne pas remplacer la baseline par WM rare-events. Conserver le script
+comme outil expérimental. La prochaine piste utile est de rendre le planner plus
+sélectif ou d'améliorer la cible d'incertitude/valeur sur les conséquences
+imaginées, pas d'augmenter brutalement les poids rare-events.
+```
+
+Sélectivité Q-vs-WM ajoutée :
+
+```text
+Nouveau seuil générique :
+  planning.q_advantage_threshold
+  --planner-q-advantage-threshold
+  --planner-q-advantage-sweep
+
+Principe :
+  le WM ne peut influencer Q que si son action préférée a un avantage normalisé
+  suffisant par rapport à l'action préférée par Q.
+
+Ce n'est pas une règle du monde : c'est une règle de confiance entre policy
+apprise et imagination. Elle doit réduire planner_used et éviter les overrides
+faiblement justifiés.
+```
+
+Premier sweep recommandé :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_uncertainty_value_calibrated.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --num-episodes 300 \
+  --device mps \
+  --planner-sweep 0.15 \
+  --terminal-value-sweep 1.0 \
+  --planner-uncertainty-quantile-sweep 0.60 \
+  --planner-margin-sweep 0.01 \
+  --planner-q-advantage-sweep 0,0.02,0.05,0.10,0.15 \
+  --planner-horizon 5 \
+  --planner-samples 8
+```
+
+Critère :
+
+```text
+On cherche un seuil qui conserve ou améliore le lifespan tout en réduisant
+planner_used. Si planner_used baisse mais lifespan baisse aussi, le seuil est
+trop strict. Si planner_used reste haut et lifespan ne bouge pas, le seuil ne
+résout pas le problème.
+```
+
+Résultat seed1 :
+
+```text
+q_adv | lifespan | planner_used | food | water | damage | max
+0.00  | 118.8    | 71.6%        | 0.85 | 0.89  | 1.44   | 290
+0.02  | 118.8    | 61.2%        | 0.85 | 0.89  | 1.44   | 290
+0.05  | 118.3    | 60.3%        | 0.81 | 0.88  | 1.39   | 253
+0.10  | 118.3    | 57.6%        | 0.81 | 0.88  | 1.39   | 253
+0.15  | 117.6    | 54.2%        | 0.84 | 0.85  | 1.36   | 231
+```
+
+Lecture :
+
+```text
+q_adv=0.02 est meilleur comme règle de confiance : même lifespan que la
+baseline planner simple (118.8), mais planner_used réduit de 71.6% à 61.2%.
+Les seuils plus hauts réduisent encore l'usage du planner mais commencent à
+perdre du lifespan.
+
+Décision provisoire : tester q_adv=0.02 sur seeds 2 et 3.
+```
+
+Validation 3 seeds avec `q_adv=0.02` :
+
+```text
+seed | Q-only | planner q_adv=0.00 | used  | planner q_adv=0.02 | used
+1    | 116.6  | 118.8              | 71.6% | 118.8              | 61.2%
+2    | 102.9  | 104.6              | 70.1% | 104.6              | 61.2%
+3    | 105.5  | 106.3              | 74.8% | 106.3              | 61.1%
+
+moy. | 108.3  | 109.9              | 72.2% | 109.9              | 61.2%
+```
+
+Lecture :
+
+```text
+q_adv=0.02 conserve le gain planner moyen (+1.6 lifespan vs Q-only) tout en
+réduisant l'usage du World Model d'environ 11 points absolus. C'est une
+amélioration de sélectivité, pas encore une amélioration de performance brute.
+
+Décision : adopter q_adv=0.02 comme nouveau réglage d'évaluation par défaut
+pour la baseline posthoc uncertainty+value calibrée :
+  planning_weight=0.15
+  terminal_value_weight=1.0
+  uncertainty_quantile=0.60
+  margin=0.01
+  q_advantage=0.02
+  horizon=5
+  samples=8
+```
+
+Sweep planning_weight avec `q_adv=0.02`, seed1 :
+
+```text
+p_weight | lifespan | planner/Q | food | water | damage | used
+0.10     | 116.0    | 0.99      | 0.76 | 0.82  | 1.28   | 61.9%
+0.15     | 118.8    | 1.02      | 0.85 | 0.89  | 1.44   | 61.2%
+0.20     | 119.2    | 1.02      | 0.86 | 0.90  | 1.29   | 60.9%
+0.25     | 121.7    | 1.04      | 0.98 | 0.99  | 1.46   | 60.3%
+0.30     | 118.0    | 1.01      | 0.92 | 0.92  | 1.63   | 60.0%
+```
+
+Lecture :
+
+```text
+Avec le filtre q_adv=0.02, augmenter le poids du WM à 0.25 devient utile sur
+seed1. Le gain semble venir d'une meilleure collecte food/water, sans hausse
+de planner_used. 0.30 est déjà trop fort.
+
+Décision provisoire : valider p_weight=0.25 sur seeds 2 et 3.
+```
+
+Validation 3 seeds de `p_weight=0.25`, `q_adv=0.02` :
+
+```text
+seed | Q-only | p=0.15 q_adv=0.02 | p=0.25 q_adv=0.02 | delta p0.25/Q
+1    | 116.6  | 118.8             | 121.7             | +5.1
+2    | 102.9  | 104.6             | 104.5             | +1.6
+3    | 105.5  | 106.3             | 107.5             | +2.0
+
+moy. | 108.3  | 109.9             | 111.2             | +2.9
+```
+
+Lecture :
+
+```text
+p=0.25 améliore la moyenne 3 seeds par rapport à p=0.15 (+1.3 lifespan) et
+augmente le gain planner/Q moyen (+2.9). Le gain n'est pas uniforme : seed2 est
+quasi neutre, seed1 très positif, seed3 positif.
+
+Décision : p=0.25 devient le meilleur réglage posthoc actuel, avec prudence.
+La prochaine validation doit être un run 500 ou 1000 épisodes pour réduire le
+bruit d'évaluation avant de l'inscrire dans une config de référence.
+```
+
+Validation longue 1000 épisodes avec `p=0.25`, `q_adv=0.02` :
+
+```text
+seed | Q-only | Q+WM planner | delta | ratio | planner_used
+1    | 116.6  | 119.6        | +3.0  | 1.03x | 59.5%
+2    | 101.5  | 102.6        | +1.1  | 1.01x | 59.2%
+3    | 105.5  | 108.0        | +2.5  | 1.02x | 61.7%
+
+moy. | 107.9  | 110.1        | +2.2  | 1.02x | 60.1%
+```
+
+Lecture :
+
+```text
+Le signal survit à l'évaluation longue : les 3 seeds sont positifs vs Q-only.
+Le gain moyen est modeste (+2.2 lifespan), mais robuste, et le planner reste
+sélectif (~60% d'usage au lieu de ~72% avec q_adv=0).
+
+Effets comportementaux :
+  seed1 : food/water augmente fortement (0.68/0.82 -> 0.91/0.95)
+  seed2 : food/water augmente légèrement (0.22/0.26 -> 0.28/0.34)
+  seed3 : food/water augmente (0.49/0.57 -> 0.59/0.70)
+
+Décision : meilleur réglage actuel validé sur 1000 épisodes :
+  planning_weight=0.25
+  terminal_value_weight=1.0
+  uncertainty_quantile=0.60
+  margin=0.01
+  q_advantage=0.02
+  horizon=5
+  samples=8
+```
+
+Preset CLI ajouté :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_uncertainty_value_calibrated.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --num-episodes 1000 \
+  --device mps \
+  --compare-planner \
+  --planner-preset wm-calibrated
+```
+
+Ce preset applique :
+
+```text
+planning_weight=0.25
+terminal_value_weight=1.0
+uncertainty_quantile=0.60
+margin=0.01
+q_advantage=0.02
+horizon=5
+samples=8
+```
+
+Rapport multi-seeds ajouté :
+
+```bash
+python scripts/report_micro_fouloide_planner.py \
+  --num-episodes 1000 \
+  --device mps \
+  --output reports/micro_fouloide_wm_calibrated_1000.md
+```
+
+Par défaut, le rapport utilise :
+
+```text
+config=configs/micro_fouloide_v0_rough_valueplanner.yaml
+checkpoint_template=runs/micro_fouloide_v0_rough_valueplanner_seed{seed}/checkpoint_uncertainty_value_calibrated.pt
+seeds=1,2,3
+planner_preset=wm-calibrated
+```
+
+Rapport généré :
+
+```text
+reports/micro_fouloide_wm_calibrated_1000.md
+
+seed | Q-only | Q+WM | delta | ratio | used | food | water | damage | max
+1    | 116.6  | 119.6 | +3.0  | 1.03  | 59.5% | 0.91 | 0.95  | 1.47   | 286
+2    | 101.5  | 102.6 | +1.0  | 1.01  | 59.2% | 0.28 | 0.34  | 0.95   | 205
+3    | 105.5  | 108.0 | +2.5  | 1.02  | 61.7% | 0.59 | 0.70  | 1.56   | 234
+mean | 107.9  | 110.0 | +2.2  | 1.02  | 60.1% | 0.59 | 0.66  | 1.33   | 242
+```
+
+Chaîne de calibration posthoc automatisée :
+
+```bash
+python scripts/calibrate_micro_fouloide_posthoc_chain.py \
+  --seeds 1,2,3 \
+  --device mps
+```
+
+Par défaut, la chaîne produit pour chaque run :
+
+```text
+checkpoint_final.pt
+  -> checkpoint_uncertainty_calibrated.pt
+  -> checkpoint_uncertainty_value_calibrated.pt
+```
+
+Paramètres standards :
+
+```text
+uncertainty calibration:
+  updates=2000
+  batch_size=64
+  learning_rate=0.0003
+
+value calibration:
+  updates=5000
+  batch_size=64
+  learning_rate=0.0003
+```
+
+Le script saute les sorties déjà existantes, sauf avec `--force`.
+
 Ablation checkpoint non calibré, même réglage fixe et 300 épisodes :
 
 ```text

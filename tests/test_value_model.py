@@ -121,6 +121,7 @@ def test_posthoc_value_model_return_calibration_runs():
         latents,
         returns,
         optimizer,
+        sample_weights=np.linspace(1.0, 2.0, len(returns), dtype=np.float32),
         batch_size=8,
         num_updates=4,
     )

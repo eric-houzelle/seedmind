@@ -55,6 +55,9 @@ def test_world_model_uncertainty_loss_update_runs():
         sampler="causal",
         causal_feature_weight=1.0,
         causal_event_weight=0.2,
+        event_sample_names={"event_3"},
+        event_sample_name_weight=2.0,
+        event_sample_done_weight=1.0,
         uncertainty_weight=0.5,
     )
 

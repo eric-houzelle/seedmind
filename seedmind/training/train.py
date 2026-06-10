@@ -16,13 +16,19 @@ from seedmind.memory.experience_buffer import ExperienceBuffer
 from seedmind.training.losses import world_model_aux_loss, world_model_loss
 
 
-def _assemble_batch(batch: List[Dict[str, Any]]):
+def _assemble_batch(
+    batch: List[Dict[str, Any]],
+    event_sample_names: Optional[set[str]] = None,
+    event_sample_name_weight: float = 0.0,
+    event_sample_done_weight: float = 0.0,
+    event_sample_reward_abs_weight: float = 0.0,
+):
     """Build training tensors from a list of experiences.
 
     Skips experiences that lack cached latent vectors.
     """
     latents, actions, next_latents, rewards, dones = [], [], [], [], []
-    feature_deltas, events = [], []
+    feature_deltas, events, event_sample_weights = [], [], []
     has_features = True
     has_events = True
     for e in batch:
@@ -35,6 +41,18 @@ def _assemble_batch(batch: List[Dict[str, Any]]):
         actions.append(int(e["action_index"]))
         rewards.append(float(e["reward_external"]))
         dones.append(1.0 if e.get("done", False) else 0.0)
+        event_sample_weight = 1.0
+        if event_sample_done_weight > 0.0 and e.get("done", False):
+            event_sample_weight += float(event_sample_done_weight)
+        if event_sample_reward_abs_weight > 0.0:
+            event_sample_weight += float(event_sample_reward_abs_weight) * abs(float(e["reward_external"]))
+        if (
+            event_sample_names
+            and event_sample_name_weight > 0.0
+            and str(e.get("event", "")) in event_sample_names
+        ):
+            event_sample_weight += float(event_sample_name_weight)
+        event_sample_weights.append(event_sample_weight)
         if e.get("causal_features") is not None and e.get("next_causal_features") is not None:
             current = np.asarray(e["causal_features"], dtype=np.float32)
             next_current = np.asarray(e["next_causal_features"], dtype=np.float32)
@@ -65,6 +83,7 @@ def _assemble_batch(batch: List[Dict[str, Any]]):
         torch.tensor(dones, dtype=torch.float32),
         target_features,
         target_events,
+        torch.tensor(event_sample_weights, dtype=torch.float32),
     )
 
 
@@ -81,6 +100,10 @@ def train_world_model(
     event_class_balance_power: float = 0.5,
     reward_abs_weight: float = 0.0,
     reward_done_weight: float = 0.0,
+    event_sample_names: Optional[set[str]] = None,
+    event_sample_name_weight: float = 0.0,
+    event_sample_done_weight: float = 0.0,
+    event_sample_reward_abs_weight: float = 0.0,
     uncertainty_weight: float = 0.0,
     uncertainty_detach: bool = False,
 ) -> Dict[str, float]:
@@ -119,10 +142,16 @@ def train_world_model(
         else:
             batch = buffer.sample(batch_size)
 
-        assembled = _assemble_batch(batch)
+        assembled = _assemble_batch(
+            batch,
+            event_sample_names=event_sample_names,
+            event_sample_name_weight=event_sample_name_weight,
+            event_sample_done_weight=event_sample_done_weight,
+            event_sample_reward_abs_weight=event_sample_reward_abs_weight,
+        )
         if assembled is None:
             continue
-        latents, actions, next_latents, rewards, dones, feature_deltas, events = assembled
+        latents, actions, next_latents, rewards, dones, feature_deltas, events, event_sample_weights = assembled
         device = next(world_model.parameters()).device
         latents = latents.to(device)
         actions = actions.to(device)
@@ -133,6 +162,7 @@ def train_world_model(
             feature_deltas = feature_deltas.to(device)
         if events is not None:
             events = events.to(device)
+        event_sample_weights = event_sample_weights.to(device)
         event_class_weight = None
         if (
             event_class_balance
@@ -170,7 +200,9 @@ def train_world_model(
                 target_feature_delta=feature_deltas,
                 target_event=events,
                 event_class_weight=event_class_weight,
+                event_sample_weight=event_sample_weights,
                 reward_sample_weight=reward_sample_weight,
+                transition_sample_weight=event_sample_weights,
                 feature_weight=causal_feature_weight,
                 event_weight=causal_event_weight,
                 uncertainty_weight=uncertainty_weight,
@@ -185,6 +217,7 @@ def train_world_model(
                 predicted_next, next_latents, predicted_reward, rewards,
                 predicted_uncertainty=predicted_uncertainty,
                 reward_sample_weight=reward_sample_weight,
+                transition_sample_weight=event_sample_weights,
                 uncertainty_weight=uncertainty_weight,
             )
             losses["feature"] = torch.zeros((), device=device)
@@ -261,7 +294,7 @@ def train_world_model_uncertainty_head(
         assembled = _assemble_batch(batch)
         if assembled is None:
             continue
-        latents, actions, next_latents, rewards, dones, feature_deltas, events = assembled
+        latents, actions, next_latents, rewards, dones, feature_deltas, events, _ = assembled
         device = next(world_model.parameters()).device
         latents = latents.to(device)
         actions = actions.to(device)

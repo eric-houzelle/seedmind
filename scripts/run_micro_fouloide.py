@@ -193,6 +193,7 @@ def build_agent(config: dict, seed: int) -> Agent:
             if plc.get("uncertainty_threshold") is not None else None
         ),
         planner_margin_threshold=float(plc.get("margin_threshold", 0.0)),
+        planner_q_advantage_threshold=float(plc.get("q_advantage_threshold", 0.0)),
     )
 
 
@@ -545,6 +546,10 @@ def main() -> None:
                 event_class_balance_power=float(cwm.get("event_class_balance_power", 0.5)),
                 reward_abs_weight=float(wmc.get("reward_abs_weight", 0.0)),
                 reward_done_weight=float(wmc.get("reward_done_weight", 0.0)),
+                event_sample_names=set(cwm.get("event_sample_names", [])),
+                event_sample_name_weight=float(cwm.get("event_sample_name_weight", 0.0)),
+                event_sample_done_weight=float(cwm.get("event_sample_done_weight", 0.0)),
+                event_sample_reward_abs_weight=float(cwm.get("event_sample_reward_abs_weight", 0.0)),
                 uncertainty_weight=float(wmc.get("uncertainty_loss_weight", 0.0)),
                 uncertainty_detach=bool(wmc.get("uncertainty_detach", False)),
             )
