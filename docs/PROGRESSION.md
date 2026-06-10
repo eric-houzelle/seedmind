@@ -242,7 +242,7 @@ Checkpoints : `runs/sandbox_v1_planning/`, `runs/sandbox_v1_planning2/`
 ## 4. Suite de tests
 
 ```bash
-pytest -q   # 79 tests (dernière exécution documentée)
+pytest -q   # 109 tests (dernière exécution documentée)
 ```
 
 Couverture principale :
@@ -280,10 +280,151 @@ python scripts/live_sandbox.py --config configs/sandbox_v1.yaml
 
 Ordre retenu : chaque étape s'appuie sur la précédente, avec validation **trained bat naive** avant de continuer.
 
+### Bilan architectural — juin 2026
+
+Objectif acté :
+
+```text
+Construire un agent générique capable d'apprendre seul un monde,
+via interaction, mémoire, drives internes et World Model,
+sans règles spécifiques codées dans l'agent.
+```
+
+Le sandbox craft est un banc de test. Il n'est pas la finalité du projet.
+
+#### Frontière agent / monde
+
+Un monde peut exposer :
+
+- observations brutes ;
+- actions disponibles ;
+- features perceptibles structurées ;
+- événements observés ;
+- états internes perceptibles de l'organisme simulé.
+
+Un monde ne doit pas exposer :
+
+- la solution ;
+- les règles internes ;
+- la valeur stratégique d'une action ;
+- la prochaine meilleure action.
+
+Principe retenu :
+
+```text
+Le monde expose ce qui est observable.
+L'agent apprend ce qui est utile.
+```
+
+Exemples de features structurées acceptables :
+
+```text
+energy, health, hydration, temperature
+position, velocity, fatigue
+inventory / body state
+visible_entities: type_id, distance, direction
+terrain / light / smell / sound / heat
+```
+
+Ces variables sont des capteurs ou perceptions organisées. Elles ne disent pas
+à l'agent quoi faire.
+
+#### Rôle cible du World Model
+
+Le World Model ne doit pas rester un simple module auxiliaire du DQN. Il est le
+mécanisme central d'autonomie :
+
+- apprendre la dynamique du monde ;
+- prédire les conséquences des actions ;
+- anticiper plusieurs futurs possibles ;
+- guider l'exploration ;
+- servir de base à une décision plus intelligente.
+
+La preuve forte recherchée reste :
+
+```text
+agent avec World Model exploité > agent sans World Model exploité
+```
+
+sur le même monde, le même budget, et idéalement plusieurs seeds.
+
+#### Drives
+
+Deux drives sont retenus :
+
+```text
+drive homéostatique = rester viable / vivant
+drive épistémique = comprendre le monde / réduire l'incertitude utile
+```
+
+Le système ne doit pas recevoir une mission du type "utilise le craft". Il doit
+survivre, explorer utilement, puis apprendre quelles interactions améliorent sa
+viabilité.
+
+#### Statut des poids manuels actuels
+
+Les `planner_feature_weights` et `planner_feature_targets` de la config
+`causalwm` sont considérés comme un **échafaudage expérimental**.
+
+Ils ont permis d'obtenir un premier signal positif, mais ils ne doivent pas
+être conservés comme principe architectural final.
+
+Objectif cible :
+
+```text
+Le planner imagine avec le World Model.
+La valeur des conséquences est apprise par l'agent.
+Elle n'est pas codée à la main dans la config.
+```
+
+#### Critère de validation sérieux
+
+Pour valider une évolution importante :
+
+```text
+Q + WM planner > Q-only
+sur moyenne multi-seed
+avec amélioration d'au moins une métrique homéostatique ou causale.
+```
+
+Le simple fait que `trained > naive` ne suffit plus pour valider le rôle du
+World Model. Cela valide seulement que la policy apprend.
+
+#### Direction suivante : micro-fouloïde
+
+Avant de viser un écosystème fouloïde complet, l'étape raisonnable est un
+**micro-fouloïde** :
+
+- un seul organisme ;
+- plusieurs besoins homéostatiques ;
+- monde virtuel plus riche que le sandbox ;
+- interactions simples mais nombreuses ;
+- aucune règle métier dans l'agent.
+
+Exemple de monde :
+
+```text
+besoins:
+  énergie, hydratation, température / sécurité
+
+monde:
+  nourriture, eau, chaleur/froid, dangers, obstacles, zones
+
+actions:
+  bouger, manger, boire, se reposer, interagir/manipuler
+```
+
+Objectif :
+
+```text
+Voir si un organisme minimal apprend des routines adaptatives
+par interaction + World Model, sans règles codées.
+```
+
 ```text
 [A] Monde plus grand + obs. partielle  ✅  (sandbox_v1)
-[B] Planification via World Model       ⚠️  (code OK, pas encore gagnant)
-[C] Ressources & Craft                ⚠️  (socle code OK, validation à lancer)
+[B] Planification via World Model       ⚠️  (premier signal positif, encore fragile)
+[C] Ressources & Craft                  ✅/⚠️ (craft validé en eval, planner causal à consolider)
 [D] Multi-pulsions homéostatiques       ⬜  (soif, froid, arbitrage)
 ```
 
@@ -304,6 +445,7 @@ Ordre retenu : chaque étape s'appuie sur la précédente, avec validation **tra
 - Config intermédiaire + replay causal : `configs/sandbox_v2_craft_balanced_causal.yaml`
 - Config intermédiaire + n-step DQN : `configs/sandbox_v2_craft_balanced_nstep.yaml`
 - Config intermédiaire + curiosité causale : `configs/sandbox_v2_craft_balanced_intrinsic.yaml`
+- Config causal-WM structurée : `configs/sandbox_v2_craft_balanced_causalwm.yaml`
 
 **Chaîne causale à tester :**
 
@@ -328,7 +470,10 @@ python scripts/evaluate_sandbox.py \
 
 **Risque :** explosion combinatoire — l'exploration aléatoire ne suffira plus ; le WM / planification deviendront nécessaires.
 
-**Statut actuel :** tests unitaires et smoke test OK. Il reste à lancer un entraînement long et mesurer `trained bat naive`.
+**Statut actuel :** entraînements longs effectués. Le craft est validé en évaluation
+pour la branche causal-WM rebalanced, avec un premier signal positif du planner
+World Model. Le résultat reste fragile et doit être consolidé avant de
+généraliser.
 
 **Validation attendue :**
 
@@ -363,9 +508,10 @@ et ralentit l'epsilon decay pour laisser plus de temps à l'exploration.
 
 `sandbox_v2_craft_balanced_causal.yaml` garde le même monde que balanced mais
 active `dqn.sampler=causal`. Ce sampler ne change pas les rewards ; il
-sur-échantillonne les transitions rares `craft_tool`, `harvest_food_tool`,
-`eat_ok`, `harvest_wood`, `harvest_stone` pour éviter que les chaînes causales
-découvertes brièvement soient noyées dans le replay uniforme.
+sur-échantillonne les transitions dotées d'un événement par rareté générique
+(`event_index` / `event`), sans connaître le sens de ces événements. Dans le
+sandbox, cela aide à éviter que les chaînes causales découvertes brièvement
+soient noyées dans le replay uniforme.
 
 `sandbox_v2_craft_balanced_nstep.yaml` garde le même monde que balanced et
 active `dqn.n_step=8`. Le but est de corriger le credit assignment long-horizon
@@ -383,23 +529,2260 @@ planner` sur le même checkpoint avec `--compare-planner`. C'est le test le plus
 direct de la thèse centrale : le World Model doit améliorer la décision ou
 l'exploitation d'une chaîne causale différée, à poids entraînés identiques.
 
-### D — Multi-pulsions homéostatiques
+#### Résultats expérimentaux craft / causal-WM — juin 2026
 
-**Pourquoi :** forcer l'**arbitrage** entre besoins concurrents (énergie, soif, chaleur).
+Objectif global rappelé : prouver qu'un **World Model causal** peut aider un
+agent à apprendre seul un monde, pas simplement construire une simulation de
+singe ou optimiser un scénario craft à la main. Le sandbox reste un banc de
+test, pas la finalité.
 
-**Prévu :**
+**Premier run craft simple :** `sandbox_v2_craft_mps_hybrid`
 
-- Jauges multiples avec decay indépendants
-- Récompense = survie globale (pas de shaping par action)
-- Comportements riches émergents (prioriser nourriture vs eau vs abri)
+```text
+Naïf:      lifespan 64.7
+Trained:   lifespan 222.3  (3.44×)
+craft:     ~0.01 / épisode
+tool_food: 0.00
+```
+
+Conclusion : l'agent apprend fortement la survie, mais contourne le craft. Le
+lifespan seul ne prouve donc pas l'apprentissage de chaînes causales composées.
+
+**Run balanced + intrinsic causal :**
+`sandbox_v2_craft_balanced_intrinsic_mps_hybrid`
+
+En entraînement, le signal craft apparaît :
+
+```text
+life 7999 | lifespan(100)=97.6
+craft100=1.00 toolfood100=0.49 eat100=3.26
+```
+
+Évaluation :
+
+```text
+Naïf:              lifespan 62.2
+Q-only:            lifespan 77.8
+Q + WM planner:    lifespan 76.2
+planner/Q:         0.98×
+```
+
+Conclusion : Q apprend quelque chose, mais le planner WM ne fournit pas encore
+de gain. Les diagnostics ont montré que le WM prédit assez bien les latents,
+mais produit un signal de décision non actionnable : il préfère trop souvent
+`HARVEST`, même dans des états où `CRAFT` serait pertinent.
+
+**Évolution causal-WM structurée :**
+`sandbox_v2_craft_balanced_causalwm.yaml`
+
+Ajout générique, sans adhérence au sandbox :
+
+- `EnvironmentAdapter.causal_features()` : vecteur observable optionnel ;
+- `EnvironmentAdapter.causal_event_names()` : vocabulaire d'événements optionnel ;
+- World Model avec têtes optionnelles `feature_delta` et `event_logits` ;
+- planner capable d'utiliser des deltas de features via des vecteurs
+  `planner_feature_weights` / `planner_feature_targets` fournis par la config ;
+- l'agent ne connaît toujours pas `food`, `tool`, `craft`, etc. Il manipule
+  uniquement des vecteurs et des ids.
+
+Premier entraînement `causalwm` jusqu'à 8000 vies :
+
+```text
+Final mean lifespan(100): 106.2
+craft100=1.92 toolfood100=0.61 eat100=4.03
+```
+
+Évaluation :
+
+```text
+Naïf:              lifespan 62.2
+Q-only:            lifespan 102.5
+Q + WM planner:    lifespan 91.6
+planner/Q:         0.89×
+```
+
+Conclusion : la représentation causale aide clairement l'apprentissage Q et
+fait émerger du craft utile en évaluation, mais le planner gêne encore la
+décision. Diagnostic : le WM choisit `EAT` trop souvent, même dans `craft_ready`.
+
+**Rebalancing générique du World Model causal :**
+
+Changements universels, non liés aux noms sandbox :
+
+- `ExperienceBuffer.sample_causal()` pondère les événements par rareté
+  générique (`event_index` / `event`), sans connaître leur sens ;
+- `world_model.sampler: causal` ;
+- `causal_world_model.event_class_balance: true` ;
+- `feature_loss_weight: 2.0` ;
+- `event_loss_weight: 0.2`.
+
+Continuation du checkpoint 8000 vers 12000 vies :
+`sandbox_v2_craft_balanced_causalwm_rebalanced_cuda`
+
+```text
+life 11999 | lifespan(100)=149.2
+craft100=3.32 toolfood100=1.39 eat100=7.82 causal100=3.262
+```
+
+Évaluation finale documentée :
+
+```text
+Naïf:              lifespan 62.2 +/- 6.2
+Q-only:            lifespan 115.7 +/- 109.9
+Q + WM planner:    lifespan 124.0 +/- 123.5
+planner/Q:         1.07×
+```
+
+Métriques causales :
+
+```text
+Q-only:         food=4.84 tool_food=0.33 craft=0.67 eat=4.71
+Q + WM planner: food=5.62 tool_food=0.37 craft=0.35 eat=5.51
+```
+
+Conclusion expérimentale provisoire :
+
+1. L'agent entraîné bat très nettement le naïf : **1.86×**.
+2. Le craft est réellement présent en évaluation (`craft`, `tool_food`,
+   `bonus_food_from_tool` > naïf).
+3. Pour la première fois, `Q + World Model planner` bat `Q-only` :
+   **124.0 vs 115.7**, soit **1.07×**.
+4. Le gain planner porte surtout sur survie / food / eat ; il ne prouve pas
+   encore une exploitation parfaite de la chaîne craft, car `craft` moyen baisse
+   avec le planner.
+
+Diagnostic causal après rebalancing :
+
+```text
+actual_craft_tool + action CRAFT:
+  craft_tool: 0.71
+
+craft_ready + action CRAFT:
+  craft_tool: 0.66
+
+actual_tool_food + action HARVEST:
+  inventory_food delta: +0.032
+```
+
+Le World Model causal est donc devenu plus informatif, mais il reste imparfait :
+il continue à survaloriser `EAT` dans certains états `craft_ready`.
+
+**Statut de preuve :**
+
+On a une preuve minimale que :
+
+```text
+perception causale générique + World Model auxiliaire + planner
+peut améliorer la décision par rapport à Q-only.
+```
+
+On n'a pas encore une preuve robuste que le planner exploite proprement des
+chaînes causales longues et composées. Cette distinction est importante pour la
+suite du projet.
+
+### D — Micro-fouloïde V0 / multi-pulsions homéostatiques
+
+**Pourquoi :** sortir du sandbox "survie nue" et tester une régulation
+homéostatique plus générale : énergie, hydratation, température, santé et
+dangers locaux.
+
+**Implémenté :**
+
+- `MicroFouloideWorld` : organisme unique sur grille partiellement observable ;
+- drives internes : `energy`, `hydration`, `temperature`, `health` ;
+- entités : `FOOD`, `WATER`, `WARM_ZONE`, `COLD_ZONE`, `DANGER`,
+  `OBSTACLE`, `UNKNOWN` ;
+- actions : `MOVE_*`, `INTERACT`, `REST`, `WAIT` ;
+- observation structurée `standing_entity` pour que l'agent puisse apprendre
+  les conséquences de `INTERACT` sans règle codée ;
+- encodeur dédié micro-fouloïde : grille one-hot + drives + entité sous agent ;
+- runner/evaluator : `scripts/run_micro_fouloide.py`,
+  `scripts/evaluate_micro_fouloide.py`.
+
+**Changement architectural important :**
+
+Le DQN peut maintenant optimiser une clé de reward configurable
+(`dqn.reward_key`). Pour micro-fouloïde, le replay conserve la reward externe du
+monde, mais la policy apprend sur `reward_learning`, qui ajoute un signal
+générique de variation des drives :
+
+```text
+reward_learning = reward_external + weight * Δdrive_regulation
+```
+
+Ce n'est pas une règle "manger/boire" codée à la main. C'est un signal de
+régulation interne basé sur des variables exposées par l'adapter, compatible
+avec d'autres mondes qui exposeraient d'autres drives.
+
+**Bug corrigé pendant V0 :**
+
+Le premier essai exposait `standing_entity` en observation live, mais pas dans
+`obs_state` compact stocké en replay. Le Q-network décidait donc avec une
+feature que son entraînement ne voyait pas. Après correction, l'agent apprend
+effectivement à interagir avec nourriture/eau.
+
+#### Résultats micro-fouloïde V0 — juin 2026
+
+Run initial 1000 épisodes :
+`runs/micro_fouloide_v0_drive_reward_1000`
+
+```text
+Final mean lifespan(100): 142.9
+food100=1.04 water100=0.92 dmg100=3.05 drive100=0.680
+```
+
+Évaluation 100 épisodes :
+
+```text
+Naïf:              lifespan 120.5 +/- 31.6
+Q-only:            lifespan 123.5 +/- 24.0
+Q + WM planner:    lifespan 125.3 +/- 25.7
+```
+
+Conclusion : direction correcte mais preuve faible. L'agent interagit à nouveau
+avec nourriture/eau, mais le gain greedy reste marginal après 1000 épisodes.
+
+Continuation jusqu'à 3000 épisodes :
+`runs/micro_fouloide_v0_drive_reward_3000`
+
+```text
+ep 2999 | lifespan(100)=204.4
+drive100=0.715 food100=2.25 water100=2.25 dmg100=2.31 eps=0.10
+```
+
+Évaluation 100 épisodes :
+
+```text
+Naïf:
+  lifespan=120.5 +/- 31.6
+  drive=0.661
+  food=0.46 water=0.51 damage=4.23
+
+Q-only:
+  lifespan=192.9 +/- 72.7
+  drive=0.691
+  food=0.96 water=1.67 damage=0.80
+  actions: move=43.2% interact=8.4% rest=46.2% wait=2.3%
+
+Q + WM planner:
+  lifespan=185.1 +/- 74.4
+  drive=0.691
+  food=1.13 water=1.60 damage=0.87
+  actions: move=48.5% interact=10.9% rest=36.5% wait=4.2%
+```
+
+**Conclusion V0 :**
+
+1. Le trained Q-only bat clairement le naïf : **192.9 vs 120.5**, soit
+   **1.60×**.
+2. L'amélioration ne vient pas seulement d'un artefact de lifespan :
+   nourriture/eau augmentent et les dégâts baissent fortement.
+3. Le drive moyen trained dépasse le naïf : **0.691 vs 0.661**.
+4. Le planner manuel ne valide pas encore le rôle du World Model dans ce monde :
+   `Q + WM planner` est sous `Q-only` (**0.96×**).
+
+#### Robustesse multi-seed micro-fouloïde V0
+
+Trois runs indépendants de 3000 épisodes confirment que le signal Q-only >
+naïf n'est pas limité à une seule seed.
+
+```text
+seed | Q lifespan | Q/naive | Q drive | food | water | damage | planner/Q
+1    | 153.8      | 1.28x   | 0.651   | 0.78 | 1.00  | 1.10   | 0.95x
+2    | 145.6      | 1.21x   | 0.653   | 0.77 | 0.82  | 0.97   | 0.98x
+3    | 173.4      | 1.44x   | 0.677   | 1.24 | 1.63  | 1.50   | 1.01x
+```
+
+Moyenne seeds 1-3 :
+
+```text
+Naive lifespan: 120.5
+Q-only lifespan: 157.6
+Q/naive: 1.31x
+
+Q food:   0.93 vs naive 0.46
+Q water:  1.15 vs naive 0.51
+Q damage: 1.19 vs naive 4.23
+
+Planner/Q moyen: ~0.98x
+```
+
+Conclusion multi-seed :
+
+1. `Q-only > naive` sur les 3 seeds.
+2. Le comportement appris est cohérent : plus de nourriture, plus d'eau,
+   beaucoup moins de dégâts.
+3. Le drive moyen reste plus fragile que le lifespan : seed 1/2 restent
+   légèrement sous le naïf en `drive`, malgré un lifespan supérieur.
+4. Le planner World Model manuel reste non validé sur V0 : neutre à négatif en
+   moyenne.
+
+**Statut de preuve :**
+
+```text
+Agent générique + observation structurée + reward de régulation interne
+=> apprend une routine adaptative dans un monde multi-drives.
+```
+
+Cela valide la transition sandbox -> micro-fouloïde V0 côté policy, y compris
+en première robustesse multi-seed. Cela ne valide pas encore l'hypothèse forte
+"World Model exploité > Q-only" sur micro-fouloïde.
+
+**Prochaines validations :**
+
+1. Généralisation sur variantes de monde sans changer l'agent.
+2. Diagnostic World Model sur les drives/events micro-fouloïde.
+3. Mise de côté du planner manuel pour micro-fouloïde tant qu'une valeur
+   apprise des conséquences n'est pas disponible.
+
+#### Généralisation rough V0.1
+
+Variante : `configs/micro_fouloide_v0_rough.yaml`.
+
+Le monde reste compatible avec le même agent et le même adapter, mais devient
+plus difficile :
+
+- nourriture/eau plus rares ;
+- hydratation/énergie décroissent plus vite ;
+- température plus instable ;
+- plus de dangers et d'obstacles ;
+- santé un peu plus fragile.
+
+Validation multi-seed 3000 épisodes :
+
+```text
+seed | Q lifespan | Q/naive | Q drive | food | water | damage | planner/Q
+1    | 108.0      | 1.23x   | 0.636   | 0.42 | 0.57  | 1.22   | 0.97x
+2    | 101.6      | 1.15x   | 0.643   | 0.23 | 0.32  | 1.12   | 0.95x
+3    | 115.2      | 1.31x   | 0.663   | 0.32 | 0.65  | 0.77   | 1.00x
+```
+
+Moyenne rough seeds 1-3 :
+
+```text
+Naive lifespan: 88.1
+Q-only lifespan: 108.3
+Q/naive: 1.23x
+
+Q food:   0.32 vs naive 0.30
+Q water:  0.51 vs naive 0.20
+Q damage: 1.04 vs naive 3.75
+
+Planner/Q moyen: ~0.97x
+```
+
+Conclusion rough :
+
+1. `Q-only > naive` sur les 3 seeds.
+2. La généralisation du cadre tient sur une variante plus dure sans changer
+   l'agent.
+3. Le signal est plus faible que V0 : la politique apprend surtout à éviter les
+   dangers et à trouver de l'eau ; la nourriture reste proche du naïf.
+4. Le drive moyen reste fragile, mais le lifespan et les métriques
+   comportementales sont meilleurs.
+5. Le planner World Model reste non validé : neutre à négatif.
+
+#### Diagnostic World Model micro-fouloïde
+
+`scripts/evaluate_micro_fouloide.py` expose maintenant
+`--diagnose-world-model`. Le diagnostic lit le replay du checkpoint et compare,
+par type d'événement :
+
+- erreur latent next-state ;
+- erreur reward externe ;
+- erreur delta de features causales ;
+- accuracy de prédiction d'événement ;
+- incertitude moyenne.
+
+Commande type :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough.yaml \
+  --num-episodes 1 \
+  --device mps \
+  --diagnose-world-model \
+  --diagnostic-samples 20000
+```
+
+Premier diagnostic court sur rough seed1 (`1000` samples) :
+
+```text
+interact_food   event_acc=0.667 feature_mae=0.05370
+interact_water  event_acc=0.833 feature_mae=0.06078
+damage          event_acc=0.118 feature_mae=0.10716
+death           event_acc=0.000 reward_mae=0.98121
+temperature_*   event_acc=0.000 feature_mae≈0.104
+rest/wait       event_acc≈0.99 feature_mae≈0.011
+```
+
+Interprétation provisoire :
+
+Le World Model apprend bien les transitions fréquentes et simples
+(`rest`, `wait`, `interact_noop`), mais reste faible sur les événements rares ou
+critiques (`damage`, `death`, changements de température). Cela explique
+probablement pourquoi le planner n'aide pas encore : il ne sait pas assez bien
+anticiper les conséquences décisives.
+
+Suite expérimentale créée : `configs/micro_fouloide_v0_rough_wmfocus.yaml`.
+
+Cette config ne change pas le monde ni l'agent. Elle modifie uniquement
+l'entraînement du World Model :
+
+- `reward_abs_weight: 2.0` ;
+- `reward_done_weight: 8.0` ;
+- `event_loss_weight: 1.0` ;
+- `event_class_balance_power: 1.0` ;
+- `feature_loss_weight: 3.0`.
+
+Objectif :
+
+```text
+améliorer la prédiction des événements rares/critiques
+sans introduire de règle spécifique au micro-fouloïde.
+```
+
+Protocole A/B :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_wmfocus.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_wmfocus_seed1
+
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_wmfocus_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_wmfocus.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --compare-planner \
+  --diagnose-world-model \
+  --diagnostic-samples 20000
+```
+
+Validation recherchée :
+
+1. `death` reward MAE baisse nettement ;
+2. `damage` / `temperature_*` event accuracy augmente ;
+3. `planner/Q` devient neutre positif, idéalement > 1.0 ;
+4. `Q-only` ne régresse pas fortement.
+
+Résultat `wmfocus` seed1 :
+
+```text
+Rough baseline seed1:
+  Q-only lifespan=108.0
+  planner/Q=0.97
+  death reward_mae=0.96182 event_acc=0.032
+  damage event_acc=0.087
+
+Rough wmfocus seed1:
+  Q-only lifespan=103.4
+  planner/Q=0.99
+  death reward_mae=0.71078 event_acc=0.231
+  damage event_acc=0.253
+```
+
+Conclusion :
+
+`wmfocus` améliore bien les événements critiques (`death`, `damage`,
+`interact_food`), mais il dégrade trop la calibration reward globale :
+`reward_mae` augmente fortement sur les transitions fréquentes
+(`health_loss`, `move_ok`, `rest`, `wait`). La policy Q-only baisse légèrement
+et le planner reste seulement neutre.
+
+Décision : conserver l'idée, mais réduire l'intensité. Nouvelle config à tester :
+`configs/micro_fouloide_v0_rough_wmfocus_light.yaml`.
+
+Résultat `wmfocus_light` seed1 :
+
+```text
+Rough baseline seed1:
+  Q-only lifespan=108.0
+  planner/Q=0.97
+  death reward_mae=0.96182 event_acc=0.032
+  damage event_acc=0.087
+
+Rough wmfocus_light seed1:
+  Q-only lifespan=105.5
+  planner/Q=1.01
+  death reward_mae=0.79020 event_acc=0.061
+  damage event_acc=0.140
+  temperature_up event_acc=0.067
+```
+
+Conclusion :
+
+`wmfocus_light` est un meilleur compromis que `wmfocus` : il garde une partie du
+gain sur les événements critiques et le planner devient légèrement positif sur
+seed1. Mais la reward reste mal calibrée sur beaucoup de transitions
+fréquentes, et le gain planner est trop faible pour conclure.
+
+Observation architecturale importante :
+
+Le planner micro-fouloïde score encore principalement :
+
+```text
+predicted_reward_external + curiosity
+```
+
+Alors que la policy DQN apprend sur :
+
+```text
+reward_learning = reward_external + Δdrive_regulation
+```
+
+Il y a donc un décalage d'objectif. Avant de chercher un planner robuste, il
+faut donner au planner une valeur apprise des conséquences, idéalement apprise
+sur le même signal que la policy, plutôt que renforcer indéfiniment la reward
+externe du World Model.
+
+#### Planner avec valeur apprise
+
+Implémentation ajoutée :
+
+- `seedmind/agent/value_model.py` : `ValueModel(latent) -> value` ;
+- `seedmind/training/value.py` : entraînement TD générique sur une clé de reward
+  configurable ;
+- checkpoints étendus avec `value_model_state`, `value_optimizer_state`,
+  `target_value_model_state` ;
+- `Planner` peut ajouter une valeur terminale après rollout imaginé ;
+- `run_micro_fouloide.py` entraîne le ValueModel en parallèle si
+  `value_model.enabled: true`.
+
+Config A/B :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner.yaml
+```
+
+Principe :
+
+```text
+World Model -> imagine les conséquences
+ValueModel  -> évalue le latent final selon reward_learning
+Planner     -> predicted rewards + terminal learned value
+```
+
+Cette étape est plus alignée avec l'objectif global que les poids manuels
+`wmfocus`, car la valeur des conséquences est apprise depuis le replay au lieu
+d'être codée dans la config.
+
+Commande :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_seed1
+
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --compare-planner \
+  --diagnose-world-model \
+  --diagnostic-samples 20000
+```
+
+Validation recherchée :
+
+```text
+Q + WM rollout + learned terminal value > Q-only
+```
+
+sur le même checkpoint. Si le signal apparaît sur une seed, refaire en
+multi-seed.
+
+Résultat `valueplanner` rough seed1 :
+
+```text
+Training:
+  Final mean lifespan(100): 122.7
+  drive100=0.664 food100=0.89 water100=1.14 dmg100=1.55
+
+Evaluation:
+  Naive:            lifespan=88.1  drive=0.654
+  Q-only:          lifespan=114.7 drive=0.658
+  Q + WM + Value:  lifespan=119.1 drive=0.661
+
+Ratios:
+  Q/naive:    1.30x
+  planner/Q:  1.04x
+```
+
+Métriques comportementales :
+
+```text
+Q-only:         food=0.67 water=0.83 damage=1.32
+Q + WM + Value: food=0.77 water=0.92 damage=1.30
+Naive:          food=0.30 water=0.20 damage=3.75
+```
+
+Diagnostic WM :
+
+```text
+interact_food  event_acc=0.768
+interact_water event_acc=0.776
+damage         event_acc=0.091
+death          event_acc=0.013
+temperature_*  event_acc=0.000
+```
+
+Conclusion provisoire :
+
+Le planner aligné par `ValueModel` donne le premier signal positif sur
+micro-fouloïde rough : **planner/Q = 1.04×**. Le gain s'accompagne d'un peu plus
+de nourriture/eau et d'un drive moyen légèrement meilleur. Le World Model reste
+toutefois faible sur `death`, `damage` et température ; le signal doit donc être
+validé en multi-seed avant conclusion.
+
+Validation multi-seed `valueplanner` rough :
+
+```text
+seed | Q lifespan | Planner lifespan | planner/Q | Q drive | Planner drive | Q food/water/damage | Planner food/water/damage
+1    | 114.7      | 119.1            | 1.04x     | 0.658   | 0.661         | 0.67 / 0.83 / 1.32  | 0.77 / 0.92 / 1.30
+2    | 102.8      | 104.8            | 1.02x     | 0.657   | 0.662         | 0.24 / 0.30 / 0.61  | 0.28 / 0.35 / 0.55
+3    | 107.4      | 105.3            | 0.98x     | 0.641   | 0.639         | 0.55 / 0.67 / 1.50  | 0.52 / 0.63 / 1.44
+```
+
+Moyenne seeds 1-3 :
+
+```text
+Naive lifespan: 88.1
+Q-only lifespan: 108.3
+Q + WM + Value lifespan: 109.7
+
+Q/naive:       1.23x
+Planner/naive: 1.25x
+Planner/Q:     ~1.01x
+
+Q-only:         drive=0.652 food=0.49 water=0.60 damage=1.14
+Q + WM + Value: drive=0.654 food=0.52 water=0.63 damage=1.10
+```
+
+Conclusion multi-seed :
+
+Le planner aligné par `ValueModel` donne un **signal positif moyen**, mais
+encore faible : +1.3% de lifespan environ, drive légèrement meilleur, un peu
+plus de nourriture/eau et un peu moins de dégâts. Seed3 reste négative, donc ce
+n'est pas encore une preuve forte. C'est néanmoins le premier résultat
+micro-fouloïde où un planner basé sur World Model et valeur apprise améliore
+Q-only en moyenne sur plusieurs seeds.
+
+Sweep d'évaluation ajouté pour consolider sans réentraîner :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --planner-sweep 0,0.025,0.05,0.1,0.15,0.25 \
+  --terminal-value-sweep 0,0.5,1,1.5,2 \
+  --planner-horizon 3 \
+  --planner-samples 8
+```
+
+Même commande à répéter sur `seed2` et `seed3`. Le sweep teste la sensibilité du
+planner au poids de mélange Q/WM et au poids de valeur terminale apprise, sur le
+même checkpoint.
+
+Résultats sweep seeds 1-3 :
+
+```text
+seed | Q-only | meilleur planner | meilleur ratio | meilleur réglage
+1    | 114.7  | 116.6            | 1.02x          | p=0.10 tv=1.5
+2    | 102.8  | 106.5            | 1.04x          | p=0.10 tv=2.0
+3    | 107.4  | 108.0            | 1.01x          | p=0.25 tv=1.5
+```
+
+Lecture :
+
+```text
+Le planner peut battre Q-only sur chaque seed si on choisit le meilleur réglage
+par seed, mais le gain reste faible et les réglages optimaux ne sont pas
+stables. Les poids trop élevés de planning, surtout p=0.25, dégradent souvent
+les seeds 1-2.
+```
+
+Réglages communs intéressants :
+
+```text
+p=0.10 tv=1.5 -> seed1 116.6, seed2 105.7, seed3 105.3
+p=0.15 tv=1.5 -> seed1 116.5, seed2 105.2, seed3 106.4
+```
+
+Conclusion sweep :
+
+Le sweep confirme que le signal planner n'est pas nul, mais il reste trop faible
+pour en faire une preuve robuste. La prochaine amélioration doit probablement
+porter sur la qualité/stabilité du World Model et du ValueModel, plus que sur un
+réglage manuel du poids planner.
+
+Note méthodologique : le planner random-shooting est maintenant seedé via le
+seed de l'agent afin de rendre ces comparaisons reproductibles.
+
+Diagnostic suivant ajouté : `--diagnose-value-model`.
+
+Commande type :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --device mps \
+  --diagnose-value-model \
+  --diagnostic-samples 20000 \
+  --diagnostics-only
+```
+
+Le diagnostic compare `ValueModel(latent)` au retour Monte Carlo réel du replay,
+avec le même `reward_key` et le même `gamma` que l'entraînement du ValueModel.
+Il rapporte `mae`, `bias` et corrélation par buckets génériques dérivés des
+features causales exposées par l'environnement.
+
+Premier smoke diagnostic seed1 (`5000` samples, CPU) :
+
+```text
+all:           corr=0.427 mae=0.2726 bias=-0.0183
+low_energy:    corr=0.382 mae=0.2982 bias=+0.1861
+low_hydration: corr=0.364 mae=0.3049 bias=+0.1643
+low_health:    corr=0.285 mae=0.3517 bias=+0.2410
+terminal:      corr=-0.298 mae=0.4679 bias=+0.4679
+```
+
+Lecture provisoire :
+
+Le ValueModel apprend un signal global modérément corrélé, mais il sous-estime
+la gravité des états critiques et terminaux. Cela peut expliquer pourquoi le
+planner améliore parfois la décision mais reste fragile.
+
+Évolution implémentée : entraînement ValueModel pondéré, générique.
+
+Nouveaux paramètres optionnels de `value_model` :
+
+```text
+target_abs_weight  # augmente le poids des cibles TD fortes
+terminal_weight    # augmente le poids des transitions terminales
+td_error_weight    # augmente le poids des exemples encore mal prédits
+max_weight         # borne la pondération
+```
+
+Ces paramètres ne dépendent d'aucun événement micro-fouloïde. Ils utilisent
+uniquement les signaux RL génériques du replay : cible TD, terminalité et erreur
+de valeur.
+
+Nouvelle config :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_focus.yaml
+```
+
+Commande de test seed1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_focus.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_focus_seed1
+```
+
+Évaluation après entraînement :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_focus_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_focus.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --compare-planner \
+  --diagnose-value-model \
+  --diagnostic-samples 20000 \
+  --planning-weight 0.1 \
+  --terminal-value-weight 1.5 \
+  --planner-horizon 3 \
+  --planner-samples 8
+```
+
+Critère de validation :
+
+```text
+low_health/terminal MAE baisse
+corr globale monte
+planner/Q devient plus stable ou dépasse clairement la config valueplanner
+```
+
+Résultat multi-seed `valueplanner_focus` :
+
+```text
+seed | Q-only | planner | planner/Q | value corr | low_health mae | terminal mae
+1    | 101.8  | 99.7    | 0.98x     | 0.483      | 0.1997         | 0.1809
+2    | 101.8  | 98.3    | 0.97x     | 0.530      | 0.1728         | 0.1394
+3    | 119.6  | 112.2   | 0.94x     | 0.549      | 0.1971         | 0.1675
+```
+
+Comparaison au diagnostic `valueplanner` seed1 :
+
+```text
+valueplanner seed1:
+  corr all=0.427 low_health_mae=0.3517 terminal_mae=0.4679
+
+valueplanner_focus seed1:
+  corr all=0.483 low_health_mae=0.1997 terminal_mae=0.1809
+```
+
+Conclusion :
+
+Le focus ValueModel réussit son objectif local : la valeur devient nettement
+meilleure sur `low_health` et `terminal`. Mais il dégrade la performance agent
+et le planner devient négatif sur les 3 seeds. Cela indique que mieux apprendre
+les fins critiques ne suffit pas : le ValueModel est devenu trop pessimiste en
+moyenne (`value_mean` plus négatif que les retours réels), et ce pessimisme
+perturbe la planification.
+
+Décision :
+
+```text
+Ne pas garder valueplanner_focus comme config gagnante.
+Garder le diagnostic ValueModel et les poids optionnels.
+Prochaine piste : calibration de valeur, pas pondération plus forte.
+```
+
+Pivot Dyna latent minimal :
+
+Le focus de valeur a montré que corriger un diagnostic local ne suffit pas. Pour
+tester directement l'hypothèse "World Model utile à l'apprentissage", une mise à
+jour Dyna latente a été ajoutée au `ValueModel` :
+
+```text
+Replay réel latent s,a
+WorldModel imagine s', r
+ValueModel apprend V(s) ≈ r + gamma * V_target(s')
+```
+
+Cette version est volontairement prudente :
+
+- elle ne crée pas encore d'observations synthétiques ;
+- elle ne modifie pas directement le DQN observationnel ;
+- elle entraîne seulement la valeur latente auxiliaire utilisée par le planner ;
+- elle est désactivée par défaut.
+
+Nouvelle config :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_dyna.yaml
+```
+
+Commande de test seed1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_dyna.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_dyna_seed1
+```
+
+Évaluation :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_dyna_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_dyna.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --compare-planner \
+  --diagnose-value-model \
+  --diagnostic-samples 20000 \
+  --planning-weight 0.1 \
+  --terminal-value-weight 1.5 \
+  --planner-horizon 3 \
+  --planner-samples 8
+```
+
+Critère :
+
+```text
+Si Dyna latent améliore le ValueModel sans pessimisme global et augmente
+planner/Q, on tient une meilleure piste que le planner-only.
+```
+
+Résultat multi-seed `valueplanner_dyna` :
+
+```text
+seed | Q-only | planner | planner/Q | value corr | value bias | terminal mae
+1    | 106.2  | 107.8   | 1.02x     | 0.440      | -0.0910    | 0.3922
+2    | 102.8  | 100.7   | 0.98x     | 0.514      | -0.0790    | 0.3229
+3    | 120.8  | 119.9   | 0.99x     | 0.529      | -0.0073    | 0.3814
+```
+
+Comparaison synthétique :
+
+```text
+valueplanner baseline:
+  planner/Q moyen ≈ 1.01x
+  Q-only moyen ≈ 108.3
+
+valueplanner_focus:
+  planner/Q moyen ≈ 0.96x
+  Q-only moyen ≈ 107.7
+  meilleur diagnostic terminal, mais pessimisme global
+
+valueplanner_dyna:
+  planner/Q moyen ≈ 1.00x
+  Q-only moyen ≈ 109.9
+  moins pessimiste que focus, mais terminal encore mal appris
+```
+
+Conclusion :
+
+Le Dyna latent minimal est une meilleure direction que le focus pondéré : il ne
+rend pas la valeur globalement aussi pessimiste et il préserve mieux la policy.
+Mais il ne donne pas encore une preuve robuste que `WM improves learning`.
+L'effet planner reste essentiellement neutre, avec seed1 positif et seeds 2-3
+légèrement négatives.
+
+Décision :
+
+```text
+Arrêter les variantes ValueModel seules.
+Le prochain saut doit être architectural : représentation/value en latent
+directement exploitable par la policy, ou Dyna qui entraîne une policy latente,
+pas seulement une valeur terminale branchée au planner.
+```
+
+Pivot implémenté : policy Q latente.
+
+Nouveaux modules :
+
+```text
+seedmind/agent/latent_q_network.py
+seedmind/training/latent_dqn.py
+```
+
+Principe :
+
+```text
+Encoder(obs) -> latent
+LatentQ(latent, action) -> Q
+```
+
+Le `LatentQNetwork` est entraîné en parallèle du Q observationnel, sur les mêmes
+transitions réelles du replay. Il est sauvegardé dans les checkpoints et peut
+être évalué avec `--compare-latent-q`. C'est le premier pas vers une policy qui
+utilise directement la représentation apprise par le World Model.
+
+Config de test :
+
+```text
+configs/micro_fouloide_v0_rough_latentq.yaml
+```
+
+Commande seed1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_latentq.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_latentq_seed1
+```
+
+Évaluation :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_latentq_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_latentq.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --compare-latent-q \
+  --compare-planner \
+  --planning-weight 0.1 \
+  --terminal-value-weight 1.5 \
+  --planner-horizon 3 \
+  --planner-samples 8
+```
+
+Critère :
+
+```text
+LatentQ >= Q-only sur lifespan ou drive, sans collapse comportemental.
+Si oui, activer ensuite Dyna sur LatentQ plutôt que sur ValueModel seul.
+```
+
+Résultat multi-seed `latentq` :
+
+```text
+seed | Q-only | LatentQ | LatentQ/Q | Planner | Planner/Q | observation
+1    | 112.2  | 92.9    | 0.83x     | 110.2   | 0.98x     | LatentQ sur-interagit
+2    | 103.5  | 96.2    | 0.93x     | 104.5   | 1.01x     | LatentQ sous-performe
+3    | 111.9  | 92.8    | 0.83x     | 108.7   | 0.97x     | LatentQ sous-performe
+```
+
+Comportement LatentQ :
+
+```text
+seed1: interact=82.2%, food=0.04, water=0.04
+seed2: interact=60.2%, food=0.03, water=0.03
+seed3: interact=46.5%, food=0.03, water=0.08
+```
+
+Conclusion :
+
+Le latent actuel n'est pas encore un bon support direct de policy. LatentQ
+apprend une préférence d'action dégénérée, surtout `INTERACT`, sans capter assez
+la condition contextuelle "interagir seulement quand l'entité utile est sous
+l'agent". Cela indique que le latent est suffisant pour la prédiction WM, mais
+pas assez structuré ou stable pour remplacer le Q observationnel.
+
+Décision :
+
+```text
+Ne pas activer Dyna sur LatentQ maintenant.
+Diagnostiquer d'abord le contenu informationnel du latent pour la décision :
+peut-on prédire les features causales et l'entité sous l'agent depuis le latent ?
+```
+
+Diagnostic ajouté :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_latentq_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_latentq.yaml \
+  --device mps \
+  --diagnose-latent \
+  --diagnostic-samples 20000 \
+  --diagnostics-only
+```
+
+Ce diagnostic entraîne des probes linéaires hors-policy depuis `latent_state` :
+
+```text
+latent_state -> causal_features
+latent_state -> standing_entity
+```
+
+Lecture attendue :
+
+- si les features causales et `standing_entity` sont mal décodables, il faut
+  renforcer la représentation latente avant de travailler LatentQ/Dyna ;
+- si elles sont bien décodables, le problème est plutôt côté apprentissage de
+  policy latente : équilibre d'actions, masques, objectifs ou échelle de valeur.
+
+Smoke test local sur seed1, 1000 échantillons :
+
+```text
+standing_entity probe:
+  acc=0.860 baseline_majority=0.870 balanced_acc=0.473 gain=-0.010
+  top_pred=0:0.85,6:0.07,5:0.06
+```
+
+Résultat multi-seed complet sur 20000 échantillons :
+
+```text
+seed | entity acc | majority | gain  | standing_entity corr | food_signal corr | water_signal corr
+1    | 0.911      | 0.889    | +0.022| 0.506                | 0.190            | 0.222
+2    | 0.917      | 0.898    | +0.019| 0.475                | 0.208            | 0.219
+3    | 0.906      | 0.882    | +0.024| 0.448                | 0.214            | 0.238
+```
+
+Lecture :
+
+Le latent encode bien une partie des drives internes (`energy`, `hydration`,
+`health`, corr ≈ 0.37-0.50) et un faible signal sur `standing_entity`. Mais le
+gain d'accuracy sur la majorité est seulement **+2 points** environ, dans un
+problème très déséquilibré où la classe dominante vaut déjà ~0.89. Les signaux
+locaux utiles à l'interaction (`local_food_signal`, `local_water_signal`,
+`local_danger`) restent faibles.
+
+Conclusion :
+
+Le latent n'est pas vide, mais il n'est pas assez discriminant pour une policy
+latente directe. Cela explique le collapse LatentQ : le réseau apprend qu'il
+faut souvent `INTERACT`, sans disposer d'une représentation suffisamment nette
+pour savoir **quand** interagir.
+
+Décision suivante :
+
+```text
+Ne pas ajouter Dyna sur LatentQ.
+Renforcer d'abord la représentation latente avec des objectifs auxiliaires
+génériques de reconstruction/prédiction des features perceptibles courantes.
+```
+
+Implémentation pragmatique ajoutée : `structured_latent_features`.
+
+Comme l'encodeur actuel est gelé, entraîner une tête auxiliaire seule ne
+modifierait pas le latent. La première version utile est donc un skip perceptif
+générique :
+
+```text
+latent = [projection_observation, adapter.causal_features(observation)]
+```
+
+L'agent ne connaît toujours pas le sens de ces features. Il reçoit seulement un
+vecteur de capteurs structurés exposés par l'`EnvironmentAdapter`. Cela reste
+agnostique au monde, mais donne à LatentQ un support de décision plus net.
+
+Nouvelle config :
+
+```text
+configs/micro_fouloide_v0_rough_latentq_structured.yaml
+```
+
+Commande de test seed1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_latentq_structured.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_latentq_structured_seed1
+```
+
+Évaluation :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_latentq_structured_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_latentq_structured.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --compare-latent-q \
+  --compare-planner \
+  --planning-weight 0.1 \
+  --terminal-value-weight 1.5 \
+  --planner-horizon 3 \
+  --planner-samples 8
+```
+
+Diagnostic latent :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_latentq_structured_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_latentq_structured.yaml \
+  --device mps \
+  --diagnose-latent \
+  --diagnostic-samples 20000 \
+  --diagnostics-only
+```
+
+Smoke test local sur 5 épisodes :
+
+```text
+causal feature probe: mae=0.0000, corr=1.000 sur toutes les features
+standing_entity probe:
+  acc=0.966 baseline_majority=0.798 balanced_acc=0.962 gain=+0.169
+```
+
+Critère de validation :
+
+```text
+LatentQ structured > LatentQ précédent
+et idéalement LatentQ structured >= Q-only
+sans collapse massif vers INTERACT.
+```
+
+Résultat multi-seed `latentq_structured` :
+
+```text
+seed | Q-only | LatentQ structured | LatentQ/Q | Planner | Planner/Q | observation
+1    | 107.8  | 100.6             | 0.93x     | 106.8   | 0.99x     | LatentQ préfère REST/WAIT
+2    | 101.1  | 96.3              | 0.95x     | 99.9    | 0.99x     | LatentQ sous Q-only
+3    | 105.4  | 91.3              | 0.87x     | 106.5   | 1.01x     | LatentQ sous Q-only
+```
+
+Conclusion :
+
+Le skip perceptif corrige l'information du latent, mais ne suffit pas. LatentQ
+reste inférieur à Q-only et ne devient pas une policy fiable. Le problème se
+déplace donc de la représentation vers l'alignement de l'objectif/policy
+latente.
+
+Diagnostic ajouté : `--diagnose-latent-q`.
+
+Commande :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_latentq_structured_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_latentq_structured.yaml \
+  --device mps \
+  --diagnose-latent-q \
+  --diagnostic-samples 20000 \
+  --diagnostics-only
+```
+
+Smoke diagnostic seed1, 5000 échantillons :
+
+```text
+best_action_agreement=0.123
+q_matches_replay=0.236
+latent_matches_replay=0.149
+q_best:      MOVE_UP:0.35 MOVE_DOWN:0.20 MOVE_LEFT:0.17 REST:0.11
+latent_best: REST:0.35 WAIT:0.19 MOVE_DOWN:0.13 INTERACT:0.12
+```
+
+Lecture :
+
+LatentQ n'imite pas la policy observationnelle apprise. Il apprend une surface
+de valeur différente, plus orientée `REST/WAIT`, et son accord avec Q-only est
+très faible. La prochaine expérience doit donc ancrer LatentQ sur Q-only.
+
+Nouvelle config : LatentQ structuré + distillation Qobs.
+
+```text
+configs/micro_fouloide_v0_rough_latentq_structured_distill.yaml
+```
+
+Principe :
+
+```text
+LatentQ TD loss + distill_weight * MSE(centered LatentQ, centered Qobs)
+```
+
+Cette distillation est générique : elle n'encode aucune règle du monde. Elle
+force seulement la policy latente à apprendre les préférences d'action d'une
+autre policy apprise qui fonctionne mieux.
+
+Commande seed1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_latentq_structured_distill.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_latentq_structured_distill_seed1
+```
+
+Évaluation :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_latentq_structured_distill_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_latentq_structured_distill.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --compare-latent-q \
+  --compare-planner \
+  --planning-weight 0.1 \
+  --terminal-value-weight 1.5 \
+  --planner-horizon 3 \
+  --planner-samples 8
+```
+
+Diagnostic d'alignement :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_latentq_structured_distill_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_latentq_structured_distill.yaml \
+  --device mps \
+  --diagnose-latent-q \
+  --diagnostic-samples 20000 \
+  --diagnostics-only
+```
+
+Critère :
+
+```text
+best_action_agreement monte nettement
+LatentQ/Q se rapproche de 1.0 ou dépasse Q-only
+et LatentQ ne collapse ni vers INTERACT, ni vers REST/WAIT.
+```
+
+Résultat multi-seed `latentq_structured_distill` avec distillation MSE centrée :
+
+```text
+seed | Q-only | LatentQ distill | LatentQ/Q | Planner | Planner/Q | latent_best dominant
+1    | 107.8  | 97.1            | 0.90x     | 106.8   | 0.99x     | INTERACT / WAIT
+2    | 101.1  | 96.9            | 0.96x     | 99.9    | 0.99x     | INTERACT / MOVE_UP / REST
+3    | 105.4  | 94.8            | 0.90x     | 106.5   | 1.01x     | MOVE_LEFT / INTERACT
+```
+
+Diagnostics d'alignement :
+
+```text
+seed | agreement | q_matches_replay | latent_matches_replay | q_margin | latent_margin
+1    | 0.121     | 0.245            | 0.137                 | 0.0130   | 0.0048
+2    | 0.219     | 0.236            | 0.153                 | 0.0104   | 0.0037
+3    | 0.236     | 0.239            | 0.162                 | 0.0118   | 0.0061
+```
+
+Conclusion :
+
+La distillation MSE centrée échoue. Les valeurs Qobs ont des marges très faibles
+(`q_margin≈0.01`), donc imiter les valeurs centrées produit un signal trop mou.
+LatentQ reste mal aligné avec Q-only et choisit des actions dominantes
+différentes.
+
+Nouvelle variante : distillation de politique.
+
+```text
+configs/micro_fouloide_v0_rough_latentq_structured_policy_distill.yaml
+```
+
+Principe :
+
+```text
+LatentQ TD loss + distill_weight * CE(LatentQ logits, argmax(Qobs))
+```
+
+Ce test est plus strict : on ne demande plus à LatentQ d'imiter une échelle de
+valeurs ambiguë, mais directement l'action préférée par le teacher Qobs.
+
+Commande seed1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_latentq_structured_policy_distill.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_latentq_structured_policy_distill_seed1
+```
+
+Évaluation et diagnostic : mêmes commandes que `structured_distill`, avec
+`structured_policy_distill` dans les chemins/config.
+
+Critère :
+
+```text
+agreement Qobs/LatentQ doit monter fortement.
+Si ce n'est pas le cas, arrêter la branche LatentQ séparée.
+```
+
+Résultat multi-seed `latentq_structured_policy_distill` :
+
+```text
+seed | Q-only | LatentQ policy-distill | LatentQ/Q | Planner | Planner/Q | comportement LatentQ
+1    | 107.8  | 96.5                  | 0.90x     | 106.8   | 0.99x     | move=96.8%, interact=1.8%
+2    | 101.1  | 94.8                  | 0.94x     | 99.9    | 0.99x     | move=98.0%, interact=2.0%
+3    | 105.4  | 93.1                  | 0.88x     | 106.5   | 1.01x     | move=91.6%, interact=7.2%
+```
+
+Diagnostics d'alignement :
+
+```text
+seed | agreement | q_matches_replay | latent_matches_replay | q_margin | latent_margin | latent_best
+1    | 0.308     | 0.245            | 0.173                 | 0.0130   | 0.1530        | MOVE_UP / MOVE_LEFT
+2    | 0.286     | 0.236            | 0.168                 | 0.0104   | 0.1980        | MOVE_LEFT / MOVE_RIGHT
+3    | 0.282     | 0.239            | 0.183                 | 0.0118   | 0.1275        | MOVE_DOWN / MOVE_UP
+```
+
+Conclusion :
+
+La distillation de politique augmente l'alignement brut par rapport à MSE, mais
+elle transforme LatentQ en politique quasi exclusivement de déplacement. Elle
+reste sous Q-only sur les 3 seeds et n'apprend pas l'arbitrage
+déplacement/interactions/repos. La branche `LatentQ` séparée est donc arrêtée.
+
+Décision :
+
+```text
+STOP LatentQ séparé.
+Ne pas ajouter Dyna sur LatentQ.
+Ne pas chercher à faire du latent une policy concurrente au Q observationnel
+dans cette architecture.
+```
+
+Interprétation :
+
+Le latent structuré est utile comme **support de modèle du monde** et de
+diagnostic, mais pas encore comme substrat direct de policy. Pour prouver
+l'apport du World Model, la suite doit agir là où le signal est déjà stable :
+
+```text
+1. garder Q observationnel comme policy principale ;
+2. utiliser le World Model pour améliorer l'apprentissage ou l'évaluation de Q ;
+3. éviter les policies auxiliaires concurrentes tant qu'elles ne battent pas Q.
+```
 
 ### B — Consolidation planification (à reprendre)
 
 Pistes identifiées :
 
 1. **Planning différé** : `planning_weight` monte seulement quand la loss WM est sous un seuil
-2. **Dyna latent** : Q-network en espace latent, ou WM qui prédit aussi l'observation
-3. **Planification seule en eval** : entraîner au DQN pur, planifier seulement à l'inférence
+2. **Dyna/augmentation pour Q observationnel** : le WM doit aider la policy
+   principale, pas entraîner une policy latente séparée ;
+3. **Planification seule en eval** : entraîner au DQN pur, planifier seulement à l'inférence ;
+4. **Gating du planner** : activer le planner seulement dans les états où il
+   améliore une métrique prédite avec confiance.
+
+Implémenté : planner gated par confiance.
+
+Le planner expose maintenant, pour chaque action candidate :
+
+```text
+WM rollout value
+mean rollout uncertainty
+```
+
+L'agent peut utiliser deux seuils génériques :
+
+```text
+planning.uncertainty_threshold
+planning.margin_threshold
+```
+
+Principe :
+
+```text
+si WM incertain ou marge WM trop faible:
+  utiliser Q-only
+sinon:
+  mélanger Q + WM selon planning.weight
+```
+
+Ce mécanisme ne dépend d'aucun événement micro-fouloïde. Il teste directement
+l'hypothèse : un World Model doit aider seulement quand il prédit des
+conséquences avec assez de confiance.
+
+Évaluation CLI :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --compare-planner \
+  --planning-weight 0.1 \
+  --terminal-value-weight 1.5 \
+  --planner-horizon 3 \
+  --planner-samples 8 \
+  --planner-uncertainty-threshold 0.65 \
+  --planner-margin-threshold 0.0
+```
+
+Smoke tests locaux :
+
+```text
+threshold=-1:
+  planner_used=0%, résultat identique à Q-only
+
+threshold=999:
+  planner_used=100%, résultat différent de Q-only
+```
+
+Critère de validation :
+
+```text
+planner_used doit être partiel, pas 0% ni 100%.
+planner/Q doit être >= 1.0 sur moyenne multi-seed.
+Si planner_used est partiel mais planner/Q < 1.0, le problème reste la qualité
+des conséquences imaginées, pas seulement leur gating.
+```
+
+Résultat multi-seed `valueplanner` avec gate confiance :
+
+```text
+config: configs/micro_fouloide_v0_rough_valueplanner.yaml
+planning_weight=0.1
+terminal_value_weight=1.5
+planner_horizon=3
+planner_samples=8
+uncertainty_threshold=0.65
+margin_threshold=0.0
+```
+
+seed | Q-only | Q + WM gated | planner/Q | planner_used | drive Q -> WM | food/water/damage Q -> WM
+-----|--------|--------------|-----------|--------------|---------------|---------------------------
+1    | 114.7  | 115.5        | 1.01x     | 100.0%       | 0.658 -> 0.659 | 0.67/0.83/1.32 -> 0.71/0.82/1.23
+2    | 102.8  | 103.8        | 1.01x     | 37.3%        | 0.657 -> 0.659 | 0.24/0.30/0.61 -> 0.24/0.33/0.55
+3    | 107.4  | 107.4        | 1.00x     | 12.0%        | 0.641 -> 0.641 | 0.55/0.67/1.50 -> 0.55/0.68/1.47
+
+Synthèse :
+
+```text
+Q-only moyen:       108.3
+Q + WM gated moyen: 108.9
+gain moyen:         +0.6 lifespan, ≈1.006x
+```
+
+Interprétation :
+
+1. Le gate de confiance n'est pas une preuve forte du planner, mais il retire
+   l'effet destructeur observé sur plusieurs variantes.
+2. Le signal est petit mais orienté dans le bon sens : le WM devient un
+   conseiller contrôlé plutôt qu'une policy concurrente.
+3. Cette direction est plus cohérente avec l'objectif global : un World Model
+   générique qui apprend cause/conséquence et aide la décision principale
+   seulement quand ses prédictions sont assez fiables.
+4. La suite immédiate est un sweep automatisé des seuils `uncertainty` et
+   `margin`, pour trouver une zone robuste sans réglage à la main seed par seed.
+
+Commande de sweep confiance :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --num-episodes 100 \
+  --device mps \
+  --planner-sweep 0.05,0.1,0.15 \
+  --terminal-value-sweep 1.0,1.5,2.0 \
+  --planner-uncertainty-sweep 0.55,0.6,0.65,0.7 \
+  --planner-margin-sweep 0,0.01,0.02 \
+  --planner-horizon 3 \
+  --planner-samples 8
+```
+
+Résultat du sweep confiance sur les 3 seeds :
+
+```text
+Q-only moyen: 108.3
+```
+
+Deux réglages communs ressortent :
+
+```text
+Réglage safe:
+  planning_weight=0.15
+  terminal_value_weight=1.0
+  uncertainty_threshold=0.60
+  margin_threshold=0.0
+
+  seed1: 117.1 vs Q 114.7, planner_used=98.8%
+  seed2: 103.5 vs Q 102.8, planner_used=7.7%
+  seed3: 107.4 vs Q 107.4, planner_used=0.5%
+  moyenne: 109.3, soit +1.0 lifespan environ
+```
+
+Ce réglage est conservateur : il bat ou égale Q-only, mais sur deux seeds il
+revient presque entièrement à Q-only. Il valide surtout que le gate sait
+empêcher le planner de nuire.
+
+```text
+Réglage actif:
+  planning_weight=0.15
+  terminal_value_weight=2.0
+  uncertainty_threshold=0.70
+  margin_threshold=0.01
+
+  seed1: 114.6 vs Q 114.7, planner_used=87.2%
+  seed2: 107.2 vs Q 102.8, planner_used=70.6%
+  seed3: 107.6 vs Q 107.4, planner_used=41.9%
+  moyenne: 109.8, soit +1.5 lifespan environ
+```
+
+Ce réglage est le plus intéressant pour la thèse WM : le planner est vraiment
+utilisé sur les 3 seeds et la moyenne passe au-dessus de Q-only, sans collapse.
+Le gain reste faible, mais il n'est plus seulement dû à une désactivation du
+planner.
+
+Conclusion du sweep :
+
+```text
+Le signal planner existe, mais il est petit.
+Le gate de confiance est utile et générique.
+Le meilleur réglage commun actif donne environ 109.8 vs 108.3 Q-only,
+soit ~1.014x.
+```
+
+Interprétation :
+
+1. On ne peut pas encore dire que le World Model est "au top".
+2. On peut dire qu'il commence à fournir une aide mesurable quand il est
+   utilisé comme conseiller contrôlé.
+3. Le blocage principal n'est plus seulement le planner ; c'est la qualité et
+   la calibration des conséquences imaginées par le World Model.
+4. La prochaine étape utile est donc d'améliorer le World Model lui-même :
+   meilleure calibration d'incertitude, meilleur apprentissage des transitions
+   rares/critiques, et métriques de corrélation entre incertitude et erreur.
+
+Diagnostic de calibration ajouté :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner.yaml \
+  --device mps \
+  --diagnose-wm-calibration \
+  --diagnostic-samples 20000 \
+  --diagnostics-only
+```
+
+Smoke diagnostic sur seed1, 5000 transitions :
+
+```text
+correlation uncertainty -> state_mse:      -0.017
+correlation uncertainty -> reward_err:     +0.037
+correlation uncertainty -> feature_mae:    -0.011
+correlation uncertainty -> event_miss:     -0.007
+correlation uncertainty -> composite_rank: +0.072
+top20 uncertainty captures top20 errors:    18.6%
+```
+
+Lecture : l'incertitude actuelle n'est pas calibrée. Elle ne prédit presque pas
+les erreurs réelles du World Model, et son top 20% capture moins d'erreurs que
+le hasard attendu autour de 20%. Le gate fonctionne donc surtout comme un filtre
+empirique, pas encore comme une vraie confiance apprise.
+
+Correction générique ajoutée :
+
+```text
+world_model.uncertainty_loss_weight
+```
+
+Quand ce poids est > 0, la tête `uncertainty` apprend à prédire l'erreur
+composite détachée du World Model :
+
+```text
+latent next-state error
++ reward prediction error
++ causal feature delta error
++ event prediction error
+```
+
+Cette cible ne dépend d'aucun événement micro-fouloïde. Elle entraîne seulement
+le modèle à savoir quand ses propres prédictions sont mauvaises.
+
+Nouvelle config de test :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_calibrated.yaml
+```
+
+Commande proposée :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_calibrated.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_calibrated_seed1
+```
+
+Critère de validation :
+
+```text
+1. diagnose-wm-calibration doit montrer une corrélation positive claire.
+2. top20 uncertainty capture top20 errors doit dépasser nettement 20%.
+3. Le planner gated doit rester >= Q-only en moyenne multi-seed.
+```
+
+Résultat seed1 calibré :
+
+```text
+train final lifespan100: 106.1
+
+diagnose-wm-calibration:
+  state_mse corr:       +0.340
+  reward_abs_err corr:  +0.120
+  feature_mae corr:     +0.405
+  event_miss corr:      +0.292
+  composite_rank corr:  +0.610
+  top20 capture:         48.1%
+```
+
+Conclusion calibration :
+
+```text
+La tête uncertainty est maintenant réellement informative.
+```
+
+Évaluation planner avec l'ancien seuil actif :
+
+```text
+threshold=0.70
+margin=0.01
+planning_weight=0.15
+terminal_value_weight=2.0
+
+Q-only:       lifespan 105.6
+Q + planner: lifespan 105.3
+planner/Q:   1.00x
+planner_used=86.9%
+```
+
+Lecture :
+
+Le résultat n'invalide pas la calibration. Il montre surtout que le seuil
+`0.70`, utile avec l'ancienne incertitude non calibrée, est trop haut pour la
+nouvelle échelle calibrée. Après calibration, les bins d'incertitude observés
+sont environ :
+
+```text
+q1=0.06 q2=0.14 q3=0.23 q4=0.29 q5=0.36
+```
+
+Le prochain sweep doit donc tester des seuils autour de cette nouvelle échelle,
+pas réutiliser `0.70`.
+
+Sweep planner sur checkpoint calibré seed1 :
+
+```text
+Q-only calibré: 105.6
+meilleur planner calibré: 107.5
+gain planner interne: +1.9 lifespan, ≈1.02x
+```
+
+Bons réglages observés :
+
+```text
+planning_weight=0.05
+terminal_value_weight=1.0
+uncertainty_threshold=0.36
+margin_threshold=0.0
+planner_used=99.1%
+lifespan=107.5
+
+planning_weight=0.15
+terminal_value_weight=2.0
+uncertainty_threshold=0.30
+margin_threshold=0.01
+planner_used=77.5%
+lifespan=107.5
+```
+
+Lecture :
+
+1. La calibration de l'incertitude est validée.
+2. Le planner peut de nouveau apporter un petit gain sur le checkpoint calibré.
+3. Mais le Q-only calibré descend par rapport au `valueplanner` non calibré
+   seed1 (`105.6` vs `114.7` en évaluation Q-only).
+4. `uncertainty_loss_weight=0.2` est probablement trop fort : il améliore la
+   confiance du WM mais coûte trop à l'apprentissage comportemental.
+
+Décision suivante :
+
+```text
+Ne pas lancer seeds 2/3 sur uncertainty_loss_weight=0.2.
+Tester une calibration plus légère sur seed1.
+```
+
+Résultat `calibrated_light` (`uncertainty_loss_weight=0.05`) seed1 :
+
+```text
+Q-only:          106.3
+meilleur planner: 109.0
+gain planner:    +2.7, ≈1.03x
+
+meilleur réglage planner:
+  planning_weight=0.10
+  terminal_value_weight=1.0
+  uncertainty_threshold=0.36
+  margin_threshold=0.02
+  planner_used=55.7%
+```
+
+Diagnostic calibration :
+
+```text
+state_mse corr:       +0.379
+reward_abs_err corr:  +0.096
+feature_mae corr:     +0.378
+event_miss corr:      +0.265
+composite_rank corr:  +0.574
+top20 capture:         45.4%
+```
+
+Lecture :
+
+```text
+0.05 conserve presque toute la calibration de 0.2
+mais coûte encore du Q-only par rapport au valueplanner baseline seed1.
+```
+
+Décision :
+
+Tester une calibration encore plus légère (`uncertainty_loss_weight=0.01`) pour
+voir si on récupère le Q-only tout en gardant une incertitude suffisamment
+corrélée aux erreurs réelles.
+
+Résultat `calibrated_tiny` (`uncertainty_loss_weight=0.01`) seed1 :
+
+```text
+Q-only:           108.3
+meilleur planner: 109.1
+gain planner:     +0.8, ≈1.01x
+
+diagnose-wm-calibration:
+  state_mse corr:       +0.310
+  reward_abs_err corr:  +0.051
+  feature_mae corr:     +0.365
+  event_miss corr:      +0.261
+  composite_rank corr:  +0.484
+  top20 capture:         37.8%
+```
+
+Lecture :
+
+```text
+La supervision d'incertitude est générique et fonctionne, même à faible poids.
+Mais même 0.01 ne récupère pas le Q-only du valueplanner non calibré seed1
+(`108.3` vs `114.7`). Le problème n'est donc pas seulement le poids : le loss
+d'incertitude partage encore le tronc du World Model et peut perturber les
+représentations utiles à la dynamique/récompense.
+```
+
+Décision suivante :
+
+```text
+Découpler la calibration d'incertitude.
+La tête uncertainty doit apprendre l'erreur composite du WM sans envoyer de
+gradient dans le tronc partagé. Objectif : conserver la calibration utile
+pour le planner sans dégrader l'apprentissage dynamique/Q-only.
+```
+
+Nouvelle config de test :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_calibrated_head.yaml
+world_model.uncertainty_loss_weight = 0.05
+world_model.uncertainty_detach = true
+```
+
+Résultat `calibrated_head` seed1 :
+
+```text
+train final lifespan100: 105.3
+
+diagnose-wm-calibration:
+  state_mse corr:       +0.396
+  reward_abs_err corr:  +0.097
+  feature_mae corr:     +0.409
+  event_miss corr:      +0.316
+  composite_rank corr:  +0.619
+  top20 capture:         45.1%
+
+eval Q-only:       103.2
+best planner sweep: 105.9
+best planner/Q:     1.03x
+```
+
+Lecture :
+
+```text
+Le découplage head-only donne la meilleure calibration d'incertitude observée,
+mais ne restaure pas le comportement Q-only. Le gain planner est réel en
+interne au checkpoint, mais le checkpoint lui-même est trop faible par rapport
+au valueplanner baseline.
+```
+
+Décision :
+
+```text
+Ne pas lancer seeds 2/3 sur calibrated_head.
+La prochaine expérience doit calibrer l'incertitude après entraînement, sur un
+checkpoint Q/WM déjà bon, en gelant toute la dynamique et la policy. Cela teste
+si une incertitude fiable peut améliorer le planner sans perturber
+l'apprentissage comportemental.
+```
+
+Outil ajouté :
+
+```text
+scripts/calibrate_micro_fouloide_uncertainty.py
+```
+
+Il charge un checkpoint existant, réutilise son replay buffer et entraîne
+uniquement `world_model.uncertainty_head`. Le `world_model_state` calibré est
+sauvegardé dans un nouveau checkpoint ; Q-network, value model, mémoire et
+dynamique WM restent inchangés.
+
+Résultat posthoc sur `valueplanner_seed1` :
+
+```text
+posthoc uncertainty calibration:
+  updates=2000
+  loss=0.017324
+
+diagnose-wm-calibration:
+  state_mse corr:       +0.220
+  reward_abs_err corr:  -0.013
+  feature_mae corr:     +0.324
+  event_miss corr:      +0.248
+  composite_rank corr:  +0.305
+  top20 capture:         32.6%
+
+Q-only inchangé:
+  lifespan=114.7
+
+meilleurs planners:
+  p=0.15, terminal_value=1.0, uncertainty=0.24, margin=0.01
+  lifespan=117.0, planner/Q=1.02x, planner_used=59.6%, max=290
+
+  p=0.15, terminal_value=1.0, uncertainty=0.30/0.36, margin=0.0
+  lifespan=117.0, planner/Q=1.02x, planner_used≈100%, max=290
+
+  p=0.15, terminal_value=2.0, uncertainty=0.30/0.36, margin=0.01
+  lifespan=116.8, planner/Q=1.02x, planner_used≈81.8%, max=214
+```
+
+Lecture :
+
+```text
+C'est le meilleur compromis observé jusqu'ici sur micro-fouloïde rough :
+la calibration d'incertitude devient utile, Q-only n'est pas dégradé, et le
+planner repasse au-dessus de Q-only sur le checkpoint seed1.
+```
+
+Décision :
+
+```text
+Valider posthoc sur seeds 2 et 3 avant toute nouvelle architecture.
+Le réglage principal à tester en comparaison multi-seed est :
+p=0.15, terminal_value=1.0, uncertainty_threshold=0.24, margin=0.01
+car il combine gain lifespan, usage planner modéré et meilleur max observé.
+```
+
+Validation posthoc seeds 1-3 avec réglage fixe :
+
+```text
+p=0.15
+terminal_value=1.0
+uncertainty_threshold=0.24
+margin=0.01
+horizon=3
+samples=8
+```
+
+Résultats :
+
+```text
+seed | Q-only | Q+planner | delta | planner/Q | planner_used
+1    | 114.7  | 117.0     | +2.3  | 1.02x     | 59.6%
+2    | 102.8  | 104.0     | +1.2  | 1.01x     | 53.9%
+3    | 107.4  | 106.3     | -1.1  | 0.99x     | 67.5%
+
+mean Q-only:    108.3
+mean Q+planner: 109.1
+mean delta:     +0.8
+mean ratio:     ~1.01x
+```
+
+Lecture :
+
+```text
+La calibration posthoc préserve le Q-only et donne un signal planner positif en
+moyenne, mais encore trop faible pour parler de preuve robuste. Seed3 reste
+négatif au réglage fixe. Le résultat est donc un signal encourageant, pas une
+validation finale.
+```
+
+Décision :
+
+```text
+Ne pas changer encore l'architecture.
+Augmenter le budget d'évaluation sur le même réglage fixe pour réduire le bruit
+avant de conclure. Si le delta moyen reste positif sur 300-500 épisodes, on
+peut ensuite tester un réglage adaptatif ou calibré par quantile d'incertitude.
+```
+
+Validation 300 épisodes, même réglage fixe :
+
+```text
+p=0.15
+terminal_value=1.0
+uncertainty_threshold=0.24
+margin=0.01
+horizon=3
+samples=8
+```
+
+Résultats :
+
+```text
+seed | Q-only | Q+planner | delta | planner/Q | planner_used
+1    | 116.6  | 117.8     | +1.2  | 1.01x     | 58.2%
+2    | 102.9  | 104.4     | +1.5  | 1.01x     | 51.8%
+3    | 105.5  | 105.6     | +0.1  | 1.00x     | 65.3%
+
+mean Q-only:    108.3
+mean Q+planner: 109.3
+mean delta:     +0.9
+mean ratio:     ~1.01x
+```
+
+Lecture :
+
+```text
+Le signal planner posthoc devient positif sur les 3 seeds quand le bruit
+d'évaluation est réduit. C'est une preuve minimale que le World Model calibré
+peut améliorer Q-only à checkpoint identique. L'effet reste faible : il ne
+suffit pas encore comme preuve forte d'un planner causal robuste.
+```
+
+Effets secondaires observés :
+
+```text
+food/water montent avec le planner sur les 3 seeds.
+drive moyen monte légèrement sur les 3 seeds.
+damage monte aussi légèrement, donc le planner semble pousser vers plus
+d'activité/ressources plutôt que vers une stratégie globalement plus sûre.
+```
+
+Décision :
+
+```text
+Acter la calibration posthoc comme meilleur chemin actuel.
+Prochaine étape : comparer le même réglage avec et sans checkpoint calibré pour
+isoler l'effet propre de l'incertitude calibrée, puis tester un gate adaptatif
+par quantile au lieu d'un seuil absolu fixe.
+```
+
+Implémentation du gate adaptatif :
+
+```text
+scripts/evaluate_micro_fouloide.py
+  --planner-uncertainty-quantile <q>
+  --planner-uncertainty-quantile-sweep <q1,q2,...>
+```
+
+Le seuil absolu est résolu depuis la distribution d'incertitude du replay du
+checkpoint :
+
+```text
+threshold = quantile(WM_uncertainty(replay_latent, replay_action), q)
+```
+
+Cela évite de choisir manuellement `0.24` quand l'échelle d'incertitude change
+entre checkpoints ou mondes. Le cœur agent reste inchangé : l'évaluateur
+convertit seulement le quantile en seuil numérique avant d'appeler le planner.
+
+Résultat quantile seed1, 300 épisodes :
+
+```text
+q0.60 -> threshold=0.23632
+Q-only: 116.6
+Q+planner q0.60 margin=0.01: 117.5
+planner_used=55.3%
+```
+
+Sweep quantile seed1 :
+
+```text
+q0.50 margin=0.02: 117.3
+q0.60 margin=0.01: 117.5
+q0.70 margin=0.02: 117.7
+q0.80 margin=0.02: 117.7
+```
+
+Lecture :
+
+```text
+Le quantile reproduit le réglage seuil fixe sans dépendre de l'échelle absolue
+d'incertitude. Sur seed1, q0.70/q0.80 avec margin=0.02 donne un léger mieux,
+mais l'écart reste petit. La validation doit donc se faire sur seeds 2/3 avant
+de changer le réglage principal.
+```
+
+Validation quantile seeds 1-3, 300 épisodes :
+
+```text
+Réglage conservateur:
+  quantile=0.60
+  margin=0.01
+
+seed | threshold | Q-only | Q+planner | delta | planner_used
+1    | 0.23632   | 116.6  | 117.5     | +0.9  | 55.3%
+2    | 0.24326   | 102.9  | 104.7     | +1.8  | 55.6%
+3    | 0.23433   | 105.5  | 106.0     | +0.5  | 60.5%
+
+mean Q-only:    108.3
+mean Q+planner: 109.4
+mean delta:     +1.1
+```
+
+```text
+Candidat seed1:
+  quantile=0.70
+  margin=0.02
+
+seed | threshold | Q-only | Q+planner | delta | planner_used
+1    | 0.248     | 116.6  | 117.7     | +1.1  | 44.6%
+2    | 0.25976   | 102.9  | 104.1     | +1.2  | 56.0%
+3    | 0.24455   | 105.5  | 105.3     | -0.2  | 47.9%
+
+mean delta: +0.7
+```
+
+Lecture :
+
+```text
+q0.60/margin=0.01 généralise mieux que le candidat q0.70/margin=0.02.
+Le gate adaptatif conserve le signal positif sur les 3 seeds et évite un seuil
+absolu réglé à la main. Le gain reste modeste, mais c'est la version la plus
+propre du protocole WM-calibré à ce stade.
+```
+
+Décision :
+
+```text
+Figer q0.60/margin=0.01 comme baseline planner calibré micro-fouloïde rough.
+La prochaine amélioration ne doit plus chercher un meilleur seuil ; elle doit
+améliorer la qualité des rollouts/valeurs du WM, car le gate fonctionne.
+```
+
+Prochaine expérience ajoutée dans l'évaluateur :
+
+```text
+Sweep rollout/sampling du planner, à protocole constant :
+  planning_weight=0.15
+  terminal_value_weight=1.0
+  uncertainty_quantile=0.60
+  margin=0.01
+
+Nouveaux flags :
+  --planner-horizon-sweep 2,3,4,5
+  --planner-samples-sweep 4,8,16
+
+But : mesurer si un planner plus profond ou plus échantillonné transforme le
+signal positif faible en gain net, sans retuner le gate d'incertitude.
+```
+
+Résultat seed1, 100 épisodes :
+
+```text
+Q-only: 114.7
+
+horizon | samples | Q+planner | delta | planner_used
+2       | 4       | 113.1     | -1.6  | 41.7%
+2       | 8       | 111.7     | -3.0  | 45.7%
+2       | 16      | 113.5     | -1.2  | 47.8%
+3       | 4       | 112.0     | -2.7  | 50.9%
+3       | 8       | 116.1     | +1.4  | 55.8%
+3       | 16      | 114.8     | +0.1  | 57.5%
+4       | 4       | 115.8     | +1.1  | 59.9%
+4       | 8       | 112.5     | -2.2  | 63.4%
+4       | 16      | 116.2     | +1.5  | 63.0%
+5       | 4       | 113.5     | -1.2  | 64.6%
+5       | 8       | 117.7     | +3.0  | 68.0%
+5       | 16      | 111.5     | -3.2  | 66.6%
+```
+
+Lecture :
+
+```text
+Le meilleur candidat court est horizon=5/samples=8. Le gain n'est pas monotone :
+samples=16 peut dégrader fortement, donc la piste n'est pas "plus gros partout"
+mais une profondeur un peu plus longue avec échantillonnage modéré.
+
+À valider en 300 épisodes sur les 3 seeds avant de l'adopter.
+```
+
+Validation `horizon=5/samples=8`, 300 épisodes :
+
+```text
+planning_weight=0.15
+terminal_value_weight=1.0
+uncertainty_quantile=0.60
+margin=0.01
+horizon=5
+samples=8
+
+seed | threshold | Q-only | Q+planner | delta | planner_used
+1    | 0.23632   | 116.6  | 117.6     | +1.0  | 67.4%
+2    | 0.24326   | 102.9  | 104.4     | +1.5  | 67.8%
+3    | 0.23433   | 105.5  | 107.0     | +1.5  | 71.9%
+
+mean Q-only:    108.3
+mean Q+planner: 109.7
+mean delta:     +1.3
+```
+
+Lecture :
+
+```text
+horizon=5/samples=8 confirme le signal positif sur les 3 seeds. Le gain moyen
+est légèrement supérieur au baseline horizon=3/samples=8 (+1.3 vs +1.1), mais
+le coût planner et le taux d'utilisation montent nettement (~69%).
+
+Le résultat valide que regarder un peu plus loin aide, mais ne transforme pas
+encore le planner en avantage fort. Le prochain levier doit donc améliorer la
+qualité de la valeur imaginée ou des rollouts, pas simplement augmenter le
+budget de recherche.
+```
+
+Outil suivant ajouté :
+
+```text
+scripts/calibrate_micro_fouloide_value.py
+```
+
+But :
+
+```text
+Calibrer posthoc uniquement le ValueModel sur les retours discountés observés
+dans le replay, sans toucher Q-network, World Model, policy ni replay.
+
+Cela teste si le faible gain planner vient d'une valeur terminale trop bruitée
+ou biaisée. C'est le parallèle propre de la calibration posthoc d'incertitude.
+```
+
+Protocole à tester :
+
+```text
+1. Partir du checkpoint déjà calibré en incertitude.
+2. Produire checkpoint_value_calibrated.pt.
+3. Diagnostiquer ValueModel.
+4. Réévaluer planner avec q0.60/margin=0.01/horizon=5/samples=8.
+```
+
+Ablation checkpoint non calibré, même réglage fixe et 300 épisodes :
+
+```text
+p=0.15
+terminal_value=1.0
+uncertainty_threshold=0.24
+margin=0.01
+```
+
+Résultats :
+
+```text
+seed | Q-only | Q+planner non calibré | delta
+1    | 116.6  | 116.6                 | 0.0
+2    | 102.9  | 102.9                 | 0.0
+3    | 105.5  | 105.5                 | 0.0
+```
+
+Lecture :
+
+```text
+Au même seuil, l'incertitude non calibrée désactive de fait le planner : Q+WM
+retombe exactement sur Q-only. Le gain observé avec le checkpoint posthoc vient
+donc bien de la calibration d'incertitude, pas du simple réglage planner.
+```
+
+Conclusion expérimentale micro-fouloïde rough posthoc :
+
+```text
+Q-only > naive est robuste.
+WM planner non calibré ≈ Q-only.
+WM planner avec incertitude calibrée posthoc > Q-only en moyenne 3 seeds
+sur 300 épisodes, avec un gain faible mais cohérent.
+
+Statut : preuve minimale positive du rôle du World Model calibré.
+Non encore preuve forte : l'effet reste autour de +0.9 lifespan moyen.
+```
 
 ---
 
@@ -418,7 +2801,13 @@ configs/
   sandbox_v2_craft_balanced_causal.yaml # balanced + replay causal
   sandbox_v2_craft_balanced_nstep.yaml # balanced + n-step DQN
   sandbox_v2_craft_balanced_intrinsic.yaml # balanced + curiosité causale
+  sandbox_v2_craft_balanced_causalwm.yaml # balanced + causal features/event heads
   sandbox_v2_craft_pressure.yaml # craft sous pression causale
+  micro_fouloide_v0.yaml       # organisme minimal multi-drives
+  micro_fouloide_v0_rough.yaml # variante V0 plus dure
+  micro_fouloide_v0_rough_wmfocus.yaml # rough + WM focalisé rare/terminal
+  micro_fouloide_v0_rough_wmfocus_light.yaml # rough + WM focus modéré
+  micro_fouloide_v0_rough_valueplanner.yaml # rough + ValueModel pour planner
 
 runs/                        # gitignored
   sandbox_0/                   # v0 entraîné
@@ -426,6 +2815,9 @@ runs/                        # gitignored
   sandbox_v1_planning/         # 1er essai planning
   sandbox_v1_planning2/        # planning conservateur
   sandbox_v2_craft/            # prochain run craft à produire
+  sandbox_v2_craft_balanced_causalwm_rebalanced_cuda/ # premier signal WM planner > Q-only
+  micro_fouloide_v0_drive_reward_3000/ # V0 multi-drives validé Q-only > naive
+  micro_fouloide_v0_rough_seed*/ # rough validé Q-only > naive sur 3 seeds
   live_sandbox_0/              # viewer live
 ```
 
@@ -439,8 +2831,12 @@ runs/                        # gitignored
 | Sandbox v0 | 8×8 survie | Lifespan eval | 64.8 | 186.9 | **2.89×** |
 | Sandbox v1 | 16×16 partial obs | Lifespan eval | 68.0 | 288.3 | **4.24×** |
 | Sandbox v1 + planning | 16×16 + WM mix | Lifespan train | — | 126 vs 166 baseline | ✗ (pour l'instant) |
+| Sandbox craft simple | 16×16 craft optionnel | Lifespan eval | 64.7 | 222.3 | **3.44×**, craft faible |
+| Sandbox causal-WM rebalanced | 16×16 craft + causal features | Lifespan eval | 62.2 | 115.7 Q-only / 124.0 Q+WM | **WM/Q 1.07×** |
+| Micro-fouloïde V0 | 16×16 multi-drives | Lifespan eval | 120.5 | 157.6 Q-only moy. 3 seeds | **Q/naïf 1.31×**, WM/Q ~0.98× |
+| Micro-fouloïde rough | 16×16 multi-drives plus dur | Lifespan eval | 88.1 | 108.3 Q-only moy. 3 seeds | **Q/naïf 1.23×**, WM/Q ~0.97× |
 
-**Conclusion actuelle :** la preuve de concept « apprendre seul à survivre par causalité » tient sur v0 et v1. Le monde plus grand avec vision partielle est **plus difficile mais mieux résolu** (ratio 4.24× vs 2.89×). La planification via WM est en place mais **pas encore utile** — à consolider en parallèle ou après le craft.
+**Conclusion actuelle :** la preuve de concept « apprendre seul à survivre par causalité » tient sur v0 et v1. Le monde plus grand avec vision partielle est **plus difficile mais mieux résolu** (ratio 4.24× vs 2.89×). Le craft simple prouve que l'agent sait survivre, mais pas qu'il exploite spontanément les outils. Le causal-WM rebalanced fournit le premier signal positif direct pour la thèse centrale : **à checkpoint identique, Q + World Model planner bat Q-only**. Le signal reste fragile. Micro-fouloïde V0 et rough valident maintenant une autre étape : l'agent apprend des routines adaptatives dans des mondes à plusieurs drives internes, y compris sur une variante plus dure, mais le planner World Model manuel n'apporte pas encore de gain dans ce cadre.
 
 ---
 
@@ -451,6 +2847,12 @@ runs/                        # gitignored
 - Interface type « fouloïdes » avec écosystème autonome
 
 **Objectif final détaillé** (preuve d'efficacité du World Model, protocole A/B, chemin B→F) : voir [GOAL_WORLD_MODEL_FOULOIDES.md](./GOAL_WORLD_MODEL_FOULOIDES.md).
+
+**Étape intermédiaire définie** : voir [MICRO_FOULOIDE_SPEC.md](./MICRO_FOULOIDE_SPEC.md).
+
+Le premier environnement V0 est en place : `MicroFouloideWorld`,
+`configs/micro_fouloide_v0.yaml`, l'encodeur dédié, le runner/evaluator et les
+tests unitaires associés.
 
 L'architecture (registres, adapters, modules découplés) est conçue pour accueillir ces extensions sans réécriture du cœur agent.
 
