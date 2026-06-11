@@ -3630,6 +3630,28 @@ donne une version de référence concrète pour démos, comparaisons et prochain
 itérations.
 ```
 
+Démo / évaluation directe du manifest promu :
+
+```bash
+python scripts/demo_micro_fouloide_promoted.py \
+  --manifest runs/micro_fouloide_promoted/wm_calibrated_v0/manifest.json \
+  --seed 1 \
+  --num-episodes 100 \
+  --device mps \
+  --rollout-seed 9999 \
+  --rollout-max-steps 80
+```
+
+Cette commande :
+
+```text
+1. lit le manifest promu ;
+2. charge le checkpoint seed choisi ;
+3. résout le seuil d'incertitude du planner ;
+4. réévalue Q-only vs Q+WM ;
+5. imprime un rollout court avec actions, événements, drives et usage planner.
+```
+
 Commande :
 
 ```bash
