@@ -4173,6 +4173,57 @@ GO si last100 >= 110 et eau >= 0.50/episode, puis eval 1000 + demo directe.
 NO-GO si eau reste < 0.35/episode ou lifespan < resource_seek seed1.
 ```
 
+Résultat seed 1 :
+
+```text
+Training 3000 épisodes :
+- final mean lifespan last100 = 120.1
+- food100 = 0.70
+- water100 = 0.94
+- damage100 = 2.21
+
+Eval 1000 épisodes, rough/resource_navigation :
+- naïf = 89.0
+- Q-only = 117.1 ± 34.2, max 289
+- Q+WM = 117.4 ± 33.8, max 272
+- Q/naïf = 1.31×
+- WM/Q = 1.00×
+- Q+WM water = 0.82/episode
+- hydration@interact_water median = 0.220, 93.5% <= 0.35
+```
+
+Demo directe alignée avec la config d'entraînement (`--allow-blocked-moves`,
+`--allow-noop-interact`, `--disable-survival-objective`) :
+
+```text
+rollout median search 64 seeds:
+- selected_seed = 10047
+- lifespan = 120, dead = false, capped = true
+- planner_used = 65.8%
+- events: interact_water=1, move_ok=32, health_loss=32
+```
+
+Décision : **GO seed1 / candidat demo**, mais **pas encore promotion stable**.
+
+Interprétation :
+
+```text
+Le signal de navigation locale corrige le point bloquant principal : l'agent
+trouve et utilise l'eau plus souvent, et le rollout médian atteint le cap 120
+sans mourir. Il reste deux limites : l'énergie finit basse dans certains
+rollouts et le planner WM n'apporte quasiment pas de gain au-dessus de Q-only.
+La prochaine validation doit être multi-seed avant promotion.
+```
+
+Prochaine étape :
+
+```text
+1. entraîner resource_navigation seeds 2 et 3 ;
+2. évaluer les 3 seeds sur 1000 épisodes ;
+3. si moyenne Q-only >= 115 et demos médianes non mortes à 120,
+   promouvoir une version `resource_navigation_v0` pour la première démo visuelle.
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
@@ -4230,6 +4281,7 @@ runs/                        # gitignored
 | Sandbox causal-WM rebalanced | 16×16 craft + causal features | Lifespan eval | 62.2 | 115.7 Q-only / 124.0 Q+WM | **WM/Q 1.07×** |
 | Micro-fouloïde V0 | 16×16 multi-drives | Lifespan eval | 120.5 | 157.6 Q-only moy. 3 seeds | **Q/naïf 1.31×**, WM/Q ~0.98× |
 | Micro-fouloïde rough | 16×16 multi-drives plus dur | Lifespan eval | 89.0 | 107.9 Q-only / 110.0 Q+WM calibré moy. 3 seeds | **Q/naïf 1.21×**, **WM/Q 1.02×** |
+| Micro-fouloïde rough + navigation ressource | 16×16 rough + signal local ressource | Lifespan eval seed1 | 89.0 | 117.1 Q-only / 117.4 Q+WM | **Q/naïf 1.31×**, demo médiane cap 120 |
 
 **Conclusion actuelle :** la preuve de concept « apprendre seul à survivre par causalité » tient sur v0 et v1. Le monde plus grand avec vision partielle est **plus difficile mais mieux résolu** (ratio 4.24× vs 2.89×). Le craft simple prouve que l'agent sait survivre, mais pas qu'il exploite spontanément les outils. Le causal-WM rebalanced a fourni le premier signal positif direct pour la thèse centrale. Micro-fouloïde rough donne maintenant une preuve minimale plus proche de l'objectif : **à checkpoint identique, Q + World Model planner calibré bat Q-only sur 3 seeds et 1000 épisodes**. Le signal reste modeste ; l'étape suivante est de rendre cette calibration moins posthoc et plus apprise en continu.
 
