@@ -3512,6 +3512,69 @@ Si le best et le final divergent fortement, cela indique une instabilité de
 formation de la policy ; dans ce cas le run est exploitable mais pas encore
 suffisamment stable pour être qualifié de version opérationnelle.
 
+Résultat seed1 avec best-checkpoint train :
+
+```text
+checkpoint_best_calibrated.pt:
+  Q-only=99.7
+  Q+WM=99.7
+  planner_used=56.7%
+
+checkpoint_final_calibrated.pt précédent:
+  Q-only=104.5
+  Q+WM=106.1
+```
+
+Lecture :
+
+```text
+Le meilleur lifespan train n'est pas un bon proxy de sélection eval. Ici le
+checkpoint best-train est moins bon que le final. Il ne faut donc pas promouvoir
+un agent sur métrique d'entraînement seule.
+```
+
+Outil ajouté :
+
+```text
+scripts/select_micro_fouloide_checkpoint.py
+```
+
+Principe :
+
+```text
+Évaluer plusieurs checkpoints candidats avec le même protocole Q-only/Q+WM,
+puis classer par lifespan planner et delta planner/Q. C'est plus coûteux que le
+proxy train, mais c'est le mécanisme correct pour choisir un artefact
+opérationnel.
+```
+
+Commande de sélection locale :
+
+```bash
+python scripts/select_micro_fouloide_checkpoint.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_late_calibrated.yaml \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_late_calibrated_best_seed1/checkpoint_final_calibrated.pt \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_late_calibrated_best_seed1/checkpoint_best_calibrated.pt \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_uncertainty_value_calibrated.pt \
+  --num-episodes 300 \
+  --device mps \
+  --planner-preset wm-calibrated \
+  --output reports/micro_fouloide_checkpoint_selection_seed1.md
+```
+
+Décision :
+
+```text
+La version concrète minimale doit combiner :
+  1. une chaîne qui produit des checkpoints calibrés ;
+  2. une sélection par évaluation contrôlée ;
+  3. un rapport/manifest de promotion.
+
+Tant que relancer l'entraînement ne retrouve pas régulièrement le niveau des
+checkpoints historiques, ceux-ci restent la baseline opérationnelle ; les runs
+nouveaux servent à stabiliser la production automatique.
+```
+
 Commande :
 
 ```bash
