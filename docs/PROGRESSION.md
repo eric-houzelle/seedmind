@@ -3638,8 +3638,10 @@ python scripts/demo_micro_fouloide_promoted.py \
   --seed 1 \
   --num-episodes 100 \
   --device mps \
-  --rollout-seed 9999 \
-  --rollout-max-steps 80
+  --find-rollout \
+  --rollout-search-count 64 \
+  --rollout-select median \
+  --rollout-max-steps 120
 ```
 
 Cette commande :
@@ -3649,8 +3651,12 @@ Cette commande :
 2. charge le checkpoint seed choisi ;
 3. résout le seuil d'incertitude du planner ;
 4. réévalue Q-only vs Q+WM ;
-5. imprime un rollout court avec actions, événements, drives et usage planner.
+5. cherche un rollout représentatif parmi plusieurs seeds ;
+6. imprime un rollout court avec actions, événements, drives et usage planner.
 ```
+
+`--rollout-select best` peut être utilisé pour une démo plus attractive ; le
+mode `median` est plus honnête pour montrer un comportement typique.
 
 Commande :
 
