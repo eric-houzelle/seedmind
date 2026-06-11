@@ -3562,6 +3562,26 @@ python scripts/select_micro_fouloide_checkpoint.py \
   --output reports/micro_fouloide_checkpoint_selection_seed1.md
 ```
 
+Promotion d'un artefact stable :
+
+```bash
+python scripts/select_micro_fouloide_checkpoint.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_late_calibrated.yaml \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_late_calibrated_best_seed1/checkpoint_final_calibrated.pt \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_late_calibrated_best_seed1/checkpoint_best_calibrated.pt \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_seed1/checkpoint_uncertainty_value_calibrated.pt \
+  --num-episodes 300 \
+  --device mps \
+  --planner-preset wm-calibrated \
+  --min-delta 1.0 \
+  --promote-to runs/micro_fouloide_promoted/wm_calibrated_seed1.pt \
+  --manifest runs/micro_fouloide_promoted/wm_calibrated_seed1.manifest.json
+```
+
+Le manifest garde le checkpoint source, le protocole de sélection et les
+métriques Q-only/Q+WM. Cela donne un artefact consommable par la suite sans
+perdre la justification expérimentale.
+
 Décision :
 
 ```text

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,39 @@ def _write_output(path: str | None, payload: dict[str, Any]) -> None:
         f.write("\n```\n")
 
 
+def _promote_checkpoint(
+    best: dict[str, Any],
+    promote_to: str,
+    manifest_path: str | None,
+    payload: dict[str, Any],
+) -> None:
+    source = Path(str(best["checkpoint"]))
+    target = Path(promote_to)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+    manifest = {
+        "promoted_checkpoint": str(target),
+        "source_checkpoint": str(source),
+        "selection": best,
+        "selection_config": {
+            "config": payload["config"],
+            "num_episodes": payload["num_episodes"],
+            "device": payload["device"],
+            "planner_preset": payload["planner_preset"],
+            "planner_params": payload["planner_params"],
+        },
+    }
+    manifest_out = (
+        Path(manifest_path)
+        if manifest_path is not None
+        else target.with_suffix(target.suffix + ".manifest.json")
+    )
+    manifest_out.parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_out, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+
+
 def _format_table(rows: list[dict[str, Any]]) -> str:
     lines = [
         "rank | checkpoint | Q-only | Q+WM | delta | ratio | used | train_mean | max",
@@ -110,6 +144,28 @@ def main() -> None:
     parser.add_argument("--planner-horizon", type=int, default=None)
     parser.add_argument("--planner-samples", type=int, default=None)
     parser.add_argument("--output", default=None)
+    parser.add_argument(
+        "--promote-to",
+        default=None,
+        help="Copy the best selected checkpoint to this stable output path.",
+    )
+    parser.add_argument(
+        "--manifest",
+        default=None,
+        help="Optional manifest path for promotion metadata. Defaults next to --promote-to.",
+    )
+    parser.add_argument(
+        "--min-planner-lifespan",
+        type=float,
+        default=None,
+        help="Refuse promotion unless the best planner lifespan reaches this threshold.",
+    )
+    parser.add_argument(
+        "--min-delta",
+        type=float,
+        default=None,
+        help="Refuse promotion unless best Q+WM minus Q-only reaches this threshold.",
+    )
     args = parser.parse_args()
 
     params = _preset_params(args.planner_preset)
@@ -210,6 +266,22 @@ def main() -> None:
     _write_output(args.output, payload)
     if args.output is not None:
         print(f"Saved selection report to {args.output}")
+    if args.promote_to is not None:
+        best = rows[0]
+        if (
+            args.min_planner_lifespan is not None
+            and float(best["planner_lifespan"]) < float(args.min_planner_lifespan)
+        ):
+            raise SystemExit(
+                "Refusing promotion: best planner lifespan "
+                f"{best['planner_lifespan']:.2f} < {args.min_planner_lifespan:.2f}."
+            )
+        if args.min_delta is not None and float(best["delta_lifespan"]) < float(args.min_delta):
+            raise SystemExit(
+                f"Refusing promotion: best delta {best['delta_lifespan']:.2f} < {args.min_delta:.2f}."
+            )
+        _promote_checkpoint(best, args.promote_to, args.manifest, payload)
+        print(f"Promoted checkpoint to {args.promote_to}")
 
 
 if __name__ == "__main__":
