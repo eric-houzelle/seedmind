@@ -3946,6 +3946,54 @@ Option C : séparer exploration et exploitation
   long, puis évaluer avec planner.
 ```
 
+#### Diagnostic discriminant farming vs navigation — 2026-06-11
+
+Avant de choisir entre A/B/C, un diagnostic peu coûteux : distribution du
+niveau de drive **au moment de l'interaction** (hydratation@`interact_water`,
+énergie@`interact_food`), ajoutée à `evaluate_micro_fouloide.py`
+(`hydration_at_water_*`, `energy_at_food_*` dans le résumé). Si l'agent boit
+surtout à hydratation haute, la récompense est farmée → option B ; s'il boit
+bas mais rarement, c'est un problème de navigation/couverture → option A ou C.
+
+Résultats (300 épisodes Q-only, seed eval 9999) :
+
+```text
+                          resource_seek_seed1    baseline promue seed1
+lifespan                  110.7                  116.6
+water / épisode           0.58                   0.82
+hydration@water median    0.200 (91% <= 0.35)    0.310 (54% <= 0.35)
+energy@food median        0.542                  0.682
+actions interact          31.7%                  15.1%
+```
+
+Verdict :
+
+```text
+1. Pas de farming d'eau : resource_seek boit exclusivement bas
+   (100% <= 0.50, 91% <= 0.35). Le signal conditionnel fonctionne — la partie
+   "timing" de l'option B est déjà acquise.
+2. Le vrai blocage est la fréquence d'accès : resource_seek boit MOINS souvent
+   que la baseline (0.58 vs 0.82/ép.) et meurt déshydraté. C'est un problème
+   de navigation/couverture → l'option A (curriculum) est la bonne direction.
+3. Pathologie révélée au passage : interact = 31.7% des actions mais ~0.95
+   interaction utile par épisode → ~33 INTERACT no-op par épisode. L'agent
+   spamme INTERACT à vide (éval sans guards), ce qui gaspille les pas
+   d'exploration et explique probablement le lifespan inférieur à la baseline.
+4. Farming léger sur la nourriture (median 0.54) mais l'énergie n'est pas la
+   cause de mort.
+```
+
+Implications pour le curriculum (option A) :
+
+```text
+- préférer réduire hydration_decay plutôt qu'augmenter num_water (limiter le
+  risque de farming facilité) ;
+- traiter le spam INTERACT no-op pendant l'entraînement (pénalité event
+  interact_noop ou guard), sinon il plombera aussi le curriculum ;
+- critère de validation : rollout médian sur la config ROUGH, pas sur la
+  config curriculum — valider le transfert, pas la facilité.
+```
+
 ---
 
 ## 7. Arborescence des configs et runs

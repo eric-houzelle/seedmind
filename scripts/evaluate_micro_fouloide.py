@@ -136,12 +136,31 @@ def _record(counter: Counter, info: Dict) -> None:
     counter[event] += 1
 
 
+def _interaction_drive_stats(values: list[float], prefix: str) -> Dict[str, float]:
+    """Distribution of a drive level at interaction time (farming diagnostic)."""
+    if not values:
+        return {f"{prefix}_count": 0.0}
+    arr = np.asarray(values, dtype=np.float32)
+    return {
+        f"{prefix}_count": float(arr.size),
+        f"{prefix}_mean": float(arr.mean()),
+        f"{prefix}_median": float(np.median(arr)),
+        f"{prefix}_p_le_020": float(np.mean(arr <= 0.20)),
+        f"{prefix}_p_le_035": float(np.mean(arr <= 0.35)),
+        f"{prefix}_p_le_050": float(np.mean(arr <= 0.50)),
+    }
+
+
 def _summarise(rows: list[Dict], num_episodes: int) -> Dict[str, float]:
     total = Counter()
     actions = Counter()
+    water_hydrations: list[float] = []
+    food_energies: list[float] = []
     for row in rows:
         total.update(row["events"])
         actions.update(row.get("actions", Counter()))
+        water_hydrations.extend(row.get("water_hydrations", []))
+        food_energies.extend(row.get("food_energies", []))
     denom = max(num_episodes, 1)
     lifespans = [row["lifespan"] for row in rows]
     total_actions = max(sum(actions.values()), 1)
@@ -167,6 +186,8 @@ def _summarise(rows: list[Dict], num_episodes: int) -> Dict[str, float]:
         "action_rest": actions.get("REST", 0) / total_actions,
         "action_wait": actions.get("WAIT", 0) / total_actions,
         "planner_used": sum(row.get("planner_used", 0) for row in rows) / total_actions,
+        **_interaction_drive_stats(water_hydrations, "hydration_at_water"),
+        **_interaction_drive_stats(food_energies, "energy_at_food"),
     }
 
 
@@ -280,8 +301,12 @@ def run_trained(
         drives = []
         energy = hydration = temp_err = 0.0
         min_health = 1.0
+        water_hydrations: list[float] = []
+        food_energies: list[float] = []
         latent = agent.encode(obs) if decision_mode in {"planner", "latent_q"} else None
         while not done:
+            pre_hydration = float(obs.get("hydration", 0.0))
+            pre_energy = float(obs.get("energy", 0.0))
             if decision_mode == "planner":
                 memories = agent.retrieve(latent)
                 goal = agent.choose_goal(latent, memories)
@@ -300,6 +325,11 @@ def run_trained(
             if decision_mode in {"planner", "latent_q"}:
                 latent = agent.encode(obs)
             _record(events, info)
+            event = str(info.get("event", ""))
+            if event == "interact_water":
+                water_hydrations.append(pre_hydration)
+            elif event == "interact_food":
+                food_energies.append(pre_energy)
             drives.append(_drive_regulation(info))
             energy += float(info.get("energy", 0.0))
             hydration += float(info.get("hydration", 0.0))
@@ -321,6 +351,8 @@ def run_trained(
             "events": events,
             "actions": actions,
             "planner_used": planner_used,
+            "water_hydrations": water_hydrations,
+            "food_energies": food_energies,
         })
     return _summarise(rows, num_episodes)
 
@@ -349,6 +381,21 @@ def print_stats(label: str, stats: Dict[str, float]) -> None:
     )
     if stats.get("planner_used", 0.0) > 0.0:
         print(f"  planner_used={stats['planner_used']:.1%}")
+    for prefix, label in (("hydration_at_water", "hydration@interact_water"),
+                          ("energy_at_food", "energy@interact_food")):
+        count = stats.get(f"{prefix}_count")
+        if count is None:
+            continue
+        if count == 0:
+            print(f"  {label}: n=0")
+            continue
+        print(
+            f"  {label}: n={count:.0f} mean={stats[f'{prefix}_mean']:.3f} "
+            f"median={stats[f'{prefix}_median']:.3f} "
+            f"<=0.20: {stats[f'{prefix}_p_le_020']:.1%} "
+            f"<=0.35: {stats[f'{prefix}_p_le_035']:.1%} "
+            f"<=0.50: {stats[f'{prefix}_p_le_050']:.1%}"
+        )
 
 
 def _causal_feature_names(config: dict) -> list[str]:
