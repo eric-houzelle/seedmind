@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "seedmind",
+  "project_id": "69e8cbda-9fe7-423c-8af9-4a5221c90980"
+}
