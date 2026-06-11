@@ -22,6 +22,10 @@ def _config() -> dict:
             "low_energy_food_bonus": 0.25,
             "critical_energy_food_bonus": 0.40,
             "low_drive_passive_penalty": 0.08,
+            "low_hydration_water_signal_bonus": 0.05,
+            "critical_hydration_water_signal_bonus": 0.08,
+            "low_energy_food_signal_bonus": 0.04,
+            "critical_energy_food_signal_bonus": 0.06,
         },
     }
 
@@ -80,3 +84,43 @@ def test_resource_reward_penalizes_noop_interaction():
     )
 
     assert reward == 0.01 - 0.15
+
+
+def test_resource_reward_rewards_active_water_search_when_hydration_is_low():
+    cfg = _config()
+    observation = {
+        "grid": [[0, 4, 0]],
+        "energy": 0.7,
+        "hydration": 0.15,
+        "temperature": 0.5,
+        "health": 1.0,
+    }
+
+    reward = _learning_reward(
+        0.01,
+        observation,
+        {"event": "move_ok", "hydration": 0.14, "energy": 0.69},
+        cfg,
+    )
+
+    assert reward == 0.01 + 0.05 + 0.08
+
+
+def test_resource_reward_does_not_reward_passive_water_signal():
+    cfg = _config()
+    observation = {
+        "grid": [[0, 4, 0]],
+        "energy": 0.7,
+        "hydration": 0.15,
+        "temperature": 0.5,
+        "health": 1.0,
+    }
+
+    reward = _learning_reward(
+        0.01,
+        observation,
+        {"event": "rest", "hydration": 0.14, "energy": 0.69},
+        cfg,
+    )
+
+    assert reward == 0.01 - 0.08

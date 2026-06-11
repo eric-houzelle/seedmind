@@ -30,7 +30,7 @@ from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
 from seedmind.agent.value_model import ValueModel
 from seedmind.agent.world_model import WorldModel
-from seedmind.envs.micro_fouloide_world import ACTIONS, MicroFouloideWorld
+from seedmind.envs.micro_fouloide_world import ACTIONS, FOOD, WATER, MicroFouloideWorld
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.memory.persistent_memory import PersistentMemory
 from seedmind.objectives import build_objective_scorer
@@ -331,6 +331,18 @@ def _event_resource_reward(
         energy_after = float(info.get("energy", energy))
         if hydration_after <= low_threshold or energy_after <= low_threshold:
             reward -= float(cfg.get("low_drive_passive_penalty", 0.0))
+
+    grid = np.asarray(observation.get("grid", []), dtype=np.int64)
+    active_signal_events = set(cfg.get("local_signal_events", ["move_ok"]))
+    if event in active_signal_events and grid.size > 0:
+        if hydration <= low_threshold and bool(np.any(grid == WATER)):
+            reward += float(cfg.get("low_hydration_water_signal_bonus", 0.0))
+        if hydration <= critical_threshold and bool(np.any(grid == WATER)):
+            reward += float(cfg.get("critical_hydration_water_signal_bonus", 0.0))
+        if energy <= low_threshold and bool(np.any(grid == FOOD)):
+            reward += float(cfg.get("low_energy_food_signal_bonus", 0.0))
+        if energy <= critical_threshold and bool(np.any(grid == FOOD)):
+            reward += float(cfg.get("critical_energy_food_signal_bonus", 0.0))
 
     return reward * float(cfg.get("weight", 1.0))
 

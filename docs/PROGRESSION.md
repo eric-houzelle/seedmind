@@ -4111,6 +4111,68 @@ python scripts/evaluate_micro_fouloide.py \
   --planner-preset wm-calibrated
 ```
 
+Résultat seed 1, training 3000 épisodes :
+
+```text
+Final mean lifespan last100: 92.6
+food100=0.14 water100=0.11 dmg100=1.80
+```
+
+Décision : **NO-GO**.
+
+Interprétation :
+
+```text
+Le filtrage/pénalité corrige les actions invalides, mais retire trop de signal
+d'exploration. L'agent boit/mange moins que `resource_seek` et le lifespan
+retombe près du naïf rough. Le problème n'est donc pas seulement le spam
+INTERACT/no-op ; il manque un gradient de navigation vers ressource.
+```
+
+### Étape D — Ressource + navigation locale
+
+Config ajoutée :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_resource_navigation.yaml
+```
+
+Principe :
+
+```text
+- monde rough inchangé ;
+- pas de guard pendant l'entraînement ;
+- pénalité légère pour `interact_noop` / `move_blocked` ;
+- bonus dense faible quand une ressource utile est visible localement et que
+  l'agent fait une action active (`move_ok`) avec le drive correspondant bas.
+```
+
+Cette variante teste précisément l'hypothèse issue des diagnostics :
+
+```text
+L'agent sait consommer l'eau quand il la trouve, mais il n'a pas assez de signal
+pour apprendre à se rapprocher d'une ressource visible avant la crise.
+```
+
+Run seed 1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_navigation.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_resource_navigation_seed1
+```
+
+Critère go/no-go :
+
+```text
+GO si last100 >= 110 et eau >= 0.50/episode, puis eval 1000 + demo directe.
+NO-GO si eau reste < 0.35/episode ou lifespan < resource_seek seed1.
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
@@ -4137,6 +4199,10 @@ configs/
   micro_fouloide_v0_rough_valueplanner.yaml # rough + ValueModel pour planner
   micro_fouloide_v0_rough_valueplanner_online_uncertainty.yaml # étape 4: calibration incertitude online
   micro_fouloide_v0_rough_valueplanner_late_calibrated.yaml # étape 4: consolidation finale intégrée
+  micro_fouloide_v0_rough_valueplanner_resource_seek.yaml # rough + reward ressource
+  micro_fouloide_v0_rough_valueplanner_resource_curriculum.yaml # monde facilité, no-go transfert
+  micro_fouloide_v0_rough_valueplanner_resource_seek_guarded.yaml # guards training, no-go
+  micro_fouloide_v0_rough_valueplanner_resource_navigation.yaml # rough + signal local de navigation ressource
 
 runs/                        # gitignored
   sandbox_0/                   # v0 entraîné
