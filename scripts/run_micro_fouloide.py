@@ -109,6 +109,22 @@ def causal_event_names(config: dict) -> list[str]:
     return _probe_env(config).causal_event_names()
 
 
+def _planner_force_thresholds(config: dict) -> tuple[list[int], list[float]]:
+    objective_cfg = config.get("objective", {})
+    force_cfg = dict(objective_cfg.get("force_planner_below", {}))
+    if not force_cfg:
+        return [], []
+    names = causal_feature_names(config)
+    indices: list[int] = []
+    thresholds: list[float] = []
+    for name, threshold in force_cfg.items():
+        if name not in names:
+            continue
+        indices.append(names.index(name))
+        thresholds.append(float(threshold))
+    return indices, thresholds
+
+
 def build_agent(config: dict, seed: int) -> Agent:
     ac = config.get("agent", {})
     wmc = config.get("world_model", {})
@@ -176,6 +192,7 @@ def build_agent(config: dict, seed: int) -> Agent:
             hidden_dim=int(vc.get("hidden_dim", 128)),
             num_layers=int(vc.get("num_layers", 2)),
         )
+    force_indices, force_thresholds = _planner_force_thresholds(config)
     return Agent(
         encoder=encoder,
         world_model=world_model,
@@ -202,6 +219,9 @@ def build_agent(config: dict, seed: int) -> Agent:
             causal_feature_names(config),
         ),
         planner_objective_weight=float(objective_cfg.get("planner_weight", 0.0)),
+        planner_action_penalties=dict(objective_cfg.get("action_penalties", {})),
+        planner_force_feature_indices=force_indices,
+        planner_force_feature_thresholds=force_thresholds,
         causal_features_fn=(
             _probe_env(config).causal_features
             if bool(cwm.get("enabled", False)) else None

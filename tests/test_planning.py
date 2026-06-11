@@ -122,6 +122,14 @@ class TestCombinedScorer:
         assert action in ACTIONS
         assert agent.last_planner_used is False
 
+    def test_planner_force_allows_critical_features(self):
+        agent = _make_agent(planning_weight=0.5, planner_q_advantage_threshold=1.1)
+        agent.planner_force_feature_indices = [1]
+        agent.planner_force_feature_thresholds = [0.2]
+
+        assert agent._planner_force_allows(np.asarray([0.8, 0.15], dtype=np.float32))
+        assert not agent._planner_force_allows(np.asarray([0.8, 0.25], dtype=np.float32))
+
     def test_different_weights_may_change_action(self):
         """With extreme weights, the chosen action can differ."""
         env = SandboxWorld(size=6, seed=42)
@@ -208,6 +216,22 @@ class TestObjectiveSensitivity:
         values = planner.action_values(latent, self.PLAN_ACTIONS)
 
         assert values["INTERACT"] == pytest.approx(values["WAIT"])
+
+    def test_action_penalty_discourages_passive_action(self):
+        planner = Planner(
+            world_model=_CausalStubWorldModel(),
+            actions=self.PLAN_ACTIONS,
+            curiosity=CuriosityModule(weight=0.0, max_reward=1.0, enabled=False),
+            horizon=1,
+            num_samples=4,
+            action_penalties={"WAIT": 0.25},
+            seed=0,
+        )
+        latent = np.zeros(8, dtype=np.float32)
+
+        values = planner.action_values(latent, self.PLAN_ACTIONS)
+
+        assert values["INTERACT"] > values["WAIT"]
 
 
 class TestCalibrationHelpers:

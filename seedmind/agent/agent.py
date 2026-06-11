@@ -44,6 +44,9 @@ class Agent:
         planner_terminal_value_weight: float = 0.0,
         planner_objective_scorer: Optional[Any] = None,
         planner_objective_weight: float = 0.0,
+        planner_action_penalties: Optional[Dict[str, float]] = None,
+        planner_force_feature_indices: Optional[List[int]] = None,
+        planner_force_feature_thresholds: Optional[List[float]] = None,
         planner_seed: Optional[int] = None,
         planner_uncertainty_threshold: Optional[float] = None,
         planner_margin_threshold: float = 0.0,
@@ -68,6 +71,7 @@ class Agent:
             terminal_value_weight=planner_terminal_value_weight,
             objective_scorer=planner_objective_scorer,
             objective_weight=planner_objective_weight,
+            action_penalties=planner_action_penalties,
             seed=planner_seed,
         )
         self.q_network = q_network
@@ -79,6 +83,10 @@ class Agent:
         self.planner_uncertainty_threshold = planner_uncertainty_threshold
         self.planner_margin_threshold = float(planner_margin_threshold)
         self.planner_q_advantage_threshold = float(planner_q_advantage_threshold)
+        self.planner_force_feature_indices = list(planner_force_feature_indices or [])
+        self.planner_force_feature_thresholds = [
+            float(v) for v in (planner_force_feature_thresholds or [])
+        ]
         self.last_planner_used = False
 
     # ------------------------------------------------------------------
@@ -117,6 +125,7 @@ class Agent:
             wm_values, wm_stats = self.planner.action_values_with_stats(
                 latent_state, available_actions, current_features=current_features,
             )
+            force_planner = self._planner_force_allows(current_features)
             q_vals = {a: q_scorer(a) for a in available_actions}
             # Normalise each score set to [0, 1] to make the weight meaningful
             q_arr = np.array([q_vals[a] for a in available_actions])
@@ -124,9 +133,9 @@ class Agent:
             q_norm = self._normalise(q_arr)
             wm_norm = self._normalise(wm_arr)
             alpha = self.planning_weight
-            if not self._planner_gate_allows(available_actions, wm_arr, wm_stats):
+            if not force_planner and not self._planner_gate_allows(available_actions, wm_arr, wm_stats):
                 alpha = 0.0
-            elif not self._planner_q_advantage_allows(q_norm, wm_norm):
+            elif not force_planner and not self._planner_q_advantage_allows(q_norm, wm_norm):
                 alpha = 0.0
             else:
                 self.last_planner_used = alpha > 0.0
@@ -193,6 +202,20 @@ class Agent:
         wm_best_idx = int(np.argmax(wm_norm))
         advantage = float(wm_norm[wm_best_idx] - wm_norm[q_best_idx])
         return advantage >= self.planner_q_advantage_threshold
+
+    def _planner_force_allows(self, current_features: Optional[np.ndarray]) -> bool:
+        if current_features is None:
+            return False
+        if len(self.planner_force_feature_indices) != len(self.planner_force_feature_thresholds):
+            return False
+        features = np.asarray(current_features, dtype=np.float32)
+        for idx, threshold in zip(
+            self.planner_force_feature_indices,
+            self.planner_force_feature_thresholds,
+        ):
+            if 0 <= idx < features.shape[0] and float(features[idx]) <= threshold:
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Factory

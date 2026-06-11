@@ -26,6 +26,9 @@ class ObjectiveScorer(Protocol):
     def score_batch(self, features: np.ndarray) -> np.ndarray:
         ...
 
+    def score_transition_batch(self, before: np.ndarray, after: np.ndarray) -> np.ndarray:
+        ...
+
 
 class Planner:
     def __init__(
@@ -43,6 +46,7 @@ class Planner:
         terminal_value_weight: float = 0.0,
         objective_scorer: Optional[ObjectiveScorer] = None,
         objective_weight: float = 0.0,
+        action_penalties: Optional[Dict[str, float]] = None,
         seed: Optional[int] = None,
     ) -> None:
         self.world_model = world_model
@@ -65,16 +69,41 @@ class Planner:
         self.terminal_value_weight = float(terminal_value_weight)
         self.objective_scorer = objective_scorer
         self.objective_weight = float(objective_weight)
+        self.action_penalties = {
+            str(action): float(penalty)
+            for action, penalty in (action_penalties or {}).items()
+            if float(penalty) != 0.0
+        }
         self.rng = np.random.default_rng(seed)
 
-    def _objective_value(self, features: Optional[np.ndarray]) -> np.ndarray:
+    def _action_penalty(self, action_indices: np.ndarray) -> np.ndarray:
+        if not self.action_penalties:
+            return np.zeros(len(action_indices), dtype=np.float32)
+        penalties = np.zeros(len(action_indices), dtype=np.float32)
+        for action, penalty in self.action_penalties.items():
+            idx = self.action_index.get(action)
+            if idx is None:
+                continue
+            penalties = penalties + np.where(action_indices == idx, penalty, 0.0)
+        return penalties.astype(np.float32)
+
+    def _objective_value(
+        self,
+        before_features: Optional[np.ndarray],
+        after_features: Optional[np.ndarray],
+    ) -> np.ndarray:
         if (
-            features is None
+            after_features is None
             or self.objective_scorer is None
             or self.objective_weight == 0.0
         ):
             return np.asarray(0.0, dtype=np.float32)
-        return self.objective_weight * self.objective_scorer.score_batch(features)
+        if before_features is not None and hasattr(self.objective_scorer, "score_transition_batch"):
+            return self.objective_weight * self.objective_scorer.score_transition_batch(
+                before_features,
+                after_features,
+            )
+        return self.objective_weight * self.objective_scorer.score_batch(after_features)
 
     def _causal_value(
         self,
@@ -164,6 +193,7 @@ class Planner:
         next_l, reward, uncertainty = self.world_model.predict_batch(particles, first_actions)
         uncertainty_sum = uncertainty.astype(np.float32).copy()
         uncertainty_count = np.ones_like(uncertainty_sum, dtype=np.float32)
+        feature_before = feature_particles
         causal_value, feature_particles = self._causal_value(
             particles, first_actions, feature_particles,
         )
@@ -171,7 +201,8 @@ class Planner:
             reward
             + self.curiosity.compute_array(uncertainty)
             + causal_value
-            + self._objective_value(feature_particles)
+            + self._objective_value(feature_before, feature_particles)
+            - self._action_penalty(first_actions)
         )
 
         cur = next_l
@@ -182,6 +213,7 @@ class Planner:
             cur, reward, uncertainty = self.world_model.predict_batch(prev, rand_actions)
             uncertainty_sum = uncertainty_sum + uncertainty.astype(np.float32)
             uncertainty_count = uncertainty_count + 1.0
+            feature_before = feature_particles
             causal_value, feature_particles = self._causal_value(
                 prev, rand_actions, feature_particles,
             )
@@ -189,7 +221,8 @@ class Planner:
                 reward
                 + self.curiosity.compute_array(uncertainty)
                 + causal_value
-                + self._objective_value(feature_particles)
+                + self._objective_value(feature_before, feature_particles)
+                - self._action_penalty(rand_actions)
             )
             disc *= self.gamma
 

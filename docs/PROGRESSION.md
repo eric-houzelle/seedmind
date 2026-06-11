@@ -3806,6 +3806,55 @@ ou meurt après >= 120 steps sur une carte de démo plus grande, on arrête la
 phase micro-recherche et on construit le viewer visuel.
 ```
 
+### 6.15 Verdict go/no-go survival_v0 runtime
+
+Résultat après correction du câblage objectif :
+
+```text
+- L'objectif survival_v0 est maintenant bien pris en compte par le planner :
+  les features causales évoluent pendant l'imagination et le debug objectif
+  montre un signal différentiel au lieu d'un bonus commun à toutes les actions.
+- Les guards runtime (`filter_blocked_moves`, `filter_noop_interact`) suppriment
+  les boucles les plus triviales.
+- Une pénalité configurable `objective.action_penalties` permet de décourager
+  REST/WAIT côté objectif, sans modifier le World Model.
+- Un mécanisme optionnel `objective.force_planner_below` permet de forcer
+  l'arbitrage planner sous seuil critique, mais il n'est pas activé dans la
+  démo promue actuelle : sur ce checkpoint, forcer le planner sous hydratation
+  critique amplifie parfois la préférence apprise pour REST au lieu de corriger
+  la recherche d'eau.
+```
+
+Smoke CPU sur le checkpoint promu seed 1 :
+
+```text
+Réglage non destructeur (delta objective + action_penalties REST/WAIT=0.35)
+  Evaluation 100 épisodes : Q-only 98.9, Q+WM 103.0, delta +4.2
+  Rollout médian 64 seeds : encore mort à 96 steps, mais passivité réduite
+  selon les seeds ; le blocage principal devient la compétence de recherche
+  de ressource, surtout l'eau.
+
+Réglage force critique testé puis rejeté
+  Q+WM monte à 105.9 sur l'évaluation courte, mais le rollout médian reste
+  mort à 96 steps et peut redevenir très passif (`REST` sous hydratation
+  critique). Ce n'est donc pas un bon réglage de démo.
+```
+
+Décision : la prochaine étape concrète n'est plus d'ajouter des rustines runtime
+au checkpoint promu. Il faut entraîner/évaluer une variante où l'objectif de
+survie apprend explicitement la recherche de ressources avant la démo visuelle :
+
+```text
+Go demo visuelle si :
+  rollout médian 64 seeds >= 120 steps vivant/cappé
+  et pas de boucle passive dominante en phase critique
+  et au moins une interaction utile ressource sur les rollouts représentatifs.
+
+No-go actuel :
+  le checkpoint promu sait améliorer Q-only en moyenne, mais ne sait pas encore
+  garantir une stratégie robuste de recherche d'eau sur rollout médian.
+```
+
 ---
 
 ## 7. Arborescence des configs et runs

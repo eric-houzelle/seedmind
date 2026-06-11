@@ -82,8 +82,15 @@ def _configure_runtime_guards(
         "enabled": bool(survival_objective),
         "type": "survival_v0",
         "planner_weight": float(survival_objective_weight),
+        "mode": "delta",
         "critical_threshold": 0.18,
         "risk_weight": 3.0,
+        "decline_weight": 4.0,
+        "critical_decline_weight": 8.0,
+        "action_penalties": {
+            "REST": 0.35,
+            "WAIT": 0.35,
+        },
         "weights": {
             "energy": 0.8,
             "hydration": 2.5,
