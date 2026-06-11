@@ -3595,6 +3595,41 @@ checkpoints historiques, ceux-ci restent la baseline opérationnelle ; les runs
 nouveaux servent à stabiliser la production automatique.
 ```
 
+Promotion multi-seed de la baseline validée :
+
+```bash
+python scripts/promote_micro_fouloide_wm_calibrated.py --force
+```
+
+Artefacts produits :
+
+```text
+runs/micro_fouloide_promoted/wm_calibrated_v0/
+  seed1.pt
+  seed2.pt
+  seed3.pt
+  manifest.json
+```
+
+Le manifest référence le rapport 1000 épisodes :
+
+```text
+reports/micro_fouloide_wm_calibrated_1000.md
+
+mean Q-only: 107.9
+mean Q+WM:   110.0
+mean delta:  +2.2
+```
+
+Statut :
+
+```text
+micro_fouloide_wm_calibrated_v0 est le premier artefact promu exploitable.
+Il ne prouve pas encore une génération stable de nouveaux agents bons, mais il
+donne une version de référence concrète pour démos, comparaisons et prochaines
+itérations.
+```
+
 Commande :
 
 ```bash
