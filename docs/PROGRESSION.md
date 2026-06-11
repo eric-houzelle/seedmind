@@ -3463,8 +3463,10 @@ Décision :
 Passer à une consolidation de fin de run :
   - apprendre normalement comme valueplanner ;
   - sauvegarder checkpoint_final.pt brut ;
+  - sauvegarder checkpoint_best.pt sur la meilleure moyenne glissante ;
   - calibrer uncertainty_head puis ValueModel sur le replay final ;
-  - sauvegarder checkpoint_final_calibrated.pt.
+  - sauvegarder checkpoint_final_calibrated.pt ;
+  - calibrer aussi checkpoint_best.pt et sauvegarder checkpoint_best_calibrated.pt.
 
 Cette étape garde l'objectif "apprendre de ses expériences", mais évite de
 modifier le World Model pendant que la policy se forme.
@@ -3479,6 +3481,12 @@ configs/micro_fouloide_v0_rough_valueplanner_late_calibrated.yaml
 Elle active :
 
 ```yaml
+training:
+  best_checkpoint_enabled: true
+  best_checkpoint_window: 100
+  best_checkpoint_min_episode: 500
+  best_checkpoint_min_delta: 0.1
+
 final_calibration:
   enabled: true
   output_name: checkpoint_final_calibrated.pt
@@ -3489,6 +3497,20 @@ final_calibration:
     updates: 5000
     learning_rate: 0.0003
 ```
+
+Principe opérationnel :
+
+```text
+checkpoint_final.pt              = dernier état brut
+checkpoint_final_calibrated.pt   = dernier état consolidé
+checkpoint_best.pt               = meilleur lifespan moyen glissant brut
+checkpoint_best_calibrated.pt    = meilleur état consolidé
+```
+
+Pour les validations longues, évaluer d'abord `checkpoint_best_calibrated.pt`.
+Si le best et le final divergent fortement, cela indique une instabilité de
+formation de la policy ; dans ce cas le run est exploitable mais pas encore
+suffisamment stable pour être qualifié de version opérationnelle.
 
 Commande :
 
@@ -3506,7 +3528,7 @@ python scripts/run_micro_fouloide.py \
 
 ```bash
 python scripts/evaluate_micro_fouloide.py \
-  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_late_calibrated_seed1/checkpoint_final_calibrated.pt \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_late_calibrated_seed1/checkpoint_best_calibrated.pt \
   --config configs/micro_fouloide_v0_rough_valueplanner_late_calibrated.yaml \
   --num-episodes 1000 \
   --device mps \

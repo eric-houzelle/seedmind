@@ -417,6 +417,10 @@ def main() -> None:
     max_steps = int(ec.get("max_steps", 500))
     train_every = int(tc.get("train_every", 1))
     checkpoint_every = int(tc.get("checkpoint_every", 1000))
+    best_checkpoint_enabled = bool(tc.get("best_checkpoint_enabled", False))
+    best_checkpoint_window = int(tc.get("best_checkpoint_window", 100))
+    best_checkpoint_min_episode = int(tc.get("best_checkpoint_min_episode", best_checkpoint_window - 1))
+    best_checkpoint_min_delta = float(tc.get("best_checkpoint_min_delta", 0.0))
     wm_batch = int(wmc.get("batch_size", 64))
     wm_sampler = str(wmc.get("sampler", "uniform"))
     wm_uncertainty_head_updates = int(wmc.get("uncertainty_head_updates_per_train", 0))
@@ -508,9 +512,11 @@ def main() -> None:
     next_target_sync = target_update
     next_value_target_sync = value_target_update
     next_latent_target_sync = int(lpc.get("target_update", target_update))
-    recent_lifespan: deque = deque(maxlen=100)
+    recent_lifespan: deque = deque(maxlen=best_checkpoint_window)
     metrics_history: list[Dict[str, Any]] = []
     start_episode = 0
+    best_mean_life = float("-inf")
+    best_checkpoint_path = out_dir / "checkpoint_best.pt"
 
     if args.resume:
         resume_path = Path(args.resume)
@@ -553,7 +559,19 @@ def main() -> None:
             ]
         if metrics_history:
             start_episode = int(metrics_history[-1].get("episode", len(metrics_history) - 1)) + 1
-            recent_lifespan.extend(int(m.get("lifespan", 0)) for m in metrics_history[-100:])
+            recent_lifespan.extend(int(m.get("lifespan", 0)) for m in metrics_history[-best_checkpoint_window:])
+            if best_checkpoint_enabled:
+                for idx in range(len(metrics_history)):
+                    if idx + 1 < best_checkpoint_window:
+                        continue
+                    episode = int(metrics_history[idx].get("episode", idx))
+                    if episode < best_checkpoint_min_episode:
+                        continue
+                    window_rows = metrics_history[max(0, idx + 1 - best_checkpoint_window): idx + 1]
+                    best_mean_life = max(
+                        best_mean_life,
+                        float(sum(float(m.get("lifespan", 0.0)) for m in window_rows) / len(window_rows)),
+                    )
         elif resume_episode is not None:
             start_episode = int(resume_episode) + 1
         print(f"Resuming from {resume_path} at episode {start_episode}.")
@@ -798,6 +816,38 @@ def main() -> None:
                 sync_latent_target(latent_q_network, target_latent_q_network)
                 next_latent_target_sync += int(lpc.get("target_update", target_update))
 
+        if (
+            best_checkpoint_enabled
+            and len(metrics_history) >= best_checkpoint_window
+            and ep >= best_checkpoint_min_episode
+            and mean_life > best_mean_life + best_checkpoint_min_delta
+        ):
+            best_mean_life = mean_life
+            if agent.q_network is not train_q_network:
+                agent.q_network.load_state_dict(train_q_network.state_dict())
+            save_checkpoint(
+                str(best_checkpoint_path), agent, wm_optimizer, buffer,
+                metrics={
+                    "episode": ep,
+                    "mean_lifespan": mean_life,
+                    "best_mean_lifespan": best_mean_life,
+                    "best_checkpoint_window": best_checkpoint_window,
+                    "device": str(device),
+                    "inference_device": str(inference_device),
+                    "total_q_updates": total_q_updates,
+                    "next_target_sync": next_target_sync,
+                    "total_value_updates": total_value_updates,
+                    "next_value_target_sync": next_value_target_sync,
+                    "total_latent_q_updates": total_latent_q_updates,
+                    "next_latent_target_sync": next_latent_target_sync,
+                },
+                config=config, q_optimizer=q_optimizer, target_network=target_network,
+                value_optimizer=value_optimizer, target_value_model=target_value_model,
+                latent_q_network=latent_q_network,
+                latent_q_optimizer=latent_q_optimizer,
+                target_latent_q_network=target_latent_q_network,
+            )
+
         if ep % checkpoint_every == 0 and ep > 0:
             if agent.q_network is not train_q_network:
                 agent.q_network.load_state_dict(train_q_network.state_dict())
@@ -824,7 +874,7 @@ def main() -> None:
 
         if ep % max(1, episodes // 20) == 0 or ep == episodes - 1:
             print(
-                f"  ep {ep:5d} | lifespan(100)={mean_life:5.1f} "
+                f"  ep {ep:5d} | lifespan({best_checkpoint_window})={mean_life:5.1f} "
                 f"drive100={_mean_recent(metrics_history, 'drive_regulation'):.3f} "
                 f"food100={_mean_recent(metrics_history, 'interact_food'):.2f} "
                 f"water100={_mean_recent(metrics_history, 'interact_water'):.2f} "
@@ -907,6 +957,50 @@ def main() -> None:
             "final_calibration": final_calibration_metrics,
         })
         print(f"Final calibration saved to {calibrated_path}")
+
+        if best_checkpoint_enabled and best_checkpoint_path.exists():
+            best_info = load_checkpoint(
+                str(best_checkpoint_path), agent, wm_optimizer, buffer,
+                q_optimizer=q_optimizer, target_network=target_network,
+                value_optimizer=value_optimizer, target_value_model=target_value_model,
+                latent_q_network=latent_q_network,
+                latent_q_optimizer=latent_q_optimizer,
+                target_latent_q_network=target_latent_q_network,
+            )
+            agent.encoder.to(inference_device)
+            agent.world_model.to(inference_device)
+            if agent.value_model is not None:
+                agent.value_model.to(device)
+            if agent.q_network is not train_q_network:
+                agent.q_network.to(inference_device)
+                agent.q_network.eval()
+            best_calibration_metrics = _run_final_calibration(agent, buffer, config, device)
+            if target_value_model is not None and agent.value_model is not None:
+                sync_value_target(agent.value_model, target_value_model)
+            best_calibrated_metrics = dict(best_info.get("metrics", {}))
+            best_calibrated_metrics["final_calibration"] = best_calibration_metrics
+            best_calibrated_metrics["calibrated_from"] = str(best_checkpoint_path)
+            best_calibrated_path = out_dir / "checkpoint_best_calibrated.pt"
+            save_checkpoint(
+                str(best_calibrated_path), agent, wm_optimizer, buffer,
+                metrics=best_calibrated_metrics,
+                config=config, q_optimizer=q_optimizer, target_network=target_network,
+                value_optimizer=value_optimizer, target_value_model=target_value_model,
+                latent_q_network=latent_q_network,
+                latent_q_optimizer=latent_q_optimizer,
+                target_latent_q_network=target_latent_q_network,
+            )
+            _save_metrics(metrics_path, {
+                "config_path": args.config,
+                "device": str(device),
+                "inference_device": str(inference_device),
+                "episodes": metrics_history,
+                "final_calibration": final_calibration_metrics,
+                "best_final_calibration": best_calibration_metrics,
+                "best_checkpoint": str(best_checkpoint_path),
+                "best_mean_lifespan": best_calibrated_metrics.get("best_mean_lifespan"),
+            })
+            print(f"Best final calibration saved to {best_calibrated_path}")
 
 
 if __name__ == "__main__":

@@ -106,6 +106,10 @@ training:
   episodes: 8000
   train_every: 1
   checkpoint_every: 2000
+  best_checkpoint_enabled: true
+  best_checkpoint_window: 100
+  best_checkpoint_min_episode: 500
+  best_checkpoint_min_delta: 0.1
 
 final_calibration:
   enabled: true
