@@ -292,6 +292,17 @@ def main() -> None:
         "--manifest",
         default="runs/micro_fouloide_promoted/wm_calibrated_v0/manifest.json",
     )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Evaluate/roll out this checkpoint directly instead of reading a promoted manifest.",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Config to use with --checkpoint. Defaults to the manifest config otherwise.",
+    )
+    parser.add_argument("--planner-preset", default=None)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="auto", choices=["cpu", "auto", "cuda", "mps"])
     parser.add_argument("--num-episodes", type=int, default=100)
@@ -327,18 +338,31 @@ def main() -> None:
     parser.add_argument("--debug-objective-steps", type=int, default=8)
     args = parser.parse_args()
 
-    manifest = _load_manifest(args.manifest)
-    row = _seed_entry(manifest, args.seed)
-    checkpoint = str(row["promoted_checkpoint"])
+    manifest = None
+    row = None
+    if args.checkpoint is None:
+        manifest = _load_manifest(args.manifest)
+        row = _seed_entry(manifest, args.seed)
+        checkpoint = str(row["promoted_checkpoint"])
+        config_path = str(args.config or manifest["config"])
+        preset_name = str(args.planner_preset or manifest.get("planner_preset", "wm-calibrated"))
+        label = str(manifest.get("name", args.manifest))
+    else:
+        checkpoint = str(args.checkpoint)
+        if args.config is None:
+            raise ValueError("--config is required when --checkpoint is provided.")
+        config_path = str(args.config)
+        preset_name = str(args.planner_preset or "wm-calibrated")
+        label = "direct-checkpoint"
     config = _configure_runtime_guards(
-        load_config(str(manifest["config"])),
+        load_config(config_path),
         filter_blocked_moves=not args.allow_blocked_moves,
         filter_noop_interact=not args.allow_noop_interact,
         survival_objective=not args.disable_survival_objective,
         survival_objective_weight=float(args.survival_objective_weight),
     )
     device = resolve_device(args.device)
-    params = _preset_params(str(manifest.get("planner_preset", "wm-calibrated")))
+    params = _preset_params(preset_name)
     threshold = resolve_uncertainty_threshold_from_replay(
         config,
         checkpoint,
@@ -346,8 +370,9 @@ def main() -> None:
         float(params["planner_uncertainty_quantile"]),
     )
 
-    print(f"Manifest: {manifest.get('name', args.manifest)}")
+    print(f"Source: {label}")
     print(f"Seed: {args.seed}")
+    print(f"Config: {config_path}")
     print(f"Checkpoint: {checkpoint}")
     print(f"Device: {device}")
     print(f"Planner threshold q{params['planner_uncertainty_quantile']:.2f}: {threshold:.5f}")
@@ -361,12 +386,15 @@ def main() -> None:
         f"survival_v0={not args.disable_survival_objective} "
         f"planner_weight={float(args.survival_objective_weight):.3f}"
     )
-    print(
-        "Validated metrics: "
-        f"Q-only={float(row['q_lifespan']):.1f} "
-        f"Q+WM={float(row['planner_lifespan']):.1f} "
-        f"delta={float(row['delta_lifespan']):+.1f}"
-    )
+    if row is not None:
+        print(
+            "Validated metrics: "
+            f"Q-only={float(row['q_lifespan']):.1f} "
+            f"Q+WM={float(row['planner_lifespan']):.1f} "
+            f"delta={float(row['delta_lifespan']):+.1f}"
+        )
+    else:
+        print("Validated metrics: unavailable for direct checkpoint")
 
     if not args.skip_eval:
         q_stats = run_trained(config, checkpoint, args.num_episodes, device, decision_mode="q")

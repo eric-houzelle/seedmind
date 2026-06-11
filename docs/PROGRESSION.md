@@ -3907,6 +3907,45 @@ Critère pour passer à la démo visuelle :
   passive dominante sous hydratation critique.
 ```
 
+Résultat seed 1 après 3000 épisodes :
+
+```text
+Train final last100 = 110.2
+Eval 1000 :
+  Q-only = 109.6, water = 0.57, actions interact = 32.7%
+  Q+WM   = 110.6, water = 0.62, planner_used = 14.9%
+```
+
+Interprétation :
+
+```text
+- La récompense resource_seek fonctionne localement : l'agent interagit beaucoup
+  plus avec les ressources, surtout l'eau.
+- Le lifespan reste inférieur au meilleur checkpoint promu seed 1.
+- Le rollout médian direct reste mort à ~96 steps, avec hydratation à zéro.
+- Avec ou sans survival_v0 runtime, le comportement médian n'est pas encore
+  robuste : l'agent peut traverser la carte mais ne garantit pas la recherche
+  d'eau utile avant le seuil critique.
+```
+
+Décision : `resource_seek_seed1` est un no-go pour la démo visuelle. Il valide
+la direction “récompense ressource”, mais il faut une variante suivante plus
+forte ou différente :
+
+```text
+Option A : curriculum plus facile puis rough
+  plus d'eau / moins d'obstacles / decay hydratation légèrement réduit,
+  puis transfert ou même config rough.
+
+Option B : objectif ressource explicite dans policy/value
+  pénalité plus forte pour hydratation basse et bonus de signal local_water,
+  pas seulement bonus d'interaction.
+
+Option C : séparer exploration et exploitation
+  entraîner un comportement de recherche ressource avec epsilon/curiosity plus
+  long, puis évaluer avec planner.
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
