@@ -296,6 +296,65 @@ def _drive_regulation_from_observation(obs: Dict[str, Any]) -> float:
     return _drive_regulation_from_values(obs)
 
 
+def _event_resource_reward(
+    observation: Dict[str, Any],
+    info: Dict[str, Any],
+    config: dict,
+) -> float:
+    cfg = config.get("resource_reward", {})
+    if not bool(cfg.get("enabled", False)):
+        return 0.0
+
+    event = str(info.get("event", ""))
+    reward = 0.0
+    event_rewards = cfg.get("event_rewards", {})
+    if event in event_rewards:
+        reward += float(event_rewards[event])
+
+    hydration = float(observation.get("hydration", info.get("hydration", 0.0)))
+    energy = float(observation.get("energy", info.get("energy", 0.0)))
+    low_threshold = float(cfg.get("low_threshold", 0.35))
+    critical_threshold = float(cfg.get("critical_threshold", low_threshold))
+    if event == "interact_water":
+        if hydration <= low_threshold:
+            reward += float(cfg.get("low_hydration_water_bonus", 0.0))
+        if hydration <= critical_threshold:
+            reward += float(cfg.get("critical_hydration_water_bonus", 0.0))
+    elif event == "interact_food":
+        if energy <= low_threshold:
+            reward += float(cfg.get("low_energy_food_bonus", 0.0))
+        if energy <= critical_threshold:
+            reward += float(cfg.get("critical_energy_food_bonus", 0.0))
+
+    if event in {"wait", "rest"}:
+        hydration_after = float(info.get("hydration", hydration))
+        energy_after = float(info.get("energy", energy))
+        if hydration_after <= low_threshold or energy_after <= low_threshold:
+            reward -= float(cfg.get("low_drive_passive_penalty", 0.0))
+
+    return reward * float(cfg.get("weight", 1.0))
+
+
+def _learning_reward(
+    reward_ext: float,
+    observation: Dict[str, Any],
+    info: Dict[str, Any],
+    config: dict,
+) -> float:
+    reward_learning = float(reward_ext)
+    drc = config.get("drive_reward", {})
+    if bool(drc.get("enabled", False)):
+        prev_drive = _drive_regulation_from_observation(observation)
+        next_drive = _drive_regulation(info)
+        if str(drc.get("mode", "delta")) == "absolute":
+            drive_bonus = next_drive
+        else:
+            drive_bonus = next_drive - prev_drive
+        reward_learning += float(drc.get("weight", 0.0)) * float(drive_bonus)
+    reward_learning += _event_resource_reward(observation, info, config)
+    return float(reward_learning)
+
+
 def _discounted_returns_by_episode(rows: list[dict], reward_key: str, gamma: float) -> dict[int, float]:
     grouped: dict[str, list[tuple[int, int, float]]] = defaultdict(list)
     row_lookup: dict[int, dict] = {}
@@ -464,8 +523,6 @@ def main() -> None:
     gamma = float(dc.get("gamma", 0.97))
     target_update = int(dc.get("target_update", 500))
     drive_reward_enabled = bool(drc.get("enabled", False))
-    drive_reward_weight = float(drc.get("weight", 0.0))
-    drive_reward_mode = str(drc.get("mode", "delta"))
     dqn_reward_key = str(dc.get(
         "reward_key",
         "reward_learning" if drive_reward_enabled else "reward_external",
@@ -651,15 +708,7 @@ def main() -> None:
             predicted, _, _ = agent.world_model.predict_tensor(latent_state, action_index)
             pred_err = float(compute_prediction_error_tensor(predicted, next_latent).item())
             reward_int = agent.curiosity.compute(pred_err)
-            reward_learning = float(reward_ext)
-            if drive_reward_enabled:
-                prev_drive = _drive_regulation_from_observation(observation)
-                next_drive = _drive_regulation(info)
-                if drive_reward_mode == "absolute":
-                    drive_bonus = next_drive
-                else:
-                    drive_bonus = next_drive - prev_drive
-                reward_learning += drive_reward_weight * float(drive_bonus)
+            reward_learning = _learning_reward(reward_ext, observation, info, config)
 
             experience = make_experience(
                 episode_id=f"micro_fouloide_{ep:06d}",

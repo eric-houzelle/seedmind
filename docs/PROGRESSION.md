@@ -3855,6 +3855,58 @@ No-go actuel :
   garantir une stratégie robuste de recherche d'eau sur rollout médian.
 ```
 
+### 6.16 Étape suivante : resource_seek
+
+Ajout d'une config dédiée :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_resource_seek.yaml
+```
+
+Objectif : ne pas modifier le World Model universel, mais densifier le signal
+d'apprentissage de la politique/ValueModel pour apprendre explicitement :
+
+```text
+- boire quand hydratation basse/critique ;
+- manger quand énergie basse/critique ;
+- éviter les pas passifs quand une ressource vitale est basse ;
+- mieux sampler les événements ressource/terminal dans le WM causal.
+```
+
+Commande seed 1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_seek.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_resource_seek_seed1
+```
+
+Puis évaluation go/no-go :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_resource_seek_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_seek.yaml \
+  --num-episodes 1000 \
+  --device mps \
+  --compare-planner \
+  --planner-preset wm-calibrated
+```
+
+Critère pour passer à la démo visuelle :
+
+```text
+- Q-only ne régresse pas sous le baseline seed 1 de manière majeure ;
+- Q+WM garde un delta positif ;
+- `interact_water` augmente nettement vs baseline ;
+- rollout médian 64 seeds atteint le cap 120 ou ne montre plus de boucle
+  passive dominante sous hydratation critique.
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
