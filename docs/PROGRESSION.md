@@ -3689,6 +3689,76 @@ python scripts/evaluate_micro_fouloide.py \
 
 ---
 
+## 6.14 Ligne d'arrivée : démo visuelle fouloïde
+
+But concret : lancer une démo visuelle avec un fouloïde sur une grande carte,
+observant ses drives et utilisant un modèle du monde pour essayer de survivre.
+Cette démo ne doit pas attendre une intelligence parfaite ; elle doit montrer
+un organisme minimal qui évite les actions absurdes, cherche des ressources et
+reste vivant de façon lisible.
+
+Critères de passage avant démo visuelle :
+
+```text
+Artefact:
+  - un manifest promu existe (`micro_fouloide_wm_calibrated_v0` ou suivant)
+  - les commandes de démo et d'évaluation sont documentées
+
+Métriques:
+  - Q+WM >= Q-only sur 3 seeds en moyenne
+  - évaluation confirmée sur au moins 1000 épisodes
+  - ratio Q+WM/Q-only >= 1.01
+
+Comportement:
+  - `move_blocked` absent ou marginal dans les rollouts avec guards
+  - `interact_noop` absent ou marginal dans les rollouts avec guards
+  - un rollout `best` sur 64 seeds atteint le cap de démo
+  - le rollout `median` ne doit pas être dominé par une seule action passive
+    (`REST` ou `WAIT`) jusqu'à la mort
+
+Décision:
+  - si les trois premiers blocs sont validés, on lance la démo visuelle v0
+  - si le median reste passif, on ajoute d'abord un objectif survival_v0
+    configurable au planner, sans encoder cet objectif dans le World Model
+```
+
+Commande go/no-go actuelle :
+
+```bash
+python scripts/demo_micro_fouloide_promoted.py \
+  --manifest runs/micro_fouloide_promoted/wm_calibrated_v0/manifest.json \
+  --seed 1 \
+  --num-episodes 100 \
+  --device mps \
+  --find-rollout \
+  --rollout-search-count 64 \
+  --rollout-select median \
+  --rollout-max-steps 120
+```
+
+Statut au 2026-06-11 :
+
+```text
+Métriques agrégées: validées pour une première RC.
+Actions absurdes: `move_blocked` et `interact_noop` corrigées par guards runtime.
+Blocage restant: le rollout median peut encore être dominé par REST/WAIT et
+mourir malgré l'objectif de survie.
+
+Prochaine étape avant démo visuelle:
+  implémenter un objectif `survival_v0` paramétrable pour le planner.
+  Le World Model reste neutre ; l'objectif est une couche de décision.
+```
+
+Ligne d'arrivée pratique :
+
+```text
+Après `survival_v0`, si le rollout median sur 64 seeds atteint >= 120 steps
+ou meurt après >= 120 steps sur une carte de démo plus grande, on arrête la
+phase micro-recherche et on construit le viewer visuel.
+```
+
+---
+
 ## 7. Arborescence des configs et runs
 
 ```text
