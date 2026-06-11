@@ -4325,7 +4325,36 @@ runs/                        # gitignored
 
 ---
 
-## 9. Hors scope immédiat (vision long terme)
+## 9. Demo front fouloïdes (préparation)
+
+**Objectif :** préparer l'interface visible navigateur de la future démo
+écosystème fouloïdes, avant que le moteur world model soit prêt.
+
+**Implémenté (juin 2026) :**
+
+- `seedmind/visualization/fouloides_viewer.html` — viewer canvas pixel-art
+  fidèle au style fouloïdes de référence (herbe avec patchs usés, arbres,
+  pommes, fouloïdes jaunes, baignoires, rochers) ; sprites générés
+  procéduralement, caméra pan/zoom (drag, molette, flèches), HUD type jeu
+  (badge population, bannière OBJECTIF), interpolation des déplacements.
+- `scripts/demo_fouloides_front.py` — serveur HTTP + WebSocket (même pattern
+  que `live_sandbox.py`). Le monde est un **stub** (`StubFouloideWorld`,
+  marche aléatoire attirée par les pommes) qui alimente le front avec des
+  données plausibles sur un grand monde (96×96 par défaut).
+
+**Point de branchement moteur :** l'interface `WorldSource`
+(`world_message()` statique + `step_message()` par tick). Quand le moteur
+world model sera prêt, écrire un adaptateur implémentant cette interface et
+le passer au serveur à la place du stub — le front est agnostique.
+
+```bash
+python scripts/demo_fouloides_front.py --size 96 --fouloides 14
+# Ouvrir http://localhost:8787
+```
+
+---
+
+## 10. Hors scope immédiat (vision long terme)
 
 - Reproduction, multi-agents, construction libre (BUILD)
 - Monde physique, ComputerWorld
