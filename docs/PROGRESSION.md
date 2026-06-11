@@ -3994,6 +3994,63 @@ Implications pour le curriculum (option A) :
   config curriculum — valider le transfert, pas la facilité.
 ```
 
+#### Curriculum resource navigation — 2026-06-11
+
+Config ajoutée :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_resource_curriculum.yaml
+```
+
+Principes :
+
+```text
+- num_water reste à 6 : on évite de rendre le problème trivial par densité.
+- hydration_decay passe de 0.010 à 0.008 : plus de temps pour découvrir l'eau.
+- obstacles/dangers légèrement réduits (24→20, 11→9) : curriculum de navigation,
+  pas changement de but.
+- filter_blocked_moves/filter_noop_interact activés pendant l'entraînement :
+  pas de gaspillage massif d'actions sur INTERACT à vide.
+- resource_reward garde une pénalité interact_noop/move_blocked pour les runs
+  diagnostiques sans guards.
+```
+
+Run seed 1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_curriculum.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_resource_curriculum_seed1
+```
+
+Évaluation locale curriculum :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_resource_curriculum_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_curriculum.yaml \
+  --num-episodes 1000 \
+  --device mps \
+  --compare-planner \
+  --planner-preset wm-calibrated
+```
+
+Validation de transfert rough (la vraie décision pour la démo) :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_resource_curriculum_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_seek.yaml \
+  --num-episodes 1000 \
+  --device mps \
+  --compare-planner \
+  --planner-preset wm-calibrated
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
