@@ -18,9 +18,11 @@ from seedmind.agent.sandbox_encoder import (
     sandbox_obs_batch_to_tensors,
     sandbox_observation_to_vector,
 )
+from seedmind.agent.planner import Planner
 from seedmind.envs.sandbox_world import ACTIONS, SandboxWorld, NUM_ENTITIES
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.memory.persistent_memory import PersistentMemory
+from seedmind.objectives import SurvivalObjective
 from seedmind.training.imagination import imagine_experiences
 from scripts.evaluate_micro_fouloide import (
     _parse_int_sweep,
@@ -135,6 +137,77 @@ class TestCombinedScorer:
         # Both should be valid actions regardless of weight
         assert action_q in ACTIONS
         assert action_wm in ACTIONS
+
+
+class _CausalStubWorldModel:
+    """Stub WM: neutral dynamics, hydration delta depends on the action."""
+
+    num_actions = 2
+
+    def predict_batch(self, latents, action_indices):
+        n = len(latents)
+        return (
+            np.asarray(latents, dtype=np.float32),
+            np.zeros(n, dtype=np.float32),
+            np.zeros(n, dtype=np.float32),
+        )
+
+    def predict_causal_batch(self, latents, action_indices):
+        actions = np.asarray(action_indices)
+        delta = np.zeros((len(actions), 4), dtype=np.float32)
+        delta[:, 1] = np.where(actions == 0, 0.2, -0.1)  # hydration
+        return delta, np.zeros((len(actions), 0), dtype=np.float32)
+
+
+class TestObjectiveSensitivity:
+    FEATURES = ["energy", "hydration", "temperature", "health"]
+    PLAN_ACTIONS = ["INTERACT", "WAIT"]
+
+    def _make_planner(self, objective_weight: float) -> Planner:
+        return Planner(
+            world_model=_CausalStubWorldModel(),
+            actions=self.PLAN_ACTIONS,
+            curiosity=CuriosityModule(weight=0.0, max_reward=1.0, enabled=False),
+            horizon=2,
+            num_samples=4,
+            objective_scorer=SurvivalObjective(
+                feature_names=self.FEATURES,
+                weights={"energy": 1.0, "hydration": 2.0, "temperature": 0.5, "health": 3.0},
+            ),
+            objective_weight=objective_weight,
+            seed=0,
+        )
+
+    def test_objective_ranks_drive_improving_action_first(self):
+        """Features propagate via the causal head even without causal weights."""
+        planner = self._make_planner(objective_weight=1.0)
+        latent = np.zeros(8, dtype=np.float32)
+        current = np.asarray([0.5, 0.2, 0.5, 1.0], dtype=np.float32)
+
+        values = planner.action_values(
+            latent, self.PLAN_ACTIONS, current_features=current,
+        )
+
+        assert values["INTERACT"] > values["WAIT"]
+
+    def test_zero_objective_weight_is_neutral(self):
+        planner = self._make_planner(objective_weight=0.0)
+        latent = np.zeros(8, dtype=np.float32)
+        current = np.asarray([0.5, 0.2, 0.5, 1.0], dtype=np.float32)
+
+        values = planner.action_values(
+            latent, self.PLAN_ACTIONS, current_features=current,
+        )
+
+        assert values["INTERACT"] == pytest.approx(values["WAIT"])
+
+    def test_no_features_falls_back_to_neutral(self):
+        planner = self._make_planner(objective_weight=1.0)
+        latent = np.zeros(8, dtype=np.float32)
+
+        values = planner.action_values(latent, self.PLAN_ACTIONS)
+
+        assert values["INTERACT"] == pytest.approx(values["WAIT"])
 
 
 class TestCalibrationHelpers:

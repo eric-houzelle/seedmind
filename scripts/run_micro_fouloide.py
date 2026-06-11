@@ -202,6 +202,10 @@ def build_agent(config: dict, seed: int) -> Agent:
             causal_feature_names(config),
         ),
         planner_objective_weight=float(objective_cfg.get("planner_weight", 0.0)),
+        causal_features_fn=(
+            _probe_env(config).causal_features
+            if bool(cwm.get("enabled", False)) else None
+        ),
         planner_seed=seed,
         planner_uncertainty_threshold=(
             float(plc["uncertainty_threshold"])

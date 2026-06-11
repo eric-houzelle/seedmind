@@ -123,6 +123,33 @@ def _load_agent(config: dict, checkpoint: str, device: torch.device):
     return agent
 
 
+PASSIVE_ACTIONS = {"REST", "WAIT"}
+
+
+def _debug_objective_lines(
+    agent: Any, latent: np.ndarray, obs: dict[str, Any], available_actions: list[str]
+) -> list[str]:
+    """Per-action WM values with vs without objective (planner rng preserved)."""
+    planner = agent.planner
+    features = (
+        agent.causal_features_fn(obs)
+        if agent.causal_features_fn is not None else None
+    )
+    rng_state = planner.rng.bit_generator.state
+    with_obj = planner.action_values(latent, available_actions, current_features=features)
+    planner.rng.bit_generator.state = rng_state
+    saved_weight = planner.objective_weight
+    planner.objective_weight = 0.0
+    without_obj = planner.action_values(latent, available_actions, current_features=features)
+    planner.objective_weight = saved_weight
+    planner.rng.bit_generator.state = rng_state
+    return [
+        f"      {a:<10} wm={without_obj[a]:+.4f} "
+        f"obj={with_obj[a] - without_obj[a]:+.4f} total={with_obj[a]:+.4f}"
+        for a in available_actions
+    ]
+
+
 def _run_rollout_with_agent(
     agent: Any,
     config: dict,
@@ -130,6 +157,8 @@ def _run_rollout_with_agent(
     max_steps: int,
     trace_every: int,
     collect_trace: bool = True,
+    debug_objective: bool = False,
+    debug_objective_steps: int = 8,
 ) -> dict[str, Any]:
     agent.goal_generator = GoalGenerator(seed=rollout_seed)
     agent.planner.rng = np.random.default_rng(rollout_seed)
@@ -139,6 +168,8 @@ def _run_rollout_with_agent(
     events: Counter[str] = Counter()
     actions: Counter[str] = Counter()
     planner_used = 0
+    passive_steps = 0
+    planner_used_passive = 0
     trace: list[str] = []
     done = False
     info: dict[str, Any] = {}
@@ -146,11 +177,15 @@ def _run_rollout_with_agent(
     while not done and env.steps < max_steps:
         memories = agent.retrieve(latent)
         goal = agent.choose_goal(latent, memories)
+        available = env.available_actions()
+        debug_lines: list[str] = []
+        if debug_objective and env.steps < debug_objective_steps:
+            debug_lines = _debug_objective_lines(agent, latent, obs, available)
         action = agent.choose_action(
             latent,
             goal,
             memories,
-            env.available_actions(),
+            available,
             observation=obs,
         )
         obs, _, done, info = env.step(action)
@@ -159,6 +194,12 @@ def _run_rollout_with_agent(
         actions[action] += 1
         events[event] += 1
         planner_used += int(getattr(agent, "last_planner_used", False))
+        if action in PASSIVE_ACTIONS:
+            passive_steps += 1
+            planner_used_passive += int(getattr(agent, "last_planner_used", False))
+        if collect_trace and debug_lines:
+            trace.append(f"{env.steps:03d} [objective debug] chosen={action}")
+            trace.extend(debug_lines)
         should_trace = (
             env.steps == 1
             or env.steps % max(trace_every, 1) == 0
@@ -184,6 +225,10 @@ def _run_rollout_with_agent(
         "capped": bool(not done and env.steps >= max_steps),
         "drive": _drive(info) if info else 0.0,
         "planner_used": planner_used / total_actions,
+        "passive_steps": passive_steps,
+        "planner_used_passive": (
+            planner_used_passive / passive_steps if passive_steps else 0.0
+        ),
         "events": dict(events),
         "actions": dict(actions),
         "trace": trace,
@@ -198,6 +243,8 @@ def _run_rollout(
     rollout_seed: int,
     max_steps: int,
     trace_every: int,
+    debug_objective: bool = False,
+    debug_objective_steps: int = 8,
 ) -> dict[str, Any]:
     agent = _load_agent(config, checkpoint, device)
     return _run_rollout_with_agent(
@@ -207,6 +254,8 @@ def _run_rollout(
         max_steps=max_steps,
         trace_every=trace_every,
         collect_trace=True,
+        debug_objective=debug_objective,
+        debug_objective_steps=debug_objective_steps,
     )
 
 
@@ -263,6 +312,12 @@ def main() -> None:
     )
     parser.add_argument("--disable-survival-objective", action="store_true")
     parser.add_argument("--survival-objective-weight", type=float, default=0.5)
+    parser.add_argument(
+        "--debug-objective",
+        action="store_true",
+        help="Trace per-action WM value with/without objective on early rollout steps.",
+    )
+    parser.add_argument("--debug-objective-steps", type=int, default=8)
     args = parser.parse_args()
 
     manifest = _load_manifest(args.manifest)
@@ -373,6 +428,8 @@ def main() -> None:
                 max_steps=int(args.rollout_max_steps),
                 trace_every=int(args.trace_every),
                 collect_trace=True,
+                debug_objective=bool(args.debug_objective),
+                debug_objective_steps=int(args.debug_objective_steps),
             )
         else:
             rollout = _run_rollout(
@@ -382,6 +439,8 @@ def main() -> None:
                 rollout_seed=int(args.rollout_seed),
                 max_steps=int(args.rollout_max_steps),
                 trace_every=int(args.trace_every),
+                debug_objective=bool(args.debug_objective),
+                debug_objective_steps=int(args.debug_objective_steps),
             )
         print("\nRollout")
         print(
@@ -389,6 +448,10 @@ def main() -> None:
             f"dead={rollout['dead']} timeout={rollout['timeout']} "
             f"capped={rollout['capped']} drive={rollout['drive']:.3f} "
             f"planner_used={rollout['planner_used']:.1%}"
+        )
+        print(
+            f"  passive_steps={rollout['passive_steps']} "
+            f"planner_used_passive={rollout['planner_used_passive']:.1%}"
         )
         print(f"  events={rollout['events']}")
         print("  trace:")

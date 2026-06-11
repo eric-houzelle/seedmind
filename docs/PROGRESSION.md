@@ -3750,6 +3750,54 @@ Prochaine étape avant démo visuelle:
   Le World Model reste neutre ; l'objectif est une couche de décision.
 ```
 
+#### Diagnostic et fix survival_v0 — 2026-06-11
+
+Diagnostic : l'objectif `survival_v0` était **structurellement no-op** dans le
+pipeline micro-fouloïde. Ce n'était pas un problème de calibration des poids.
+
+```text
+1. `causal_features_fn` jamais câblé dans `build_agent`
+   (`scripts/run_micro_fouloide.py`) → `current_features=None` →
+   `Planner._objective_value()` retournait 0.0 quel que soit le poids.
+2. Même câblées, les features restaient gelées dans l'imagination : la
+   propagation `features + delta` exigeait `causal_feature_weights` ET
+   `causal_feature_targets`, jamais passés → l'objectif aurait ajouté la même
+   constante à toutes les actions, sans effet sur le classement.
+```
+
+Fix (couche décision uniquement, WM inchangé, aucun réentraînement) :
+
+```text
+- planner.py : propagation des features découplée du shaping causal — les
+  feature_particles évoluent via la tête causale du WM dès qu'un objectif est
+  actif, indépendamment des poids/targets causaux.
+- run_micro_fouloide.py : `causal_features_fn` câblé quand
+  `causal_world_model.enabled` (bénéficie à demo/evaluate/select).
+- demo : stats `passive_steps` + `planner_used_passive` (usage planner segmenté
+  global vs phases REST/WAIT) et flag `--debug-objective` (valeurs WM
+  avec/sans objectif par action).
+- tests : sensibilité du planner à l'objectif via WM stub à tête causale
+  (tests/test_planning.py::TestObjectiveSensitivity).
+```
+
+Sanity (median, 8 seeds, cap 120, seed checkpoint 1) :
+
+```text
+                       weight 0.0          weight 0.5
+lifespan median        115 (mort)          112 (mort)
+steps passifs          80 (dont 51 WAIT)   28
+comportement           WAIT jusqu'à mort   67 move_ok, interact food+water
+planner_used           48.7%               58.0%
+planner_used_passive   45.0%               50.0%
+```
+
+Le seed 9999 passe de 115/mort (weight 0.0) à 120/vivant drive 0.599
+(weight 0.5). `planner_used_passive` ~45-50% dans les deux cas : le gating
+n'était pas le blocage principal, c'était le câblage.
+
+Prochaine étape : relancer la commande go/no-go complète (64 seeds) pour
+décider du passage au viewer visuel.
+
 Ligne d'arrivée pratique :
 
 ```text

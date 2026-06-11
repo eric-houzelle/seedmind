@@ -82,25 +82,50 @@ class Planner:
         actions: np.ndarray,
         current_features: Optional[np.ndarray] = None,
     ) -> tuple[np.ndarray, Optional[np.ndarray]]:
-        if self.causal_feature_weights is None or self.causal_feature_weights.size == 0:
-            return np.zeros(len(actions), dtype=np.float32), current_features
-        delta, _ = self.world_model.predict_causal_batch(latents, actions)
-        if delta.shape[1] != self.causal_feature_weights.shape[0]:
-            return np.zeros(len(actions), dtype=np.float32), current_features
-        if (
+        """Causal shaping value + feature propagation through imagination.
+
+        Feature propagation (``features + predicted delta``) is independent of
+        the causal shaping value: an objective scorer needs evolving features
+        even when no ``causal_feature_weights`` are configured.
+        """
+        zeros = np.zeros(len(actions), dtype=np.float32)
+        has_shaping = (
+            self.causal_feature_weights is not None
+            and self.causal_feature_weights.size > 0
+        )
+        needs_features = (
             current_features is not None
-            and self.causal_feature_targets is not None
-            and self.causal_feature_targets.shape[0] == delta.shape[1]
-        ):
+            and self.objective_scorer is not None
+            and self.objective_weight != 0.0
+        )
+        if not has_shaping and not needs_features:
+            return zeros, current_features
+
+        delta, _ = self.world_model.predict_causal_batch(latents, actions)
+
+        cur = None
+        nxt = current_features
+        if current_features is not None and delta.shape[1] > 0:
             cur = np.asarray(current_features, dtype=np.float32)
             if cur.ndim == 1:
                 cur = np.repeat(cur[None, :], len(actions), axis=0)
-            nxt = np.clip(cur + delta, 0.0, 1.0)
+            if delta.shape[1] == cur.shape[1]:
+                nxt = np.clip(cur + delta, 0.0, 1.0)
+            else:
+                cur = None
+
+        if not has_shaping or delta.shape[1] != self.causal_feature_weights.shape[0]:
+            return zeros, nxt
+        if (
+            cur is not None
+            and self.causal_feature_targets is not None
+            and self.causal_feature_targets.shape[0] == delta.shape[1]
+        ):
             before = np.abs(self.causal_feature_targets[None, :] - cur)
             after = np.abs(self.causal_feature_targets[None, :] - nxt)
             value = ((before - after) * self.causal_feature_weights[None, :]).sum(axis=1)
             return value.astype(np.float32), nxt
-        return (delta @ self.causal_feature_weights).astype(np.float32), current_features
+        return (delta @ self.causal_feature_weights).astype(np.float32), nxt
 
     def action_values(
         self,
