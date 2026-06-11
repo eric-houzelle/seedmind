@@ -95,6 +95,8 @@ class MicroFouloideWorld(EnvironmentAdapter):
         num_dangers: int = 8,
         num_obstacles: int = 20,
         visibility_radius: Optional[int] = 4,
+        filter_blocked_moves: bool = False,
+        filter_noop_interact: bool = False,
         seed: Optional[int] = None,
     ) -> None:
         self.size = int(size)
@@ -120,6 +122,8 @@ class MicroFouloideWorld(EnvironmentAdapter):
         self.num_dangers = int(num_dangers)
         self.num_obstacles = int(num_obstacles)
         self.visibility_radius = visibility_radius
+        self.filter_blocked_moves = bool(filter_blocked_moves)
+        self.filter_noop_interact = bool(filter_noop_interact)
         self.rng = np.random.default_rng(seed)
 
         self.grid = np.zeros((self.size, self.size), dtype=np.int64)
@@ -216,7 +220,18 @@ class MicroFouloideWorld(EnvironmentAdapter):
         }
 
     def available_actions(self) -> List[str]:
-        return list(ACTIONS)
+        return [
+            action
+            for action in ACTIONS
+            if self._action_is_available(action)
+        ]
+
+    def _action_is_available(self, action: str) -> bool:
+        if self.filter_blocked_moves and action in _MOVE_DELTAS and not self._can_move(action):
+            return False
+        if self.filter_noop_interact and action == INTERACT and not self._can_interact():
+            return False
+        return True
 
     def causal_feature_names(self) -> List[str]:
         return [
@@ -309,16 +324,27 @@ class MicroFouloideWorld(EnvironmentAdapter):
     # ------------------------------------------------------------------
     # Action and dynamics
     # ------------------------------------------------------------------
-    def _try_move(self, action: str) -> None:
+    def _can_move(self, action: str) -> bool:
         dr, dc = _MOVE_DELTAS[action]
         r, c = self.agent_pos
         nr, nc = r + dr, c + dc
-        if not (0 <= nr < self.size and 0 <= nc < self.size):
+        return (
+            0 <= nr < self.size
+            and 0 <= nc < self.size
+            and self.grid[nr, nc] != OBSTACLE
+        )
+
+    def _can_interact(self) -> bool:
+        r, c = self.agent_pos
+        return int(self.grid[r, c]) in {FOOD, WATER}
+
+    def _try_move(self, action: str) -> None:
+        if not self._can_move(action):
             self._last_event = "move_blocked"
             return
-        if self.grid[nr, nc] == OBSTACLE:
-            self._last_event = "move_blocked"
-            return
+        dr, dc = _MOVE_DELTAS[action]
+        r, c = self.agent_pos
+        nr, nc = r + dr, c + dc
         self.agent_pos = (nr, nc)
         self._last_event = "move_ok"
 

@@ -66,6 +66,19 @@ def _configure_planner(config: dict, params: dict[str, Any], threshold: float) -
     return configured
 
 
+def _configure_runtime_guards(
+    config: dict,
+    filter_blocked_moves: bool,
+    filter_noop_interact: bool,
+) -> dict:
+    configured = dict(config)
+    env_cfg = dict(configured.get("env", {}))
+    env_cfg["filter_blocked_moves"] = bool(filter_blocked_moves)
+    env_cfg["filter_noop_interact"] = bool(filter_noop_interact)
+    configured["env"] = env_cfg
+    return configured
+
+
 def _drive(info: dict[str, Any]) -> float:
     drives = info.get("drives", {})
     values = [
@@ -223,12 +236,26 @@ def main() -> None:
     )
     parser.add_argument("--skip-eval", action="store_true")
     parser.add_argument("--skip-rollout", action="store_true")
+    parser.add_argument(
+        "--allow-blocked-moves",
+        action="store_true",
+        help="Keep blocked moves in available_actions for legacy behavior.",
+    )
+    parser.add_argument(
+        "--allow-noop-interact",
+        action="store_true",
+        help="Keep no-op interactions in available_actions for legacy behavior.",
+    )
     args = parser.parse_args()
 
     manifest = _load_manifest(args.manifest)
     row = _seed_entry(manifest, args.seed)
     checkpoint = str(row["promoted_checkpoint"])
-    config = load_config(str(manifest["config"]))
+    config = _configure_runtime_guards(
+        load_config(str(manifest["config"])),
+        filter_blocked_moves=not args.allow_blocked_moves,
+        filter_noop_interact=not args.allow_noop_interact,
+    )
     device = resolve_device(args.device)
     params = _preset_params(str(manifest.get("planner_preset", "wm-calibrated")))
     threshold = resolve_uncertainty_threshold_from_replay(
@@ -243,6 +270,11 @@ def main() -> None:
     print(f"Checkpoint: {checkpoint}")
     print(f"Device: {device}")
     print(f"Planner threshold q{params['planner_uncertainty_quantile']:.2f}: {threshold:.5f}")
+    print(
+        "Runtime guards: "
+        f"filter_blocked_moves={not args.allow_blocked_moves} "
+        f"filter_noop_interact={not args.allow_noop_interact}"
+    )
     print(
         "Validated metrics: "
         f"Q-only={float(row['q_lifespan']):.1f} "

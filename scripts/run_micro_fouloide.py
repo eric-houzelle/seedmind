@@ -90,6 +90,8 @@ def build_env(config: dict, seed: int) -> MicroFouloideWorld:
         num_cold_zones=int(ec.get("num_cold_zones", 6)),
         num_dangers=int(ec.get("num_dangers", 8)),
         num_obstacles=int(ec.get("num_obstacles", 20)),
+        filter_blocked_moves=bool(ec.get("filter_blocked_moves", False)),
+        filter_noop_interact=bool(ec.get("filter_noop_interact", False)),
         seed=seed,
     )
 

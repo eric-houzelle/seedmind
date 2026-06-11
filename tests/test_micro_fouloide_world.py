@@ -8,6 +8,7 @@ from seedmind.envs.micro_fouloide_world import (
     AGENT,
     COLD_ZONE,
     DANGER,
+    EMPTY,
     FOOD,
     INTERACT,
     MOVE_RIGHT,
@@ -152,6 +153,38 @@ def test_move_blocked_by_obstacle():
     _, _, _, info = env.step(MOVE_RIGHT)
     assert env.agent_pos == (2, 2)
     assert info["event"] == "move_blocked"
+
+
+def test_available_actions_can_filter_blocked_moves():
+    legacy = MicroFouloideWorld(size=8, filter_blocked_moves=False, seed=0)
+    legacy.reset()
+    legacy.agent_pos = (2, 2)
+    legacy.grid[2, 3] = OBSTACLE
+    assert MOVE_RIGHT in legacy.available_actions()
+
+    guarded = MicroFouloideWorld(size=8, filter_blocked_moves=True, seed=0)
+    guarded.reset()
+    guarded.agent_pos = (2, 2)
+    guarded.grid[2, 3] = OBSTACLE
+    assert MOVE_RIGHT not in guarded.available_actions()
+    assert INTERACT in guarded.available_actions()
+
+
+def test_available_actions_can_filter_noop_interact():
+    legacy = MicroFouloideWorld(size=8, filter_noop_interact=False, seed=0)
+    legacy.reset()
+    _place_agent_on(legacy, OBSTACLE)
+    legacy.grid[2, 2] = EMPTY
+    assert INTERACT in legacy.available_actions()
+
+    guarded = MicroFouloideWorld(size=8, filter_noop_interact=True, seed=0)
+    guarded.reset()
+    _place_agent_on(guarded, OBSTACLE)
+    guarded.grid[2, 2] = EMPTY
+    assert INTERACT not in guarded.available_actions()
+
+    _place_agent_on(guarded, WATER)
+    assert INTERACT in guarded.available_actions()
 
 
 def test_causal_features_and_events_are_exposed():

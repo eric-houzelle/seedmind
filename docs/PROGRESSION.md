@@ -3657,6 +3657,11 @@ Cette commande :
 
 `--rollout-select best` peut être utilisé pour une démo plus attractive ; le
 mode `median` est plus honnête pour montrer un comportement typique.
+La démo active aussi des garde-fous runtime `filter_blocked_moves` et
+`filter_noop_interact` pour ne pas proposer au policy/planner les mouvements
+impossibles contre les obstacles/bords ni les interactions sans ressource.
+L'ancien comportement reste disponible avec `--allow-blocked-moves` et
+`--allow-noop-interact`.
 
 Commande :
 
