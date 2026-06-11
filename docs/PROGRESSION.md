@@ -4224,6 +4224,44 @@ Prochaine étape :
    promouvoir une version `resource_navigation_v0` pour la première démo visuelle.
 ```
 
+Résultat training seeds 2 et 3 :
+
+```text
+Seed 2, training 3000 épisodes :
+- final mean lifespan last100 = 113.6
+- food100 = 0.47
+- water100 = 0.80
+- damage100 = 1.96
+
+Seed 3, training 3000 épisodes :
+- final mean lifespan last100 = 116.0
+- food100 = 0.53
+- water100 = 0.80
+- damage100 = 1.92
+```
+
+Décision training multi-seed : **GO**.
+
+```text
+Les trois seeds passent le seuil `water100 >= 0.50` et terminent au-dessus de
+113 de lifespan last100. La variante est reproductible côté apprentissage.
+Il reste à faire la validation officielle 1000 épisodes sur les 3 seeds avant
+promotion.
+```
+
+Validation MPS à lancer :
+
+```bash
+python scripts/report_micro_fouloide_planner.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_navigation.yaml \
+  --checkpoint-template 'runs/micro_fouloide_v0_rough_valueplanner_resource_navigation_seed{seed}/checkpoint_final.pt' \
+  --seeds 1,2,3 \
+  --num-episodes 1000 \
+  --device mps \
+  --planner-preset wm-calibrated \
+  --output reports/micro_fouloide_resource_navigation_1000.md
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
