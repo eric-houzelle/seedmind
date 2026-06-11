@@ -33,6 +33,7 @@ from seedmind.agent.world_model import WorldModel
 from seedmind.envs.micro_fouloide_world import ACTIONS, MicroFouloideWorld
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.memory.persistent_memory import PersistentMemory
+from seedmind.objectives import build_objective_scorer
 from seedmind.training.checkpointing import load_checkpoint, save_checkpoint
 from seedmind.training.device import resolve_device
 from seedmind.training.dqn import make_q_optimizer, make_target_network, sync_target, train_dqn
@@ -117,6 +118,7 @@ def build_agent(config: dict, seed: int) -> Agent:
     dc = config.get("dqn", {})
     drc = config.get("drive_reward", {})
     vc = config.get("value_model", {})
+    objective_cfg = config.get("objective", {})
     ec = config.get("env", {})
     grid_size = int(ec.get("size", 16))
     latent_dim = int(ac.get("latent_dim", 64))
@@ -195,6 +197,11 @@ def build_agent(config: dict, seed: int) -> Agent:
         planner_samples=int(plc.get("num_samples", 8)),
         value_model=value_model,
         planner_terminal_value_weight=float(plc.get("terminal_value_weight", 0.0)),
+        planner_objective_scorer=build_objective_scorer(
+            config,
+            causal_feature_names(config),
+        ),
+        planner_objective_weight=float(objective_cfg.get("planner_weight", 0.0)),
         planner_seed=seed,
         planner_uncertainty_threshold=(
             float(plc["uncertainty_threshold"])

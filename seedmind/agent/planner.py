@@ -13,13 +13,18 @@ Setting ``horizon=1`` recovers the simplest possible planner.
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Protocol
 
 import numpy as np
 
 from seedmind.agent.curiosity import CuriosityModule
 from seedmind.agent.value_model import ValueModel
 from seedmind.agent.world_model import WorldModel
+
+
+class ObjectiveScorer(Protocol):
+    def score_batch(self, features: np.ndarray) -> np.ndarray:
+        ...
 
 
 class Planner:
@@ -36,6 +41,8 @@ class Planner:
         causal_feature_targets: Optional[np.ndarray] = None,
         value_model: Optional[ValueModel] = None,
         terminal_value_weight: float = 0.0,
+        objective_scorer: Optional[ObjectiveScorer] = None,
+        objective_weight: float = 0.0,
         seed: Optional[int] = None,
     ) -> None:
         self.world_model = world_model
@@ -56,7 +63,18 @@ class Planner:
         )
         self.value_model = value_model
         self.terminal_value_weight = float(terminal_value_weight)
+        self.objective_scorer = objective_scorer
+        self.objective_weight = float(objective_weight)
         self.rng = np.random.default_rng(seed)
+
+    def _objective_value(self, features: Optional[np.ndarray]) -> np.ndarray:
+        if (
+            features is None
+            or self.objective_scorer is None
+            or self.objective_weight == 0.0
+        ):
+            return np.asarray(0.0, dtype=np.float32)
+        return self.objective_weight * self.objective_scorer.score_batch(features)
 
     def _causal_value(
         self,
@@ -128,6 +146,7 @@ class Planner:
             reward
             + self.curiosity.compute_array(uncertainty)
             + causal_value
+            + self._objective_value(feature_particles)
         )
 
         cur = next_l
@@ -145,6 +164,7 @@ class Planner:
                 reward
                 + self.curiosity.compute_array(uncertainty)
                 + causal_value
+                + self._objective_value(feature_particles)
             )
             disc *= self.gamma
 

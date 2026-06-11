@@ -42,6 +42,8 @@ class Agent:
         causal_features_fn: Optional[Any] = None,
         value_model: Optional[ValueModel] = None,
         planner_terminal_value_weight: float = 0.0,
+        planner_objective_scorer: Optional[Any] = None,
+        planner_objective_weight: float = 0.0,
         planner_seed: Optional[int] = None,
         planner_uncertainty_threshold: Optional[float] = None,
         planner_margin_threshold: float = 0.0,
@@ -64,6 +66,8 @@ class Agent:
             causal_feature_targets=causal_feature_targets,
             value_model=value_model,
             terminal_value_weight=planner_terminal_value_weight,
+            objective_scorer=planner_objective_scorer,
+            objective_weight=planner_objective_weight,
             seed=planner_seed,
         )
         self.q_network = q_network

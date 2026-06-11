@@ -70,12 +70,27 @@ def _configure_runtime_guards(
     config: dict,
     filter_blocked_moves: bool,
     filter_noop_interact: bool,
+    survival_objective: bool,
+    survival_objective_weight: float,
 ) -> dict:
     configured = dict(config)
     env_cfg = dict(configured.get("env", {}))
     env_cfg["filter_blocked_moves"] = bool(filter_blocked_moves)
     env_cfg["filter_noop_interact"] = bool(filter_noop_interact)
     configured["env"] = env_cfg
+    configured["objective"] = {
+        "enabled": bool(survival_objective),
+        "type": "survival_v0",
+        "planner_weight": float(survival_objective_weight),
+        "critical_threshold": 0.18,
+        "risk_weight": 3.0,
+        "weights": {
+            "energy": 0.8,
+            "hydration": 2.5,
+            "temperature": 0.5,
+            "health": 3.0,
+        },
+    }
     return configured
 
 
@@ -246,6 +261,8 @@ def main() -> None:
         action="store_true",
         help="Keep no-op interactions in available_actions for legacy behavior.",
     )
+    parser.add_argument("--disable-survival-objective", action="store_true")
+    parser.add_argument("--survival-objective-weight", type=float, default=0.5)
     args = parser.parse_args()
 
     manifest = _load_manifest(args.manifest)
@@ -255,6 +272,8 @@ def main() -> None:
         load_config(str(manifest["config"])),
         filter_blocked_moves=not args.allow_blocked_moves,
         filter_noop_interact=not args.allow_noop_interact,
+        survival_objective=not args.disable_survival_objective,
+        survival_objective_weight=float(args.survival_objective_weight),
     )
     device = resolve_device(args.device)
     params = _preset_params(str(manifest.get("planner_preset", "wm-calibrated")))
@@ -274,6 +293,11 @@ def main() -> None:
         "Runtime guards: "
         f"filter_blocked_moves={not args.allow_blocked_moves} "
         f"filter_noop_interact={not args.allow_noop_interact}"
+    )
+    print(
+        "Objective: "
+        f"survival_v0={not args.disable_survival_objective} "
+        f"planner_weight={float(args.survival_objective_weight):.3f}"
     )
     print(
         "Validated metrics: "

@@ -3641,6 +3641,7 @@ python scripts/demo_micro_fouloide_promoted.py \
   --find-rollout \
   --rollout-search-count 64 \
   --rollout-select median \
+  --survival-objective-weight 0.5 \
   --rollout-max-steps 120
 ```
 
@@ -3745,7 +3746,7 @@ Blocage restant: le rollout median peut encore être dominé par REST/WAIT et
 mourir malgré l'objectif de survie.
 
 Prochaine étape avant démo visuelle:
-  implémenter un objectif `survival_v0` paramétrable pour le planner.
+  tester l'objectif `survival_v0` paramétrable dans le planner.
   Le World Model reste neutre ; l'objectif est une couche de décision.
 ```
 
