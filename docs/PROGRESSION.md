@@ -4051,6 +4051,66 @@ python scripts/evaluate_micro_fouloide.py \
   --planner-preset wm-calibrated
 ```
 
+Résultat curriculum seed 1 :
+
+```text
+Train final last100 = 115.1
+Eval curriculum :
+  Q-only = 112.3, water = 0.10, rest+wait = 76.3%
+  Q+WM   = 112.7, water = 0.12
+Eval rough/transfert :
+  Q-only = 95.2, water = 0.17, interact = 53.1%
+  Q+WM   = 95.3, water = 0.18
+```
+
+Verdict : no-go. Le curriculum a appris une stratégie plus passive et ne
+transfère pas au rough. Prochaine variante : rough inchangé + guards actifs +
+reward ressource/no-op, sans rendre le monde plus facile.
+
+#### Resource seek guarded — 2026-06-11
+
+Config ajoutée :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_resource_seek_guarded.yaml
+```
+
+Principes :
+
+```text
+- environnement rough inchangé : hydration_decay=0.010, num_water=6,
+  num_dangers=11, num_obstacles=24 ;
+- guards actifs pendant l'entraînement : pas de `INTERACT` à vide ni de
+  mouvement bloqué proposé au policy ;
+- reward ressource conservé, avec pénalité explicite `interact_noop` pour les
+  diagnostics sans guards ;
+- validation directe sur rough, pas de transfert depuis un monde plus facile.
+```
+
+Run seed 1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_seek_guarded.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_resource_seek_guarded_seed1
+```
+
+Évaluation :
+
+```bash
+python scripts/evaluate_micro_fouloide.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_resource_seek_guarded_seed1/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_seek_guarded.yaml \
+  --num-episodes 1000 \
+  --device mps \
+  --compare-planner \
+  --planner-preset wm-calibrated
+```
+
 ---
 
 ## 7. Arborescence des configs et runs

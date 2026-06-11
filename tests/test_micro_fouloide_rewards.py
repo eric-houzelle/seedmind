@@ -15,6 +15,7 @@ def _config() -> dict:
             "event_rewards": {
                 "interact_water": 0.10,
                 "interact_food": 0.06,
+                "interact_noop": -0.15,
             },
             "low_hydration_water_bonus": 0.45,
             "critical_hydration_water_bonus": 0.70,
@@ -60,3 +61,22 @@ def test_resource_reward_penalizes_passive_low_drive_steps():
     )
 
     assert wait == 0.01 - 0.08
+
+
+def test_resource_reward_penalizes_noop_interaction():
+    cfg = _config()
+    observation = {
+        "energy": 0.7,
+        "hydration": 0.7,
+        "temperature": 0.5,
+        "health": 1.0,
+    }
+
+    reward = _learning_reward(
+        0.01,
+        observation,
+        {"event": "interact_noop", "hydration": 0.69, "energy": 0.69},
+        cfg,
+    )
+
+    assert reward == 0.01 - 0.15
