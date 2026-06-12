@@ -4570,13 +4570,13 @@ consommation suffisent) + `drive_reward.mode: absolute` (le confort paie à
 chaque step, la privation coûte à chaque step — formulation homéostatique
 propre).
 
-**Validation du fix (3 seeds, en cours vers 100k) — go sans ambiguïté :**
+**Validation du fix (3 seeds × 80-84k steps) — go sans ambiguïté :**
 
 | phase            | bien-être   | gorgées/1k |
 |------------------|-------------|------------|
 | 0-16k (eps haut) | 0.44-0.51   | 4-6        |
 | 16-40k           | 0.59-0.76   | 9-12       |
-| 40k+ (eps 0.05)  | **0.94-0.98** | **15-16** |
+| 40-84k (eps 0.05)| **0.96-0.98** | **~15, stable** |
 
 Trajectoire inverse de la baseline : plus l'exploration diminue, plus il boit
 et mieux il vit. À eps 0.05 l'agent passe ~95 % du temps dans ses zones de
