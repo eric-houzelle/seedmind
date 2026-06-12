@@ -122,6 +122,8 @@ const PALETTE = {
   'F': '#caa23a',
   // rocher
   'S': '#8b8f98', 'T': '#6c7078', 'U': '#a6aab2',
+  // danger (lave / braises)
+  'V': '#b3331f', 'v': '#7a2114', 'O': '#f08a3c',
 };
 
 const SPRITES = {
@@ -197,6 +199,18 @@ rock: [
 '...STTTTTTT.....',
 '................',
 ],
+danger: [
+'................',
+'..v...vv...v....',
+'.vVv..vVv.vVv...',
+'.VOVv.VOVvVOVv..',
+'vVOOVvVOOVVOOv..',
+'vVVOVVVVOVVVOv..',
+'.vVVVvvVVVvVVv..',
+'..vvv..vvv.vv...',
+'................',
+'................',
+],
 };
 
 function makeSprite(rows) {
@@ -223,8 +237,10 @@ const TILE = 16;
 const GRASS_BASE   = ['#4a7d36', '#467a33', '#4e8139'];
 const GRASS_DARK   = '#3f6f2d';
 const GRASS_LIGHT  = '#5b9043';
-const WORN_BASE    = ['#71924c', '#789a51', '#6d8d49'];
-const WORN_SPECK   = '#5f8240';
+const WARM_BASE    = ['#9a9050', '#a09455', '#948c4b'];   // herbe sèche/chaude (ocre)
+const WARM_SPECK   = '#b3a45e';
+const COLD_BASE    = ['#7e9e9b', '#789a96', '#83a3a0'];   // herbe givrée (bleutée)
+const COLD_SPECK   = '#a8c4c1';
 
 function hash(x, y, s) {
   let h = (x * 374761393 + y * 668265263 + s * 1442695041) | 0;
@@ -236,14 +252,16 @@ function makeTile(kind, variant) {
   const c = document.createElement('canvas');
   c.width = TILE; c.height = TILE;
   const ctx = c.getContext('2d');
-  const base = (kind === 1 ? WORN_BASE : GRASS_BASE)[variant % 3];
+  const base = (kind === 1 ? WARM_BASE : kind === 2 ? COLD_BASE : GRASS_BASE)[variant % 3];
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, TILE, TILE);
   for (let y = 0; y < TILE; y++)
     for (let x = 0; x < TILE; x++) {
       const r = hash(x, y, variant + kind * 7);
       if (kind === 1) {
-        if (r < 0.10) { ctx.fillStyle = WORN_SPECK; ctx.fillRect(x, y, 1, 1); }
+        if (r < 0.10) { ctx.fillStyle = WARM_SPECK; ctx.fillRect(x, y, 1, 1); }
+      } else if (kind === 2) {
+        if (r < 0.10) { ctx.fillStyle = COLD_SPECK; ctx.fillRect(x, y, 1, 1); }
       } else {
         if (r < 0.06) { ctx.fillStyle = GRASS_DARK; ctx.fillRect(x, y, 1, 1); }
         else if (r > 0.96) { ctx.fillStyle = GRASS_LIGHT; ctx.fillRect(x, y, 1, 1); }
@@ -252,8 +270,12 @@ function makeTile(kind, variant) {
   return c;
 }
 
-const TILES = { 0: [], 1: [] };
-for (let v = 0; v < 3; v++) { TILES[0].push(makeTile(0, v)); TILES[1].push(makeTile(1, v)); }
+const TILES = { 0: [], 1: [], 2: [] };
+for (let v = 0; v < 3; v++) {
+  TILES[0].push(makeTile(0, v));
+  TILES[1].push(makeTile(1, v));
+  TILES[2].push(makeTile(2, v));
+}
 
 // ===========================================================================
 // État du monde
@@ -261,8 +283,8 @@ for (let v = 0; v < 3; v++) { TILES[0].push(makeTile(0, v)); TILES[1].push(makeT
 
 const world = {
   width: 0, height: 0,
-  terrain: null,          // Int array [y][x] : 0 herbe, 1 herbe usée
-  trees: [], rocks: [], baths: [],
+  terrain: null,          // Int array [y][x] : 0 herbe, 1 zone chaude, 2 zone froide
+  trees: [], rocks: [], baths: [], dangers: [],
   apples: [],
   fouloides: new Map(),   // id -> {x, y, px, py, tx, ty, t0, carry}
   step: 0,
@@ -349,7 +371,7 @@ function render(now) {
 
     for (let ty = Math.max(0, y0); ty <= Math.min(world.height - 1, y1); ty++)
       for (let tx = Math.max(0, x0); tx <= Math.min(world.width - 1, x1); tx++) {
-        const kind = world.terrain[ty][tx];
+        const kind = TILES[world.terrain[ty][tx]] ? world.terrain[ty][tx] : 0;
         const v = Math.floor(hash(tx, ty, 3) * 3);
         const sx = Math.round((tx * TILE - cam.x) * cam.zoom + canvas.width / 2);
         const sy = Math.round((ty * TILE - cam.y) * cam.zoom + canvas.height / 2);
@@ -358,6 +380,8 @@ function render(now) {
 
     // Objets statiques + dynamiques, triés par y pour la profondeur
     const drawList = [];
+    for (const [x, y] of world.dangers)
+      drawList.push({ y: y * TILE + 9, f: () => drawSprite(SPR.danger, x * TILE, y * TILE, 0, 0) });
     for (const [x, y] of world.rocks)
       drawList.push({ y: y * TILE + 10, f: () => drawSprite(SPR.rock, x * TILE, y * TILE, 0, 0) });
     for (const [x, y] of world.baths)
@@ -403,6 +427,7 @@ function onWorld(d) {
   world.trees = d.trees || [];
   world.rocks = d.rocks || [];
   world.baths = d.baths || [];
+  world.dangers = d.dangers || [];
   if (d.tick_ms) world.tickMs = d.tick_ms;
   cam.x = world.width * TILE / 2;
   cam.y = world.height * TILE / 2;
@@ -415,6 +440,7 @@ function onStep(d, now) {
   world.apples = d.apples || [];
   if (d.baths) world.baths = d.baths;
   if (d.rocks) world.rocks = d.rocks;
+  if (d.dangers) world.dangers = d.dangers;
   const seen = new Set();
   for (const f of d.fouloides || []) {
     seen.add(f.id);

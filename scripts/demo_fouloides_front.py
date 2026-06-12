@@ -391,7 +391,8 @@ class MicroFouloideWorldSource:
             "height": self.env.size,
             "terrain": self._terrain(grid),
             "trees": [],
-            "rocks": self._positions(grid, {OBSTACLE, DANGER}),
+            "rocks": self._positions(grid, {OBSTACLE}),
+            "dangers": self._positions(grid, {DANGER}),
             "baths": self._positions(grid, {WATER}),
             "tick_ms": self.tick_ms,
         }
@@ -429,7 +430,8 @@ class MicroFouloideWorldSource:
             "terrain": self._terrain(grid),
             "apples": self._positions(grid, {FOOD}),
             "baths": self._positions(grid, {WATER}),
-            "rocks": self._positions(grid, {OBSTACLE, DANGER}),
+            "rocks": self._positions(grid, {OBSTACLE}),
+            "dangers": self._positions(grid, {DANGER}),
             "stats": stats,
             "objective": objective,
         }
@@ -494,7 +496,8 @@ def _grid_positions(grid: np.ndarray, entities: set[int]) -> list[list[int]]:
 
 def _grid_terrain(grid: np.ndarray) -> list[list[int]]:
     terrain = np.zeros_like(grid, dtype=np.int64)
-    terrain[(grid == WARM_ZONE) | (grid == COLD_ZONE)] = 1
+    terrain[grid == WARM_ZONE] = 1
+    terrain[grid == COLD_ZONE] = 2
     return terrain.tolist()
 
 
@@ -528,6 +531,9 @@ class LiveFouloideWorldSource:
         self.checkpoint_path = checkpoint_path
         self.checkpoint_every = int(checkpoint_every)
         self.resumed_steps = 0
+        self.thirst_threshold = 0.35
+        self._thirst_start: int | None = None
+        self._thirst_durations: deque = deque(maxlen=20)
         if (
             not fresh
             and checkpoint_path is not None
@@ -548,7 +554,8 @@ class LiveFouloideWorldSource:
             "height": self.env.size,
             "terrain": _grid_terrain(grid),
             "trees": [],
-            "rocks": _grid_positions(grid, {OBSTACLE, DANGER}),
+            "rocks": _grid_positions(grid, {OBSTACLE}),
+            "dangers": _grid_positions(grid, {DANGER}),
             "baths": _grid_positions(grid, {WATER}),
             "tick_ms": self.tick_ms,
         }
@@ -563,6 +570,7 @@ class LiveFouloideWorldSource:
             self.session.save(self.checkpoint_path)
         self.planner_window.append(int(self.session.last_planner_used))
         self.wellbeing_window.append(float(self.session.last_wellbeing))
+        self._track_thirst(info)
         learn = self.session.learner.stats()
         grid = self.env.grid
         r, c = (int(v) for v in self.env.agent_pos)
@@ -583,11 +591,20 @@ class LiveFouloideWorldSource:
                 None if threshold is None else round(float(threshold), 4)
             ),
             "epsilon": round(float(learn["epsilon"]), 3),
+            "thirst_to_water_avg": (
+                round(float(np.mean(self._thirst_durations)), 1)
+                if self._thirst_durations else None
+            ),
         }
+        thirst_label = (
+            f"{stats['thirst_to_water_avg']:.0f}" if stats["thirst_to_water_avg"] is not None
+            else "—"
+        )
         objective = (
             f"{LIVE_OBJECTIVE}  bien-\u00eatre {stats['wellbeing']:.2f} "
             f"HP {stats['health']:.2f} H2O {stats['hydration']:.2f} E {stats['energy']:.2f}"
-            f"  |  wm_loss {stats['wm_loss']:.3f} planner {stats['planner_used']:.2f} "
+            f"  |  soif\u2192eau {thirst_label} wm_loss {stats['wm_loss']:.3f} "
+            f"planner {stats['planner_used']:.2f} "
             f"eps {stats['epsilon']:.2f} step {stats['step']} vie {stats['life']}"
         )
         return {
@@ -597,10 +614,23 @@ class LiveFouloideWorldSource:
             "terrain": _grid_terrain(grid),
             "apples": _grid_positions(grid, {FOOD}),
             "baths": _grid_positions(grid, {WATER}),
-            "rocks": _grid_positions(grid, {OBSTACLE, DANGER}),
+            "rocks": _grid_positions(grid, {OBSTACLE}),
+            "dangers": _grid_positions(grid, {DANGER}),
             "stats": stats,
             "objective": objective,
         }
+
+    def _track_thirst(self, info: dict[str, Any]) -> None:
+        """Steps entre le passage sous le seuil de soif et la prochaine gorgée."""
+        hydration = float(info.get("hydration", 1.0))
+        if self._thirst_start is None:
+            if hydration < self.thirst_threshold:
+                self._thirst_start = self.session.steps
+        elif str(info.get("event", "")) == "interact_water":
+            self._thirst_durations.append(self.session.steps - self._thirst_start)
+            self._thirst_start = None
+        elif info.get("dead"):
+            self._thirst_start = None
 
 
 # ---------------------------------------------------------------------------
