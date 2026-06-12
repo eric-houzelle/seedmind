@@ -20,6 +20,17 @@ from scripts.evaluate_micro_fouloide import (  # noqa: E402
 )
 from scripts.run_micro_fouloide import build_agent, build_env  # noqa: E402
 from seedmind.agent.goal_generator import GoalGenerator  # noqa: E402
+from seedmind.envs.micro_fouloide_world import (  # noqa: E402
+    FOOD,
+    INTERACT,
+    MOVE_DOWN,
+    MOVE_LEFT,
+    MOVE_RIGHT,
+    MOVE_UP,
+    OBSTACLE,
+    UNKNOWN,
+    WATER,
+)
 from seedmind.training.device import resolve_device  # noqa: E402
 
 
@@ -131,6 +142,102 @@ def _load_agent(config: dict, checkpoint: str, device: torch.device):
 
 
 PASSIVE_ACTIONS = {"REST", "WAIT"}
+MOVE_ACTIONS = {
+    MOVE_UP: (-1, 0),
+    MOVE_DOWN: (1, 0),
+    MOVE_LEFT: (0, -1),
+    MOVE_RIGHT: (0, 1),
+}
+
+
+def _refresh_resource_memory(
+    obs: dict[str, Any],
+    memory: dict[str, set[tuple[int, int]]],
+) -> None:
+    grid = np.asarray(obs.get("grid", []), dtype=np.int64)
+    if grid.size == 0:
+        return
+    standing_entity = int(obs.get("standing_entity", 0))
+    agent_pos = tuple(int(x) for x in obs.get("agent_pos", (-1, -1)))
+    visible: set[tuple[int, int]] = set()
+    for row in range(grid.shape[0]):
+        for col in range(grid.shape[1]):
+            entity = int(grid[row, col])
+            if entity == UNKNOWN:
+                continue
+            pos = (row, col)
+            visible.add(pos)
+            if entity == WATER or (pos == agent_pos and standing_entity == WATER):
+                memory["water"].add(pos)
+            if entity == FOOD or (pos == agent_pos and standing_entity == FOOD):
+                memory["food"].add(pos)
+
+    for name, entity in (("water", WATER), ("food", FOOD)):
+        stale = {
+            pos for pos in memory[name]
+            if pos in visible
+            and int(grid[pos]) != entity
+            and not (pos == agent_pos and standing_entity == entity)
+        }
+        memory[name].difference_update(stale)
+
+
+def _nearest_resource(
+    agent_pos: tuple[int, int],
+    targets: set[tuple[int, int]],
+) -> tuple[int, int] | None:
+    if not targets:
+        return None
+    return min(
+        targets,
+        key=lambda pos: (abs(pos[0] - agent_pos[0]) + abs(pos[1] - agent_pos[1]), pos),
+    )
+
+
+def _resource_memory_action(
+    obs: dict[str, Any],
+    available_actions: list[str],
+    memory: dict[str, set[tuple[int, int]]],
+    hydration_threshold: float,
+    energy_threshold: float,
+) -> str | None:
+    agent_pos = tuple(int(x) for x in obs.get("agent_pos", (-1, -1)))
+    standing_entity = int(obs.get("standing_entity", 0))
+    hydration = float(obs.get("hydration", 1.0))
+    energy = float(obs.get("energy", 1.0))
+
+    resource_name: str | None = None
+    resource_entity: int | None = None
+    if hydration <= hydration_threshold:
+        resource_name = "water"
+        resource_entity = WATER
+    elif energy <= energy_threshold:
+        resource_name = "food"
+        resource_entity = FOOD
+    if resource_name is None or resource_entity is None:
+        return None
+
+    if standing_entity == resource_entity and INTERACT in available_actions:
+        return INTERACT
+
+    target = _nearest_resource(agent_pos, memory[resource_name])
+    if target is None:
+        return None
+
+    grid = np.asarray(obs.get("grid", []), dtype=np.int64)
+    candidates: list[tuple[int, str]] = []
+    for action, (dr, dc) in MOVE_ACTIONS.items():
+        if action not in available_actions:
+            continue
+        nr, nc = agent_pos[0] + dr, agent_pos[1] + dc
+        if 0 <= nr < grid.shape[0] and 0 <= nc < grid.shape[1]:
+            if int(grid[nr, nc]) == OBSTACLE:
+                continue
+        distance = abs(target[0] - nr) + abs(target[1] - nc)
+        candidates.append((distance, action))
+    if not candidates:
+        return None
+    return min(candidates)[1]
 
 
 def _debug_objective_lines(
@@ -166,6 +273,9 @@ def _run_rollout_with_agent(
     collect_trace: bool = True,
     debug_objective: bool = False,
     debug_objective_steps: int = 8,
+    resource_memory: bool = False,
+    resource_memory_hydration_threshold: float = 0.55,
+    resource_memory_energy_threshold: float = 0.25,
 ) -> dict[str, Any]:
     agent.goal_generator = GoalGenerator(seed=rollout_seed)
     agent.planner.rng = np.random.default_rng(rollout_seed)
@@ -177,11 +287,18 @@ def _run_rollout_with_agent(
     planner_used = 0
     passive_steps = 0
     planner_used_passive = 0
+    resource_memory_used = 0
+    resource_memory_store: dict[str, set[tuple[int, int]]] = {
+        "water": set(),
+        "food": set(),
+    }
     trace: list[str] = []
     done = False
     info: dict[str, Any] = {}
 
     while not done and env.steps < max_steps:
+        if resource_memory:
+            _refresh_resource_memory(obs, resource_memory_store)
         memories = agent.retrieve(latent)
         goal = agent.choose_goal(latent, memories)
         available = env.available_actions()
@@ -195,6 +312,18 @@ def _run_rollout_with_agent(
             available,
             observation=obs,
         )
+        memory_action = None
+        if resource_memory:
+            memory_action = _resource_memory_action(
+                obs,
+                available,
+                resource_memory_store,
+                hydration_threshold=resource_memory_hydration_threshold,
+                energy_threshold=resource_memory_energy_threshold,
+            )
+            if memory_action is not None:
+                action = memory_action
+                resource_memory_used += 1
         obs, _, done, info = env.step(action)
         latent = agent.encode(obs)
         event = str(info.get("event", "unknown"))
@@ -221,7 +350,8 @@ def _run_rollout_with_agent(
                 f"T={float(info.get('temperature', 0.5)):.2f} "
                 f"HP={float(info.get('health', 0.0)):.2f} "
                 f"drive={_drive(info):.3f} "
-                f"planner={int(getattr(agent, 'last_planner_used', False))}"
+                f"planner={int(getattr(agent, 'last_planner_used', False))} "
+                f"resmem={int(memory_action is not None)}"
             )
 
     total_actions = max(sum(actions.values()), 1)
@@ -232,6 +362,7 @@ def _run_rollout_with_agent(
         "capped": bool(not done and env.steps >= max_steps),
         "drive": _drive(info) if info else 0.0,
         "planner_used": planner_used / total_actions,
+        "resource_memory_used": resource_memory_used / total_actions,
         "passive_steps": passive_steps,
         "planner_used_passive": (
             planner_used_passive / passive_steps if passive_steps else 0.0
@@ -252,6 +383,9 @@ def _run_rollout(
     trace_every: int,
     debug_objective: bool = False,
     debug_objective_steps: int = 8,
+    resource_memory: bool = False,
+    resource_memory_hydration_threshold: float = 0.55,
+    resource_memory_energy_threshold: float = 0.25,
 ) -> dict[str, Any]:
     agent = _load_agent(config, checkpoint, device)
     return _run_rollout_with_agent(
@@ -263,6 +397,9 @@ def _run_rollout(
         collect_trace=True,
         debug_objective=debug_objective,
         debug_objective_steps=debug_objective_steps,
+        resource_memory=resource_memory,
+        resource_memory_hydration_threshold=resource_memory_hydration_threshold,
+        resource_memory_energy_threshold=resource_memory_energy_threshold,
     )
 
 
@@ -336,6 +473,13 @@ def main() -> None:
         help="Trace per-action WM value with/without objective on early rollout steps.",
     )
     parser.add_argument("--debug-objective-steps", type=int, default=8)
+    parser.add_argument(
+        "--resource-memory",
+        action="store_true",
+        help="Use a deployment-only memory of seen food/water locations during rollout.",
+    )
+    parser.add_argument("--resource-memory-hydration-threshold", type=float, default=0.55)
+    parser.add_argument("--resource-memory-energy-threshold", type=float, default=0.25)
     args = parser.parse_args()
 
     manifest = None
@@ -385,6 +529,12 @@ def main() -> None:
         "Objective: "
         f"survival_v0={not args.disable_survival_objective} "
         f"planner_weight={float(args.survival_objective_weight):.3f}"
+    )
+    print(
+        "Resource memory: "
+        f"enabled={bool(args.resource_memory)} "
+        f"hydration_threshold={float(args.resource_memory_hydration_threshold):.3f} "
+        f"energy_threshold={float(args.resource_memory_energy_threshold):.3f}"
     )
     if row is not None:
         print(
@@ -438,6 +588,13 @@ def main() -> None:
                     max_steps=int(args.rollout_max_steps),
                     trace_every=int(args.trace_every),
                     collect_trace=False,
+                    resource_memory=bool(args.resource_memory),
+                    resource_memory_hydration_threshold=float(
+                        args.resource_memory_hydration_threshold
+                    ),
+                    resource_memory_energy_threshold=float(
+                        args.resource_memory_energy_threshold
+                    ),
                 )
                 for i in range(count)
             ]
@@ -454,7 +611,8 @@ def main() -> None:
                     f"    seed={candidate['seed']} lifespan={candidate['lifespan']} "
                     f"dead={candidate['dead']} capped={candidate['capped']} "
                     f"drive={candidate['drive']:.3f} "
-                    f"planner_used={candidate['planner_used']:.1%}"
+                    f"planner_used={candidate['planner_used']:.1%} "
+                    f"resmem_used={candidate['resource_memory_used']:.1%}"
                 )
             rollout = _run_rollout_with_agent(
                 agent,
@@ -465,6 +623,13 @@ def main() -> None:
                 collect_trace=True,
                 debug_objective=bool(args.debug_objective),
                 debug_objective_steps=int(args.debug_objective_steps),
+                resource_memory=bool(args.resource_memory),
+                resource_memory_hydration_threshold=float(
+                    args.resource_memory_hydration_threshold
+                ),
+                resource_memory_energy_threshold=float(
+                    args.resource_memory_energy_threshold
+                ),
             )
         else:
             rollout = _run_rollout(
@@ -476,13 +641,21 @@ def main() -> None:
                 trace_every=int(args.trace_every),
                 debug_objective=bool(args.debug_objective),
                 debug_objective_steps=int(args.debug_objective_steps),
+                resource_memory=bool(args.resource_memory),
+                resource_memory_hydration_threshold=float(
+                    args.resource_memory_hydration_threshold
+                ),
+                resource_memory_energy_threshold=float(
+                    args.resource_memory_energy_threshold
+                ),
             )
         print("\nRollout")
         print(
             f"  seed={rollout['seed']} lifespan={rollout['lifespan']} "
             f"dead={rollout['dead']} timeout={rollout['timeout']} "
             f"capped={rollout['capped']} drive={rollout['drive']:.3f} "
-            f"planner_used={rollout['planner_used']:.1%}"
+            f"planner_used={rollout['planner_used']:.1%} "
+            f"resource_memory_used={rollout['resource_memory_used']:.1%}"
         )
         print(
             f"  passive_steps={rollout['passive_steps']} "

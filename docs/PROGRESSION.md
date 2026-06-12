@@ -4397,6 +4397,66 @@ python scripts/run_micro_fouloide.py \
   --out-dir runs/micro_fouloide_v0_rough_valueplanner_resource_navigation_active_seed1
 ```
 
+Résultat seed 1 :
+
+```text
+Training 3000 épisodes :
+- final mean lifespan last100 = 109.4
+- food100 = 0.69
+- water100 = 0.67
+- damage100 = 2.42
+```
+
+Décision : **NO-GO**.
+
+```text
+La pénalité passive plus précoce n'améliore pas le modèle. L'eau reste correcte,
+mais le lifespan descend sous `resource_navigation_seed1` (120.1) et sous le
+seuil GO. Il ne faut pas poursuivre cette branche sur seeds 2/3.
+```
+
+### Étape F — Mémoire de ressources en déploiement
+
+Implémentation ajoutée dans `scripts/demo_micro_fouloide_promoted.py` :
+
+```text
+--resource-memory
+```
+
+Principe :
+
+```text
+Pendant le rollout uniquement, mémoriser les positions globales des ressources
+visibles (`WATER`, `FOOD`). Si l'hydratation ou l'énergie tombe sous seuil,
+diriger l'action vers la ressource mémorisée la plus proche, ou interagir si
+l'agent est dessus.
+```
+
+Cette mémoire est volontairement hors training :
+
+```text
+Elle teste l'hypothèse que le modèle sait survivre en moyenne mais manque d'une
+navigation persistante en demo médiane. Si cela marche, la vraie étape suivante
+sera d'intégrer une mémoire spatiale propre dans l'agent plutôt qu'un patch demo.
+```
+
+Commande seed 2 :
+
+```bash
+python scripts/demo_micro_fouloide_promoted.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_resource_navigation_seed2/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_navigation.yaml \
+  --seed 2 \
+  --device mps \
+  --skip-eval \
+  --find-rollout \
+  --rollout-search-count 64 \
+  --rollout-select median \
+  --rollout-max-steps 120 \
+  --disable-survival-objective \
+  --resource-memory
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
