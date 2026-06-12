@@ -514,6 +514,9 @@ class LiveFouloideWorldSource:
         seed: int,
         tick_ms: int,
         device_name: str,
+        checkpoint_path: str | None = None,
+        checkpoint_every: int = 0,
+        fresh: bool = False,
     ) -> None:
         self.tick_ms = int(tick_ms)
         device = resolve_device(device_name)
@@ -522,6 +525,16 @@ class LiveFouloideWorldSource:
         self.session = OnlineFouloideSession(config, seed=int(seed), device=device)
         self.planner_window: deque = deque(maxlen=500)
         self.wellbeing_window: deque = deque(maxlen=500)
+        self.checkpoint_path = checkpoint_path
+        self.checkpoint_every = int(checkpoint_every)
+        self.resumed_steps = 0
+        if (
+            not fresh
+            and checkpoint_path is not None
+            and Path(checkpoint_path).exists()
+        ):
+            resumed = self.session.resume(checkpoint_path)
+            self.resumed_steps = int(resumed.get("env_steps", 0))
 
     @property
     def env(self):
@@ -542,6 +555,12 @@ class LiveFouloideWorldSource:
 
     def step_message(self) -> dict:
         info = self.session.step()
+        if (
+            self.checkpoint_every > 0
+            and self.checkpoint_path is not None
+            and self.session.steps % self.checkpoint_every == 0
+        ):
+            self.session.save(self.checkpoint_path)
         self.planner_window.append(int(self.session.last_planner_used))
         self.wellbeing_window.append(float(self.session.last_wellbeing))
         learn = self.session.learner.stats()
@@ -654,6 +673,18 @@ def main():
     parser.add_argument(
         "--live-config", default="configs/micro_fouloide_online_homeostatic.yaml",
     )
+    parser.add_argument(
+        "--live-checkpoint", default="runs/fouloide_live/checkpoint_live.pt",
+        help="cerveau persistant du fouloïde live (auto-repris s'il existe)",
+    )
+    parser.add_argument(
+        "--live-checkpoint-every", type=int, default=5000,
+        help="sauvegarde tous les N steps (0 = off)",
+    )
+    parser.add_argument(
+        "--live-fresh", action="store_true",
+        help="ignorer le checkpoint existant et repartir d'un cerveau vierge",
+    )
     parser.add_argument("--disable-resource-memory", action="store_true")
     parser.add_argument("--allow-blocked-moves", action="store_true")
     parser.add_argument("--allow-noop-interact", action="store_true")
@@ -683,11 +714,18 @@ def main():
             seed=args.seed,
             tick_ms=args.tick_ms,
             device_name=args.device,
+            checkpoint_path=args.live_checkpoint,
+            checkpoint_every=args.live_checkpoint_every,
+            fresh=args.live_fresh,
         )
-        mode = "apprentissage live (agent vierge)"
+        mode = "apprentissage live"
+        brain = (
+            f"cerveau repris ({source.resumed_steps} steps vécus)"
+            if source.resumed_steps > 0 else "cerveau vierge"
+        )
         world_label = (
             f"{source.env.size}x{source.env.size}, config={args.live_config}, "
-            f"aucun checkpoint — le fouloïde apprend en direct"
+            f"{brain}, sauvegarde {args.live_checkpoint}"
         )
     else:
         source = StubFouloideWorld(
@@ -713,6 +751,14 @@ def main():
         asyncio.run(run_ws_server(args.host, args.port + 1, source, args.tick_ms))
     except KeyboardInterrupt:
         pass
+    finally:
+        if (
+            args.source == "live"
+            and args.live_checkpoint_every > 0
+            and source.session.steps > 0
+        ):
+            source.session.save(args.live_checkpoint)
+            print(f"  cerveau sauvegardé → {args.live_checkpoint} ({source.session.steps} steps)")
 
 
 if __name__ == "__main__":

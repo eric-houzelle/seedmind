@@ -35,6 +35,7 @@ from scripts.run_micro_fouloide import (  # noqa: E402
 )
 from seedmind.agent.curiosity import compute_prediction_error_tensor  # noqa: E402
 from seedmind.memory.experience_buffer import make_experience  # noqa: E402
+from seedmind.training.checkpointing import load_checkpoint, save_checkpoint  # noqa: E402
 from seedmind.training.device import resolve_device  # noqa: E402
 from seedmind.training.latent_utils import latent_to_numpy  # noqa: E402
 from seedmind.training.online import OnlineLearner  # noqa: E402
@@ -137,6 +138,66 @@ class OnlineFouloideSession:
             self.latent_state = agent.encoder.encode_tensor(self.observation)
         return info
 
+    # ------------------------------------------------------------------
+    # Persistance du cerveau (le monde se régénère, le vécu persiste)
+    # ------------------------------------------------------------------
+    def save(self, path: str) -> None:
+        learner = self.learner
+        metrics = {
+            "session_steps": self.steps,
+            "lives": self.lives,
+            "env_steps": learner.env_steps,
+            "total_q_updates": learner.total_q_updates,
+            "total_value_updates": learner.total_value_updates,
+            "next_target_sync": learner.next_target_sync,
+            "next_value_target_sync": learner.next_value_target_sync,
+            "uncertainty_threshold": learner.uncertainty_threshold,
+        }
+        target = Path(path)
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        save_checkpoint(
+            str(tmp), self.agent,
+            optimizer=learner.wm_optimizer,
+            buffer=learner.buffer,
+            metrics=metrics,
+            config=self.config,
+            q_optimizer=learner.q_optimizer,
+            target_network=learner.target_network,
+            value_optimizer=learner.value_optimizer,
+            target_value_model=learner.target_value_model,
+        )
+        tmp.replace(target)
+
+    def resume(self, path: str) -> Dict[str, Any]:
+        learner = self.learner
+        info = load_checkpoint(
+            str(path), self.agent,
+            optimizer=learner.wm_optimizer,
+            buffer=learner.buffer,
+            q_optimizer=learner.q_optimizer,
+            target_network=learner.target_network,
+            value_optimizer=learner.value_optimizer,
+            target_value_model=learner.target_value_model,
+        )
+        m = info.get("metrics", {})
+        self.steps = int(m.get("session_steps", 0))
+        self.lives = int(m.get("lives", 1))
+        learner.env_steps = int(m.get("env_steps", 0))
+        learner.total_q_updates = int(m.get("total_q_updates", 0))
+        learner.total_value_updates = int(m.get("total_value_updates", 0))
+        learner.next_target_sync = int(m.get("next_target_sync", learner.target_update))
+        learner.next_value_target_sync = int(
+            m.get("next_value_target_sync", learner.value_target_update)
+        )
+        threshold = m.get("uncertainty_threshold")
+        if threshold is not None:
+            learner.uncertainty_threshold = float(threshold)
+            if getattr(self.agent, "use_planner", False):
+                self.agent.planner_uncertainty_threshold = float(threshold)
+        # Le latent courant doit venir de l'encodeur restauré.
+        self.latent_state = self.agent.encoder.encode_tensor(self.observation)
+        return m
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -146,6 +207,10 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--log-every", type=int, default=500)
+    parser.add_argument("--checkpoint-every", type=int, default=5000,
+                        help="sauvegarde du cerveau tous les N steps (0 = off)")
+    parser.add_argument("--resume", default=None,
+                        help="checkpoint online à reprendre")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -155,6 +220,13 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     session = OnlineFouloideSession(config, seed=args.seed, device=device)
+    checkpoint_path = out_dir / "checkpoint_online.pt"
+    if args.resume:
+        resumed = session.resume(args.resume)
+        print(
+            f"Reprise de {args.resume} : {resumed.get('env_steps', 0)} steps vécus, "
+            f"vie {session.lives}"
+        )
 
     window = max(1, int(args.log_every))
     wellbeing_window: deque = deque(maxlen=window)
@@ -206,6 +278,13 @@ def main() -> None:
                 json.dump({"config": args.config, "seed": args.seed, "windows": history}, f, indent=2)
             tmp.replace(metrics_path)
 
+        if args.checkpoint_every > 0 and step % args.checkpoint_every == 0:
+            session.save(str(checkpoint_path))
+            print(f"  cerveau sauvegardé → {checkpoint_path}")
+
+    if args.checkpoint_every > 0:
+        session.save(str(checkpoint_path))
+        print(f"  cerveau final sauvegardé → {checkpoint_path}")
     print(
         f"Terminé : {args.steps} steps, {session.lives - 1} morts, "
         f"métriques dans {out_dir}/metrics_online.json"

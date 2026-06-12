@@ -122,3 +122,41 @@ def test_online_learner_updates_models_and_threshold():
 def test_threshold_not_refreshed_before_warmup():
     _, learner = _run_steps(40)
     assert learner.stats()["uncertainty_threshold"] is None
+
+
+def test_session_save_and_resume_roundtrip(tmp_path):
+    from scripts.run_fouloide_online import OnlineFouloideSession
+
+    config = _config()
+    torch.manual_seed(0)
+    session = OnlineFouloideSession(config, seed=0, device=torch.device("cpu"))
+    for _ in range(80):
+        session.step()
+    path = tmp_path / "checkpoint_online.pt"
+    session.save(str(path))
+
+    torch.manual_seed(1)  # le nouveau cerveau part différent...
+    restored = OnlineFouloideSession(config, seed=0, device=torch.device("cpu"))
+    resumed = restored.resume(str(path))
+
+    assert resumed["env_steps"] == 80
+    assert restored.learner.env_steps == 80
+    assert restored.steps == session.steps
+    assert restored.lives == session.lives
+    assert len(restored.learner.buffer) == len(session.learner.buffer)
+    assert restored.agent.policy.total_steps == session.agent.policy.total_steps
+    # ... mais après resume les poids sont identiques.
+    for a, b in zip(
+        session.agent.world_model.parameters(),
+        restored.agent.world_model.parameters(),
+    ):
+        assert torch.equal(a, b)
+    for a, b in zip(
+        session.agent.q_network.parameters(),
+        restored.agent.q_network.parameters(),
+    ):
+        assert torch.equal(a, b)
+    assert restored.agent.planner_uncertainty_threshold == session.agent.planner_uncertainty_threshold
+    # La session restaurée peut continuer à vivre et apprendre.
+    restored.step()
+    assert restored.learner.env_steps == 81
