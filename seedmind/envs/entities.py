@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -37,10 +37,22 @@ class EntityType:
         return f"interact_{self.name}"
 
 
+@dataclass(frozen=True)
+class Recipe:
+    """Engine-side combination rule, never exposed to the agent."""
+
+    inputs: Tuple[int, int]  # entity ids, sorted
+    output: int
+
+
 class EntityRegistry:
     """Dense id-indexed registry with property lookups."""
 
-    def __init__(self, entities: List[EntityType]) -> None:
+    def __init__(
+        self,
+        entities: List[EntityType],
+        recipes: Optional[List[Recipe]] = None,
+    ) -> None:
         by_id = sorted(entities, key=lambda e: e.id)
         for expected, entity in enumerate(by_id):
             if entity.id != expected:
@@ -61,6 +73,13 @@ class EntityRegistry:
                         f"Entity {entity.name!r}: plantable.becomes references "
                         f"unknown entity {becomes!r}."
                     )
+        self.recipes: List[Recipe] = list(recipes or [])
+        self._recipe_by_inputs: Dict[Tuple[int, int], int] = {}
+        for recipe in self.recipes:
+            for entity_id in (*recipe.inputs, recipe.output):
+                if not 0 <= entity_id < len(by_id):
+                    raise ValueError(f"Recipe references unknown entity id {entity_id}.")
+            self._recipe_by_inputs[tuple(sorted(recipe.inputs))] = recipe.output
 
     def __len__(self) -> int:
         return len(self._entities)
@@ -120,6 +139,10 @@ class EntityRegistry:
 
     def render_ids(self, render: str) -> set:
         return {e.id for e in self._entities if e.render == render}
+
+    def find_recipe(self, item_a: int, item_b: int) -> Optional[int]:
+        """Output entity id for a pair of inputs, order-insensitive."""
+        return self._recipe_by_inputs.get(tuple(sorted((int(item_a), int(item_b)))))
 
     # ------------------------------------------------------------------
     # Causal event vocabulary (order matters: WM event_index depends on it)
@@ -216,16 +239,19 @@ def load_registry(config: Dict[str, Any]) -> EntityRegistry:
     """
     env_cfg = config.get("env", {})
     entities = {e.name: e for e in default_entities(env_cfg)}
+    recipe_specs: List[Dict[str, Any]] = list(env_cfg.get("recipes") or [])
 
     spec_source = env_cfg.get("entities")
-    if spec_source is None:
-        return EntityRegistry(list(entities.values()))
-
+    specs: List[Dict[str, Any]] = []
     if isinstance(spec_source, (str, Path)):
         with open(spec_source, "r", encoding="utf-8") as f:
             payload = yaml.safe_load(f) or {}
-        specs = payload.get("entities", payload) if isinstance(payload, dict) else payload
-    else:
+        if isinstance(payload, dict):
+            specs = payload.get("entities", [])
+            recipe_specs.extend(payload.get("recipes") or [])
+        else:
+            specs = payload
+    elif spec_source is not None:
         specs = spec_source
     if not isinstance(specs, list):
         raise ValueError("env.entities must be a list of entity specs or a YAML path containing one.")
@@ -241,4 +267,18 @@ def load_registry(config: Dict[str, Any]) -> EntityRegistry:
             spec.setdefault("id", max(e.id for e in entities.values()) + 1)
             entities[name] = _entity_from_spec(spec)
 
-    return EntityRegistry(list(entities.values()))
+    recipes = [_recipe_from_spec(spec, entities) for spec in recipe_specs]
+    return EntityRegistry(list(entities.values()), recipes=recipes)
+
+
+def _recipe_from_spec(spec: Dict[str, Any], entities: Dict[str, EntityType]) -> Recipe:
+    inputs = spec.get("inputs")
+    output = spec.get("output")
+    if not isinstance(inputs, list) or len(inputs) != 2:
+        raise ValueError(f"Recipe {spec!r}: 'inputs' must list exactly two entity names.")
+    resolved = []
+    for name in [*inputs, output]:
+        if name not in entities:
+            raise ValueError(f"Recipe {spec!r}: unknown entity {name!r}.")
+        resolved.append(entities[name].id)
+    return Recipe(inputs=(resolved[0], resolved[1]), output=resolved[2])

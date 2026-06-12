@@ -296,6 +296,8 @@ class MicroFouloideWorld(EnvironmentAdapter):
                 return False
             if action == PLANT and not self._can_plant():
                 return False
+            if action == COMBINE and not self._can_combine():
+                return False
         return True
 
     def causal_feature_names(self) -> List[str]:
@@ -484,10 +486,41 @@ class MicroFouloideWorld(EnvironmentAdapter):
         self._last_event = "plant_ok"
         self._last_event_amount = 1
 
+    def _find_combinable_pair(self) -> Optional[Tuple[int, int, int]]:
+        """First inventory pair matching a recipe whose output is placeable.
+
+        Returns ``(index_a, index_b, output_id)`` or None.
+        """
+        r, c = self.agent_pos
+        cell_empty = int(self.grid[r, c]) == EMPTY
+        for i in range(len(self.inventory)):
+            for j in range(i + 1, len(self.inventory)):
+                output = self.registry.find_recipe(self.inventory[i], self.inventory[j])
+                if output is None:
+                    continue
+                if self.registry[output].portable or cell_empty:
+                    return i, j, output
+        return None
+
+    def _can_combine(self) -> bool:
+        return self._find_combinable_pair() is not None
+
     def _try_combine(self) -> None:
-        # Recipe engine lands in A4; the action and its events are reserved
-        # now so inventory-enabled brains survive that upgrade.
-        self._last_event = "combine_noop"
+        match = self._find_combinable_pair()
+        if match is None:
+            self._last_event = "combine_noop"
+            return
+        i, j, output = match
+        # Retire les deux ingrédients (j > i : pop j d'abord).
+        self.inventory.pop(j)
+        self.inventory.pop(i)
+        if self.registry[output].portable:
+            self.inventory.append(output)
+        else:
+            r, c = self.agent_pos
+            self.grid[r, c] = output
+        self._last_event = "combine_ok"
+        self._last_event_amount = 1
 
     def _queue_regrowth(self, r: int, c: int, entity: int) -> None:
         if self.resource_regrow_steps > 0:

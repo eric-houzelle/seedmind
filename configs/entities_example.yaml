@@ -25,3 +25,24 @@ entities:
     count_key: num_berry_seed
     default_count: 4
     render: apple
+  - name: branch
+    portable: true
+    count_key: num_branch
+    default_count: 4
+    render: rock
+  - name: flint
+    portable: true
+    count_key: num_flint
+    default_count: 4
+    render: rock
+  - name: campfire
+    temperature_delta: 0.03
+    count_key: num_campfire
+    default_count: 0
+    render: terrain_warm
+
+# Recettes : résolues par le moteur, jamais exposées à l'agent.
+# Chaîne « se réchauffer » : froid → PICK branche + silex → COMBINE →
+# feu de camp posé sur place → s'y tenir → température remonte.
+recipes:
+  - {inputs: [branch, flint], output: campfire}

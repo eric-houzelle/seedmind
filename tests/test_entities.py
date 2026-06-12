@@ -73,6 +73,39 @@ def test_event_names_with_inventory_extension():
     assert events[-1] == "death"
 
 
+def test_recipes_load_and_resolve_names():
+    registry = load_registry({"env": {
+        "entities": [
+            {"name": "branch", "portable": True},
+            {"name": "flint", "portable": True},
+            {"name": "campfire", "temperature_delta": 0.03},
+        ],
+        "recipes": [{"inputs": ["branch", "flint"], "output": "campfire"}],
+    }})
+    branch = registry.by_name("branch").id
+    flint = registry.by_name("flint").id
+    campfire = registry.by_name("campfire").id
+    assert registry.find_recipe(branch, flint) == campfire
+    assert registry.find_recipe(flint, branch) == campfire  # insensible à l'ordre
+    assert registry.find_recipe(branch, branch) is None
+
+
+def test_recipe_with_unknown_entity_raises():
+    with pytest.raises(ValueError):
+        load_registry({"env": {
+            "entities": [{"name": "branch", "portable": True}],
+            "recipes": [{"inputs": ["branch", "ghost"], "output": "branch"}],
+        }})
+
+
+def test_recipe_requires_exactly_two_inputs():
+    with pytest.raises(ValueError):
+        load_registry({"env": {
+            "entities": [{"name": "branch", "portable": True}],
+            "recipes": [{"inputs": ["branch"], "output": "branch"}],
+        }})
+
+
 def test_registry_rejects_unknown_plantable_target():
     with pytest.raises(ValueError):
         load_registry({"env": {"entities": [{

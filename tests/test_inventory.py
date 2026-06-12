@@ -34,11 +34,20 @@ SEED_AND_BUSH = [
         "default_count": 0,
         "render": "apple",
     },
+    {"name": "branch", "portable": True, "render": "rock"},
+    {"name": "flint", "portable": True, "render": "rock"},
+    {"name": "twine", "portable": True, "render": "rock"},
+    {"name": "campfire", "temperature_delta": 0.03, "render": "terrain_warm"},
+]
+
+RECIPES = [
+    {"inputs": ["branch", "flint"], "output": "campfire"},
+    {"inputs": ["branch", "twine"], "output": "berry_seed"},  # produit portable
 ]
 
 
 def _make_env(**kwargs) -> MicroFouloideWorld:
-    registry = load_registry({"env": {"entities": list(SEED_AND_BUSH)}})
+    registry = load_registry({"env": {"entities": list(SEED_AND_BUSH), "recipes": list(RECIPES)}})
     defaults = dict(
         size=8, energy_decay=0.0, hydration_decay=0.0,
         inventory_enabled=True, registry=registry, seed=0,
@@ -139,11 +148,90 @@ def test_plant_noop_without_plantable_item_or_on_occupied_cell():
     assert info["event"] == "plant_noop"
 
 
-def test_combine_is_reserved_noop():
+def test_combine_without_matching_pair_is_noop():
     env = _make_env()
     env.reset()
     _, _, _, info = env.step(COMBINE)
+    assert info["event"] == "combine_noop"  # inventaire vide
+
+    _clear_around_agent(env)
+    env.inventory = [env.registry.by_name("branch").id, env.registry.by_name("branch").id]
+    _, _, _, info = env.step(COMBINE)
+    assert info["event"] == "combine_noop"  # pas de recette branch+branch
+    assert len(env.inventory) == 2  # rien n'est consommé
+
+
+def test_combine_places_non_portable_output_on_empty_cell():
+    env = _make_env()
+    env.reset()
+    _clear_around_agent(env)
+    branch = env.registry.by_name("branch").id
+    flint = env.registry.by_name("flint").id
+    campfire = env.registry.by_name("campfire").id
+    env.inventory = [branch, flint]
+
+    _, _, _, info = env.step(COMBINE)
+    assert info["event"] == "combine_ok"
+    assert env.inventory == []
+    assert env.grid[3, 3] == campfire
+
+    # Retombée drive : rester sur le feu fait monter la température.
+    temp_before = env.temperature
+    env.step(WAIT)
+    assert env.temperature > temp_before
+
+
+def test_combine_noop_on_occupied_cell_consumes_nothing():
+    env = _make_env()
+    env.reset()
+    _clear_around_agent(env)
+    env.grid[3, 3] = env.registry.by_name("food").id  # case occupée
+    env.inventory = [
+        env.registry.by_name("branch").id,
+        env.registry.by_name("flint").id,
+    ]
+    _, _, _, info = env.step(COMBINE)
     assert info["event"] == "combine_noop"
+    assert len(env.inventory) == 2
+
+
+def test_combine_portable_output_goes_to_inventory():
+    env = _make_env()
+    env.reset()
+    _clear_around_agent(env)
+    env.grid[3, 3] = env.registry.by_name("food").id  # case occupée : OK si portable
+    branch = env.registry.by_name("branch").id
+    twine = env.registry.by_name("twine").id
+    seed = env.registry.by_name("berry_seed").id
+    env.inventory = [branch, twine]
+
+    _, _, _, info = env.step(COMBINE)
+    assert info["event"] == "combine_ok"
+    assert env.inventory == [seed]
+
+
+def test_combine_is_order_insensitive():
+    env = _make_env()
+    env.reset()
+    _clear_around_agent(env)
+    env.inventory = [
+        env.registry.by_name("flint").id,
+        env.registry.by_name("branch").id,  # ordre inversé
+    ]
+    _, _, _, info = env.step(COMBINE)
+    assert info["event"] == "combine_ok"
+
+
+def test_filter_noop_inventory_gates_combine():
+    env = _make_env(filter_noop_inventory=True)
+    env.reset()
+    _clear_around_agent(env)
+    assert COMBINE not in env.available_actions()
+    env.inventory = [
+        env.registry.by_name("branch").id,
+        env.registry.by_name("flint").id,
+    ]
+    assert COMBINE in env.available_actions()
 
 
 def test_filter_noop_inventory_prunes_impossible_actions():
