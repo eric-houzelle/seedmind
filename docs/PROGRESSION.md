@@ -4574,6 +4574,14 @@ runs/                        # gitignored
 
 **Conclusion actuelle :** la preuve de concept « apprendre seul à survivre par causalité » tient sur v0 et v1. Le monde plus grand avec vision partielle est **plus difficile mais mieux résolu** (ratio 4.24× vs 2.89×). Le craft simple prouve que l'agent sait survivre, mais pas qu'il exploite spontanément les outils. Le causal-WM rebalanced a fourni le premier signal positif direct pour la thèse centrale. Micro-fouloïde rough donne maintenant une preuve minimale plus proche de l'objectif : **à checkpoint identique, Q + World Model planner calibré bat Q-only sur 3 seeds et 1000 épisodes**. Le signal reste modeste ; l'étape suivante est de rendre cette calibration moins posthoc et plus apprise en continu.
 
+**Jalon démo courte :** la variante `resource_navigation` a maintenant un
+chemin de démo praticable avec mémoire spatiale de ressources. La mémoire est
+sortie du script de démo vers `seedmind/agent/spatial_resource_memory.py` et
+reste opt-in via `--resource-memory`. Elle ne remplace pas l'objectif final
+d'un agent qui apprend sa mémoire en interne, mais elle transforme le patch de
+déploiement en composant testable et réutilisable pour brancher une première
+démo visuelle.
+
 ---
 
 ## 9. Demo front fouloïdes (préparation)

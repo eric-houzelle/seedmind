@@ -20,17 +20,7 @@ from scripts.evaluate_micro_fouloide import (  # noqa: E402
 )
 from scripts.run_micro_fouloide import build_agent, build_env  # noqa: E402
 from seedmind.agent.goal_generator import GoalGenerator  # noqa: E402
-from seedmind.envs.micro_fouloide_world import (  # noqa: E402
-    FOOD,
-    INTERACT,
-    MOVE_DOWN,
-    MOVE_LEFT,
-    MOVE_RIGHT,
-    MOVE_UP,
-    OBSTACLE,
-    UNKNOWN,
-    WATER,
-)
+from seedmind.agent.spatial_resource_memory import SpatialResourceMemory  # noqa: E402
 from seedmind.training.device import resolve_device  # noqa: E402
 
 
@@ -142,102 +132,6 @@ def _load_agent(config: dict, checkpoint: str, device: torch.device):
 
 
 PASSIVE_ACTIONS = {"REST", "WAIT"}
-MOVE_ACTIONS = {
-    MOVE_UP: (-1, 0),
-    MOVE_DOWN: (1, 0),
-    MOVE_LEFT: (0, -1),
-    MOVE_RIGHT: (0, 1),
-}
-
-
-def _refresh_resource_memory(
-    obs: dict[str, Any],
-    memory: dict[str, set[tuple[int, int]]],
-) -> None:
-    grid = np.asarray(obs.get("grid", []), dtype=np.int64)
-    if grid.size == 0:
-        return
-    standing_entity = int(obs.get("standing_entity", 0))
-    agent_pos = tuple(int(x) for x in obs.get("agent_pos", (-1, -1)))
-    visible: set[tuple[int, int]] = set()
-    for row in range(grid.shape[0]):
-        for col in range(grid.shape[1]):
-            entity = int(grid[row, col])
-            if entity == UNKNOWN:
-                continue
-            pos = (row, col)
-            visible.add(pos)
-            if entity == WATER or (pos == agent_pos and standing_entity == WATER):
-                memory["water"].add(pos)
-            if entity == FOOD or (pos == agent_pos and standing_entity == FOOD):
-                memory["food"].add(pos)
-
-    for name, entity in (("water", WATER), ("food", FOOD)):
-        stale = {
-            pos for pos in memory[name]
-            if pos in visible
-            and int(grid[pos]) != entity
-            and not (pos == agent_pos and standing_entity == entity)
-        }
-        memory[name].difference_update(stale)
-
-
-def _nearest_resource(
-    agent_pos: tuple[int, int],
-    targets: set[tuple[int, int]],
-) -> tuple[int, int] | None:
-    if not targets:
-        return None
-    return min(
-        targets,
-        key=lambda pos: (abs(pos[0] - agent_pos[0]) + abs(pos[1] - agent_pos[1]), pos),
-    )
-
-
-def _resource_memory_action(
-    obs: dict[str, Any],
-    available_actions: list[str],
-    memory: dict[str, set[tuple[int, int]]],
-    hydration_threshold: float,
-    energy_threshold: float,
-) -> str | None:
-    agent_pos = tuple(int(x) for x in obs.get("agent_pos", (-1, -1)))
-    standing_entity = int(obs.get("standing_entity", 0))
-    hydration = float(obs.get("hydration", 1.0))
-    energy = float(obs.get("energy", 1.0))
-
-    resource_name: str | None = None
-    resource_entity: int | None = None
-    if hydration <= hydration_threshold:
-        resource_name = "water"
-        resource_entity = WATER
-    elif energy <= energy_threshold:
-        resource_name = "food"
-        resource_entity = FOOD
-    if resource_name is None or resource_entity is None:
-        return None
-
-    if standing_entity == resource_entity and INTERACT in available_actions:
-        return INTERACT
-
-    target = _nearest_resource(agent_pos, memory[resource_name])
-    if target is None:
-        return None
-
-    grid = np.asarray(obs.get("grid", []), dtype=np.int64)
-    candidates: list[tuple[int, str]] = []
-    for action, (dr, dc) in MOVE_ACTIONS.items():
-        if action not in available_actions:
-            continue
-        nr, nc = agent_pos[0] + dr, agent_pos[1] + dc
-        if 0 <= nr < grid.shape[0] and 0 <= nc < grid.shape[1]:
-            if int(grid[nr, nc]) == OBSTACLE:
-                continue
-        distance = abs(target[0] - nr) + abs(target[1] - nc)
-        candidates.append((distance, action))
-    if not candidates:
-        return None
-    return min(candidates)[1]
 
 
 def _debug_objective_lines(
@@ -288,17 +182,14 @@ def _run_rollout_with_agent(
     passive_steps = 0
     planner_used_passive = 0
     resource_memory_used = 0
-    resource_memory_store: dict[str, set[tuple[int, int]]] = {
-        "water": set(),
-        "food": set(),
-    }
+    resource_memory_store = SpatialResourceMemory()
     trace: list[str] = []
     done = False
     info: dict[str, Any] = {}
 
     while not done and env.steps < max_steps:
         if resource_memory:
-            _refresh_resource_memory(obs, resource_memory_store)
+            resource_memory_store.refresh(obs)
         memories = agent.retrieve(latent)
         goal = agent.choose_goal(latent, memories)
         available = env.available_actions()
@@ -314,10 +205,9 @@ def _run_rollout_with_agent(
         )
         memory_action = None
         if resource_memory:
-            memory_action = _resource_memory_action(
+            memory_action = resource_memory_store.choose_action(
                 obs,
                 available,
-                resource_memory_store,
                 hydration_threshold=resource_memory_hydration_threshold,
                 energy_threshold=resource_memory_energy_threshold,
             )
