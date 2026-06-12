@@ -4294,6 +4294,56 @@ Sinon, corriger le point restant : énergie basse / repos excessif / planner
 WM encore trop peu utile.
 ```
 
+Résultat demos médianes alignées training, seeds 2 et 3 :
+
+```text
+Seed 2 :
+- selected_seed = 10042
+- lifespan = 96, dead = true
+- planner_used = 74.0%
+- events: move_blocked=26, interact_food=1, interact_water=0, health_loss=35
+
+Seed 3 :
+- selected_seed = 10049
+- lifespan = 96, dead = true
+- planner_used = 61.5%
+- events: move_blocked=17, interact_food=1, interact_water=0, health_loss=35
+```
+
+Décision demo : **NO-GO promotion visuelle stable**.
+
+```text
+Le modèle apprend bien en moyenne et boit plus souvent en évaluation, mais la
+demo médiane n'est pas robuste. Les seeds 2/3 se bloquent contre les obstacles,
+ne trouvent pas l'eau, puis meurent à hydratation zéro. Le prochain correctif
+n'est plus le reward ressource global : il faut durcir la politique de
+déploiement contre les actions invalides sans réintroduire le biais `REST`.
+```
+
+Test de déploiement suivant :
+
+```text
+Réessayer les demos médianes avec guards runtime activés mais objectif runtime
+désactivé. Cela teste uniquement l'anti-boucle `move_blocked` / `interact_noop`,
+sans le shaping de survie qui avait encouragé trop de repos.
+```
+
+Commande type :
+
+```bash
+python scripts/demo_micro_fouloide_promoted.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_resource_navigation_seed2/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_navigation.yaml \
+  --seed 2 \
+  --device mps \
+  --skip-eval \
+  --find-rollout \
+  --rollout-search-count 64 \
+  --rollout-select median \
+  --rollout-max-steps 120 \
+  --disable-survival-objective
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
