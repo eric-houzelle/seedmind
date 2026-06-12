@@ -66,6 +66,8 @@ class OnlineFouloideSession:
         self.latent_state = self.agent.encoder.encode_tensor(self.observation)
         self.lives = 1
         self.steps = 0
+        self.life_steps = 0
+        self.best_life_steps = 0
         self.last_info: Dict[str, Any] = {"drives": dict(self.observation_drives()), "event": "reset"}
         self.last_planner_used = False
         self.last_wellbeing = wellbeing(self.last_info["drives"], self.comfort)
@@ -132,7 +134,10 @@ class OnlineFouloideSession:
         self.last_info = info
         self.last_wellbeing = wellbeing(info.get("drives", {}), self.comfort)
 
+        self.life_steps += 1
         if done:
+            self.best_life_steps = max(self.best_life_steps, self.life_steps)
+            self.life_steps = 0
             self.lives += 1
             self.observation = self.env.reset()
             self.latent_state = agent.encoder.encode_tensor(self.observation)
@@ -146,6 +151,8 @@ class OnlineFouloideSession:
         metrics = {
             "session_steps": self.steps,
             "lives": self.lives,
+            "life_steps": self.life_steps,
+            "best_life_steps": self.best_life_steps,
             "env_steps": learner.env_steps,
             "total_q_updates": learner.total_q_updates,
             "total_value_updates": learner.total_value_updates,
@@ -182,6 +189,8 @@ class OnlineFouloideSession:
         m = info.get("metrics", {})
         self.steps = int(m.get("session_steps", 0))
         self.lives = int(m.get("lives", 1))
+        self.life_steps = int(m.get("life_steps", 0))
+        self.best_life_steps = int(m.get("best_life_steps", 0))
         learner.env_steps = int(m.get("env_steps", 0))
         learner.total_q_updates = int(m.get("total_q_updates", 0))
         learner.total_value_updates = int(m.get("total_value_updates", 0))
