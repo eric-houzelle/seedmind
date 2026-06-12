@@ -394,6 +394,7 @@ class MicroFouloideWorldSource:
             "rocks": self._positions(grid, {OBSTACLE}),
             "dangers": self._positions(grid, {DANGER}),
             "baths": self._positions(grid, {WATER}),
+            "vision_radius": self.env.visibility_radius,
             "tick_ms": self.tick_ms,
         }
 
@@ -426,7 +427,12 @@ class MicroFouloideWorldSource:
         return {
             "type": "step",
             "step": self.env.steps,
-            "fouloides": [{"id": 0, "x": c, "y": r, "carry": False}],
+            "fouloides": [{
+                "id": 0, "x": c, "y": r, "carry": False,
+                "hp": stats["health"],
+                "h2o": stats["hydration"],
+                "en": stats["energy"],
+            }],
             "terrain": self._terrain(grid),
             "apples": self._positions(grid, {FOOD}),
             "baths": self._positions(grid, {WATER}),
@@ -557,6 +563,7 @@ class LiveFouloideWorldSource:
             "rocks": _grid_positions(grid, {OBSTACLE}),
             "dangers": _grid_positions(grid, {DANGER}),
             "baths": _grid_positions(grid, {WATER}),
+            "vision_radius": self.env.visibility_radius,
             "tick_ms": self.tick_ms,
         }
 
@@ -610,7 +617,12 @@ class LiveFouloideWorldSource:
         return {
             "type": "step",
             "step": self.session.steps,
-            "fouloides": [{"id": 0, "x": c, "y": r, "carry": False}],
+            "fouloides": [{
+                "id": 0, "x": c, "y": r, "carry": False,
+                "hp": stats["health"],
+                "h2o": stats["hydration"],
+                "en": stats["energy"],
+            }],
             "terrain": _grid_terrain(grid),
             "apples": _grid_positions(grid, {FOOD}),
             "baths": _grid_positions(grid, {WATER}),
