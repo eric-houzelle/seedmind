@@ -4262,6 +4262,38 @@ python scripts/report_micro_fouloide_planner.py \
   --output reports/micro_fouloide_resource_navigation_1000.md
 ```
 
+Validation officielle 1000 épisodes, seeds 1/2/3 :
+
+```text
+seed | Q-only | Q+WM | delta | ratio | used | food | water | damage | max
+-----|--------|------|-------|-------|------|------|-------|--------|----
+   1 |  117.1 | 117.4 |  +0.4 |  1.00 | 23.8% | 0.49 |  0.82 |   1.78 | 272
+   2 |  107.8 | 109.3 |  +1.5 |  1.01 | 62.7% | 0.48 |  0.67 |   2.06 | 259
+   3 |  112.7 | 114.0 |  +1.3 |  1.01 | 54.9% | 0.49 |  0.72 |   1.90 | 270
+mean |  112.5 | 113.6 |  +1.0 |  1.01 | 47.1% | 0.49 |  0.74 |   1.91 | 267
+```
+
+Rapport : `reports/micro_fouloide_resource_navigation_1000.md`
+
+Décision validation : **GO partiel / candidat demo**, pas encore version finale.
+
+```text
+Le score moyen Q+WM monte à 113.6, supérieur au rough calibré précédent
+(110.0), avec un vrai gain d'hydratation (0.74 eau/episode). Le World Model
+reste marginal (+1.0 lifespan moyen), et le seuil ambitieux `mean Q-only >= 115`
+n'est pas atteint. Cette variante est donc un candidat concret pour démo courte,
+mais pas encore un modèle final robuste.
+```
+
+Prochaine décision avant promotion :
+
+```text
+Faire une demo directe médiane sur seeds 1/2/3. Si les 3 rollouts médians
+atteignent le cap 120 sans mort, promouvoir `resource_navigation_v0_demo`.
+Sinon, corriger le point restant : énergie basse / repos excessif / planner
+WM encore trop peu utile.
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
