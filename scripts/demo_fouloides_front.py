@@ -44,6 +44,7 @@ from seedmind.envs.micro_fouloide_world import (  # noqa: E402
     WARM_ZONE,
 )
 from seedmind.training.device import resolve_device  # noqa: E402
+from seedmind.training.wellbeing import drive_regulation, wellbeing  # noqa: E402
 from websockets.asyncio.server import serve as ws_serve
 
 VIEWER_HTML = (
@@ -315,14 +316,7 @@ def _load_micro_agent(config: dict, checkpoint: str, device: torch.device):
 
 
 def _drive(info: dict[str, Any]) -> float:
-    drives = info.get("drives", {})
-    values = [
-        float(drives.get("energy", 0.0)),
-        float(drives.get("hydration", 0.0)),
-        1.0 - abs(float(drives.get("temperature", 0.5)) - 0.5) * 2.0,
-        float(drives.get("health", 0.0)),
-    ]
-    return float(np.mean([max(0.0, min(1.0, v)) for v in values]))
+    return drive_regulation(info.get("drives", {}))
 
 
 class MicroFouloideWorldSource:

@@ -7,7 +7,7 @@ import json
 import sys
 from collections import Counter, defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
@@ -45,6 +45,7 @@ from seedmind.training.latent_dqn import (
     train_latent_dqn_dyna,
 )
 from seedmind.training.latent_utils import latent_to_numpy
+from seedmind.training.wellbeing import drive_regulation, wellbeing
 from seedmind.training.train import (
     make_optimizer,
     train_world_model,
@@ -278,22 +279,12 @@ def _mean_recent(metrics: list[Dict[str, Any]], key: str, window: int = 100) -> 
 
 
 def _drive_regulation(info: Dict[str, Any]) -> float:
-    drives = info.get("drives", {})
-    return _drive_regulation_from_values(drives)
+    return drive_regulation(info.get("drives", {}))
 
 
-def _drive_regulation_from_values(drives: Dict[str, Any]) -> float:
-    values = [
-        float(drives.get("energy", 0.0)),
-        float(drives.get("hydration", 0.0)),
-        1.0 - abs(float(drives.get("temperature", 0.5)) - 0.5) * 2.0,
-        float(drives.get("health", 0.0)),
-    ]
-    return float(np.mean([max(0.0, min(1.0, v)) for v in values]))
-
-
-def _drive_regulation_from_observation(obs: Dict[str, Any]) -> float:
-    return _drive_regulation_from_values(obs)
+def _comfort_config(config: dict) -> Optional[dict]:
+    comfort = config.get("drive_reward", {}).get("comfort", {})
+    return comfort if bool(comfort.get("enabled", False)) else None
 
 
 def _event_resource_reward(
@@ -357,8 +348,9 @@ def _learning_reward(
     reward_learning = float(reward_ext)
     drc = config.get("drive_reward", {})
     if bool(drc.get("enabled", False)):
-        prev_drive = _drive_regulation_from_observation(observation)
-        next_drive = _drive_regulation(info)
+        comfort = _comfort_config(config)
+        prev_drive = wellbeing(observation, comfort)
+        next_drive = wellbeing(info.get("drives", {}), comfort)
         if str(drc.get("mode", "delta")) == "absolute":
             drive_bonus = next_drive
         else:

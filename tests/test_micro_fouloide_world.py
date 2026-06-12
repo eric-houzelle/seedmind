@@ -187,6 +187,91 @@ def test_available_actions_can_filter_noop_interact():
     assert INTERACT in guarded.available_actions()
 
 
+def test_soft_death_floors_health_on_critical_drives():
+    env = MicroFouloideWorld(
+        size=8, soft_death=True, health_floor=0.05, health_decay=0.1,
+        health_start=0.1, energy_start=0.0, hydration_start=0.8,
+        energy_decay=0.0, hydration_decay=0.0, seed=0,
+    )
+    env.reset()
+    _, _, done, info = env.step(WAIT)
+    assert env.health == pytest.approx(0.05)
+    assert done is False
+    assert info["dead"] is False
+    env.step(WAIT)
+    assert env.health == pytest.approx(0.05)
+
+
+def test_soft_death_danger_can_still_kill():
+    env = MicroFouloideWorld(
+        size=8, soft_death=True, health_start=0.1, danger_damage=0.2,
+        energy_decay=0.0, hydration_decay=0.0, seed=0,
+    )
+    env.reset()
+    _place_agent_on(env, DANGER)
+    _, _, done, info = env.step(WAIT)
+    assert done is True
+    assert info["dead"] is True
+    assert info["event"] == "death"
+
+
+def test_soft_death_regenerates_health_when_drives_ok():
+    env = MicroFouloideWorld(
+        size=8, soft_death=True, health_regen=0.05, health_start=1.0,
+        energy_start=0.8, hydration_start=0.8,
+        energy_decay=0.0, hydration_decay=0.0, danger_damage=0.2, seed=0,
+    )
+    env.reset()
+    _place_agent_on(env, DANGER)
+    env.step(WAIT)
+    assert env.health == pytest.approx(0.8)
+    _place_agent_on(env, EMPTY)
+    env.step(WAIT)
+    assert env.health == pytest.approx(0.85)
+
+
+def test_resource_regrows_in_place_after_delay():
+    env = MicroFouloideWorld(
+        size=8, resource_regrow_steps=2, energy_decay=0.0,
+        hydration_decay=0.0, seed=0,
+    )
+    env.reset()
+    _place_agent_on(env, WATER)
+    env.step(INTERACT)
+    assert env.grid[2, 2] == EMPTY
+    env.agent_pos = (3, 3)
+    env.step(WAIT)
+    assert env.grid[2, 2] == EMPTY
+    env.step(WAIT)
+    assert env.grid[2, 2] == WATER
+
+
+def test_resource_regrowth_waits_for_agent_to_leave():
+    env = MicroFouloideWorld(
+        size=8, resource_regrow_steps=1, energy_decay=0.0,
+        hydration_decay=0.0, seed=0,
+    )
+    env.reset()
+    _place_agent_on(env, FOOD)
+    env.step(INTERACT)
+    env.step(WAIT)
+    assert env.grid[2, 2] == EMPTY  # agent still standing there
+    env.agent_pos = (3, 3)
+    env.step(WAIT)
+    assert env.grid[2, 2] == FOOD
+
+
+def test_max_steps_zero_means_no_timeout():
+    env = MicroFouloideWorld(
+        size=8, max_steps=0, energy_decay=0.0, hydration_decay=0.0, seed=0,
+    )
+    env.reset()
+    for _ in range(20):
+        _, _, done, info = env.step(WAIT)
+    assert done is False
+    assert info["timeout"] is False
+
+
 def test_causal_features_and_events_are_exposed():
     env = MicroFouloideWorld(size=8, seed=0)
     obs = env.reset()
