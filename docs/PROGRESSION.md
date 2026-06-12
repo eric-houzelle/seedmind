@@ -4515,6 +4515,96 @@ python scripts/demo_micro_fouloide_promoted.py \
 
 ---
 
+### 6.17 Pivot homéostatique : apprentissage online sans pré-entraînement (2026-06-12)
+
+**Changement de paradigme.** Abandon de « survie difficile + entraînement
+offline + checkpoint » au profit d'un agent **homéostatique** qui apprend en
+continu, en direct, sans aucun pré-entraînement. Motivation : un vrai world
+model apprend de ses expériences courantes ; et avec une mort à ~96 steps,
+l'agent n'avait jamais le temps d'apprendre en ligne. La preuve causale
+offline `Q + WM > Q-only` (sections 6.x précédentes) n'est plus la thèse
+centrale ; l'objectif devient la démo d'apprentissage **visible en live**.
+
+**Implémenté (commits `0bdc979` → `c6059ad`, issues seedmind-rdb/dpy/bxh/bvt/pvg) :**
+
+- *Monde doux persistant* (`micro_fouloide_world.py`, opt-in rétro-compatible) :
+  `soft_death` (drives critiques ⇒ santé plancher 0.20, états dégradés ; seul
+  le DANGER répété tue ; régénération quand les drives vont bien),
+  `resource_regrow_steps` (repousse sur place ⇒ géographie stable, routines
+  possibles), `max_steps: 0` (monde infini, plus de resets).
+- *Bien-être* (`seedmind/training/wellbeing.py`) : zones de confort par drive
+  (bloc `drive_reward.comfort`), consolide les trois copies dupliquées de
+  `drive_regulation`.
+- *Apprentissage continu* (`seedmind/training/online.py`, `OnlineLearner`) :
+  WM + DQN + Value mis à jour tous les 8 steps depuis le buffer live ; le
+  seuil du gate planner devient un **quantile glissant** (q0.60 sur ≤2000
+  transitions récentes, rafraîchi tous les 500 steps) — remplace la
+  calibration posthoc ; gate fermé pendant le warmup (cold start : Q-only,
+  le planner s'ouvre quand le WM devient fiable).
+- *Démo live* (`demo_fouloides_front.py --source live`) : agent **vierge**
+  branché au viewer, 1.6 ms/tick CPU apprentissage inclus. Cerveau
+  **persistant** : checkpoint périodique + au Ctrl+C, auto-repris au
+  lancement (`--live-fresh` pour repartir de zéro). HUD enrichi : bien-être,
+  wm_loss, planner_used, `soif→eau` (steps entre soif et gorgée), vie
+  courante + record. Viewer : brouillard de perception (losange Manhattan
+  r=4), barres de drives type Sims, DANGER en lave distinct des rochers,
+  zones chaude (ocre) / froide (givre), légende.
+- Config : `configs/micro_fouloide_online_homeostatic.yaml`. Runner headless :
+  `scripts/run_fouloide_online.py` (expose `OnlineFouloideSession`,
+  `--checkpoint-every/--resume`).
+
+**Épisode de recherche : reward hacking découvert et corrigé (seedmind-pvg).**
+Première validation 3 seeds × 90k steps : le bien-être *baissait* avec
+l'apprentissage (0.45 → 0.31) et les gorgées s'effondraient (4-7/1k → 0).
+Diagnostic par analyse du buffer du checkpoint (10k transitions récentes) :
+l'agent avait appris à **tourner autour de l'eau, éternellement assoiffé,
+sans jamais boire** — 87 % MOVE, hydratation 0.00, 0 gorgée/10k, en farmant
+les `local_signal_bonus` (+0.216/step en moyenne sur les steps « move_ok +
+soif + eau visible », 27 % des steps). Sans échéance de mort, la rente était
+infinie ; boire aurait éteint la soif qui la conditionnait. Deux leçons
+générales : (1) tout bonus d'état conditionné à un besoin non satisfait est
+farmable dès qu'aucune échéance ne force la consommation ; (2) le shaping en
+mode `delta` télescope à ~0 sur tout cycle et rend l'inaction au plancher
+gratuite. Fix : suppression des bonus signal (les bonus one-shot de
+consommation suffisent) + `drive_reward.mode: absolute` (le confort paie à
+chaque step, la privation coûte à chaque step — formulation homéostatique
+propre).
+
+**Validation du fix (3 seeds, en cours vers 100k) — go sans ambiguïté :**
+
+| phase            | bien-être   | gorgées/1k |
+|------------------|-------------|------------|
+| 0-16k (eps haut) | 0.44-0.51   | 4-6        |
+| 16-40k           | 0.59-0.76   | 9-12       |
+| 40k+ (eps 0.05)  | **0.94-0.98** | **15-16** |
+
+Trajectoire inverse de la baseline : plus l'exploration diminue, plus il boit
+et mieux il vit. À eps 0.05 l'agent passe ~95 % du temps dans ses zones de
+confort. Confirmé visuellement en démo live (observation user : « il a appris
+à survivre »). C'est la **première preuve du pivot** : un agent vierge
+apprend l'homéostasie en ligne, sans pré-entraînement.
+
+**Limite identifiée / prochaine marche :** pas de mémoire spatiale apprise —
+l'encodeur est sans état, ce qui sort du losange de vision n'existe que via
+les habitudes du Q-network. Quand l'eau est hors de vue, l'agent erre au lieu
+d'y *retourner* (l'indicateur `soif→eau` du HUD le montre). Chantier ouvert :
+carte égocentrique apprise, remplie par le vécu, en canaux d'entrée de
+l'encodeur (seedmind-cfg). Ensuite : reproduction/population (phase 2 de la
+vision).
+
+```bash
+# Démo live (agent vierge, cerveau persistant auto-repris)
+python scripts/demo_fouloides_front.py --source live --tick-ms 60
+# http://localhost:8787   (--live-fresh pour repartir de zéro)
+
+# Validation headless
+python scripts/run_fouloide_online.py \
+  --config configs/micro_fouloide_online_homeostatic.yaml \
+  --steps 100000 --seed 1
+```
+
+---
+
 ## 7. Arborescence des configs et runs
 
 ```text
@@ -4642,4 +4732,4 @@ L'architecture (registres, adapters, modules découplés) est conçue pour accue
 
 ---
 
-*Dernière mise à jour : juin 2026*
+*Dernière mise à jour : 12 juin 2026*
