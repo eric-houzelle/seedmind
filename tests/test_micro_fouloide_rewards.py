@@ -67,6 +67,26 @@ def test_resource_reward_penalizes_passive_low_drive_steps():
     assert wait == 0.01 - 0.08
 
 
+def test_resource_reward_uses_separate_passive_penalty_threshold():
+    cfg = _config()
+    cfg["resource_reward"]["passive_penalty_threshold"] = 0.55
+    observation = {
+        "energy": 0.7,
+        "hydration": 0.58,
+        "temperature": 0.5,
+        "health": 1.0,
+    }
+
+    wait = _learning_reward(
+        0.01,
+        observation,
+        {"event": "wait", "hydration": 0.54, "energy": 0.7},
+        cfg,
+    )
+
+    assert wait == 0.01 - 0.08
+
+
 def test_resource_reward_penalizes_noop_interaction():
     cfg = _config()
     observation = {

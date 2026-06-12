@@ -329,7 +329,8 @@ def _event_resource_reward(
     if event in {"wait", "rest"}:
         hydration_after = float(info.get("hydration", hydration))
         energy_after = float(info.get("energy", energy))
-        if hydration_after <= low_threshold or energy_after <= low_threshold:
+        passive_threshold = float(cfg.get("passive_penalty_threshold", low_threshold))
+        if hydration_after <= passive_threshold or energy_after <= passive_threshold:
             reward -= float(cfg.get("low_drive_passive_penalty", 0.0))
 
     grid = np.asarray(observation.get("grid", []), dtype=np.int64)

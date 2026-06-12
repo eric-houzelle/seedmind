@@ -4344,6 +4344,59 @@ python scripts/demo_micro_fouloide_promoted.py \
   --disable-survival-objective
 ```
 
+Résultat de ce test :
+
+```text
+Seed 2, guards ON + objectif runtime OFF :
+- selected_seed = 10013
+- lifespan = 96, dead = true
+- events: move_ok=34, rest=21, wait=5, interact_water=0, health_loss=35
+
+Seed 3, guards ON + objectif runtime OFF :
+- selected_seed = 10012
+- lifespan = 96, dead = true
+- events: move_ok=33, rest=19, wait=8, interact_water=0, health_loss=35
+```
+
+Décision : **NO-GO**.
+
+```text
+Les guards suppriment bien les boucles `move_blocked`, mais la demo médiane
+meurt encore par hydratation zéro. Le pattern restant est un excès de passif
+avant la crise (`REST/WAIT` alors que l'eau descend de 0.55 vers 0.30), puis
+une recherche trop tardive.
+```
+
+### Étape E — Navigation active anti-passif
+
+Config ajoutée :
+
+```text
+configs/micro_fouloide_v0_rough_valueplanner_resource_navigation_active.yaml
+```
+
+Principe :
+
+```text
+- monde rough inchangé ;
+- `passive_penalty_threshold=0.55` pour pénaliser REST/WAIT avant la crise ;
+- pénalité passive renforcée ;
+- léger renforcement du signal local d'eau visible ;
+- mêmes critères : training multi-seed, eval 1000, puis demos médianes.
+```
+
+Run seed 1 :
+
+```bash
+python scripts/run_micro_fouloide.py \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_navigation_active.yaml \
+  --episodes 3000 \
+  --seed 1 \
+  --device mps \
+  --inference-device cpu \
+  --out-dir runs/micro_fouloide_v0_rough_valueplanner_resource_navigation_active_seed1
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
