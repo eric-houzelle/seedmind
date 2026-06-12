@@ -1,16 +1,16 @@
 """SeedMind — Demo front fouloïdes.
 
 Sert le viewer pixel-art fouloïdes dans le navigateur et diffuse l'état d'un
-monde via WebSocket. Pour l'instant le monde est un **stub** (fouloïdes en
-marche aléatoire qui ramassent des pommes) : il sert uniquement à préparer le
-front en attendant le vrai moteur world model.
+monde via WebSocket. Le mode par défaut reste un **stub** léger, et le mode
+`--source micro` branche un checkpoint Micro-Fouloïde réel sur le même viewer.
 
-Point de branchement futur : remplacer `StubFouloideWorld` par un adaptateur
-implémentant la même interface `WorldSource` (méthodes `world_message()` et
-`step_message()`), branché sur le moteur réel.
+Point de branchement moteur : `WorldSource` (méthodes `world_message()` et
+`step_message()`). Le stub et le Micro-Fouloïde réel utilisent la même
+interface côté viewer.
 
     python scripts/demo_fouloides_front.py
     python scripts/demo_fouloides_front.py --size 96 --fouloides 14
+    python scripts/demo_fouloides_front.py --source micro --device cpu
 
 Ouvrir http://localhost:8787 dans un navigateur.
 """
@@ -22,12 +22,28 @@ import json
 import random
 import sys
 from pathlib import Path
-from typing import Dict, List, Protocol, Set, Tuple
+from typing import Any, Dict, List, Protocol, Set, Tuple
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import threading
 
+import numpy as np
+import torch
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts.evaluate_micro_fouloide import resolve_uncertainty_threshold_from_replay  # noqa: E402
+from scripts.run_micro_fouloide import build_agent, build_env, load_config  # noqa: E402
+from seedmind.agent.goal_generator import GoalGenerator  # noqa: E402
+from seedmind.agent.spatial_resource_memory import SpatialResourceMemory  # noqa: E402
+from seedmind.envs.micro_fouloide_world import (  # noqa: E402
+    COLD_ZONE,
+    DANGER,
+    FOOD,
+    OBSTACLE,
+    WATER,
+    WARM_ZONE,
+)
+from seedmind.training.device import resolve_device  # noqa: E402
 from websockets.asyncio.server import serve as ws_serve
 
 VIEWER_HTML = (
@@ -36,6 +52,15 @@ VIEWER_HTML = (
 )
 
 OBJECTIVE = "AUGMENTEZ LES RANGS DES FOULO\u00cfDES."
+MICRO_OBJECTIVE = "SURVIE MICRO-FOULO\u00cfDE : TROUVER EAU ET NOURRITURE."
+
+DEFAULT_MICRO_CONFIG = (
+    "configs/micro_fouloide_v0_rough_valueplanner_resource_navigation.yaml"
+)
+DEFAULT_MICRO_CHECKPOINT = (
+    "runs/micro_fouloide_v0_rough_valueplanner_resource_navigation_seed3/"
+    "checkpoint_final.pt"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +250,248 @@ class StubFouloideWorld:
 
 
 # ---------------------------------------------------------------------------
+# Source réelle : Micro-Fouloïde entraîné
+# ---------------------------------------------------------------------------
+
+def _planner_preset_params() -> dict[str, Any]:
+    return {
+        "planning_weight": 0.25,
+        "terminal_value_weight": 1.0,
+        "planner_uncertainty_quantile": 0.60,
+        "planner_margin_threshold": 0.01,
+        "planner_q_advantage_threshold": 0.02,
+        "planner_horizon": 5,
+        "planner_samples": 8,
+    }
+
+
+def _configure_micro_planner(config: dict, threshold: float) -> dict:
+    params = _planner_preset_params()
+    configured = dict(config)
+    planning = dict(configured.get("planning", {}))
+    planning.update({
+        "enabled": True,
+        "weight": float(params["planning_weight"]),
+        "terminal_value_weight": float(params["terminal_value_weight"]),
+        "uncertainty_threshold": float(threshold),
+        "margin_threshold": float(params["planner_margin_threshold"]),
+        "q_advantage_threshold": float(params["planner_q_advantage_threshold"]),
+        "horizon": int(params["planner_horizon"]),
+        "num_samples": int(params["planner_samples"]),
+    })
+    configured["planning"] = planning
+    return configured
+
+
+def _configure_micro_runtime(
+    config: dict,
+    filter_blocked_moves: bool,
+    filter_noop_interact: bool,
+) -> dict:
+    configured = dict(config)
+    env_cfg = dict(configured.get("env", {}))
+    env_cfg["filter_blocked_moves"] = bool(filter_blocked_moves)
+    env_cfg["filter_noop_interact"] = bool(filter_noop_interact)
+    configured["env"] = env_cfg
+    return configured
+
+
+def _load_micro_agent(config: dict, checkpoint: str, device: torch.device):
+    agent = build_agent(config, seed=0)
+    ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
+    agent.encoder.load_state_dict(ckpt["encoder_state"])
+    agent.world_model.load_state_dict(ckpt["world_model_state"])
+    agent.q_network.load_state_dict(ckpt["q_network_state"])
+    if agent.value_model is not None and "value_model_state" in ckpt:
+        agent.value_model.load_state_dict(ckpt["value_model_state"])
+    agent.encoder.to(device)
+    agent.world_model.to(device)
+    agent.q_network.to(device)
+    if agent.value_model is not None:
+        agent.value_model.to(device)
+    agent.policy.epsilon_start = 0.0
+    agent.policy.epsilon_end = 0.0
+    return agent
+
+
+def _drive(info: dict[str, Any]) -> float:
+    drives = info.get("drives", {})
+    values = [
+        float(drives.get("energy", 0.0)),
+        float(drives.get("hydration", 0.0)),
+        1.0 - abs(float(drives.get("temperature", 0.5)) - 0.5) * 2.0,
+        float(drives.get("health", 0.0)),
+    ]
+    return float(np.mean([max(0.0, min(1.0, v)) for v in values]))
+
+
+class MicroFouloideWorldSource:
+    """Adapter MicroFouloideWorld + trained agent to the browser protocol."""
+
+    def __init__(
+        self,
+        config_path: str,
+        checkpoint: str,
+        seed: int,
+        tick_ms: int,
+        device_name: str,
+        resource_memory: bool,
+        filter_blocked_moves: bool,
+        filter_noop_interact: bool,
+        uncertainty_threshold: float | None,
+    ) -> None:
+        self.config_path = config_path
+        self.checkpoint = checkpoint
+        self.tick_ms = int(tick_ms)
+        self.seed = int(seed)
+        self.device = resolve_device(device_name)
+        self.resource_memory_enabled = bool(resource_memory)
+        self.resource_memory = SpatialResourceMemory()
+        self.resource_memory_used = 0
+        self.planner_used = 0
+        self.total_actions = 0
+        self.episode = 1
+
+        base_config = load_config(config_path)
+        runtime_config = _configure_micro_runtime(
+            base_config,
+            filter_blocked_moves=filter_blocked_moves,
+            filter_noop_interact=filter_noop_interact,
+        )
+        if uncertainty_threshold is None:
+            uncertainty_threshold = resolve_uncertainty_threshold_from_replay(
+                runtime_config,
+                checkpoint,
+                self.device,
+                _planner_preset_params()["planner_uncertainty_quantile"],
+            )
+        self.uncertainty_threshold = float(uncertainty_threshold)
+        self.config = _configure_micro_planner(runtime_config, self.uncertainty_threshold)
+        self.agent = _load_micro_agent(self.config, checkpoint, self.device)
+        self.agent.goal_generator = GoalGenerator(seed=self.seed)
+        self.agent.planner.rng = np.random.default_rng(self.seed)
+        self.env = build_env(self.config, seed=self.seed)
+        self.obs = self.env.reset()
+        self.latent = self.agent.encode(self.obs)
+        self.info: dict[str, Any] = {
+            "drives": {
+                "energy": float(self.obs["energy"]),
+                "hydration": float(self.obs["hydration"]),
+                "temperature": float(self.obs["temperature"]),
+                "health": float(self.obs["health"]),
+            },
+            "event": "reset",
+            "lifespan": 0,
+        }
+
+    def world_message(self) -> dict:
+        grid = self.env.grid
+        return {
+            "type": "world",
+            "width": self.env.size,
+            "height": self.env.size,
+            "terrain": self._terrain(grid),
+            "trees": [],
+            "rocks": self._positions(grid, {OBSTACLE, DANGER}),
+            "baths": self._positions(grid, {WATER}),
+            "tick_ms": self.tick_ms,
+        }
+
+    def step_message(self) -> dict:
+        if self.info.get("dead") or self.info.get("timeout"):
+            self._reset_episode()
+
+        self._step_agent()
+        grid = self.env.grid
+        r, c = (int(v) for v in self.env.agent_pos)
+        stats = {
+            "population": 1,
+            "episode": self.episode,
+            "lifespan": int(self.info.get("lifespan", self.env.steps)),
+            "event": str(self.info.get("event", "unknown")),
+            "drive": round(_drive(self.info), 3),
+            "energy": round(float(self.info.get("energy", 0.0)), 3),
+            "hydration": round(float(self.info.get("hydration", 0.0)), 3),
+            "health": round(float(self.info.get("health", 0.0)), 3),
+            "planner_used": round(self.planner_used / max(self.total_actions, 1), 3),
+            "resource_memory_used": round(
+                self.resource_memory_used / max(self.total_actions, 1), 3
+            ),
+        }
+        objective = (
+            f"{MICRO_OBJECTIVE}  HP {stats['health']:.2f} "
+            f"H2O {stats['hydration']:.2f} E {stats['energy']:.2f} "
+            f"step {stats['lifespan']}"
+        )
+        return {
+            "type": "step",
+            "step": self.env.steps,
+            "fouloides": [{"id": 0, "x": c, "y": r, "carry": False}],
+            "terrain": self._terrain(grid),
+            "apples": self._positions(grid, {FOOD}),
+            "baths": self._positions(grid, {WATER}),
+            "rocks": self._positions(grid, {OBSTACLE, DANGER}),
+            "stats": stats,
+            "objective": objective,
+        }
+
+    def _reset_episode(self) -> None:
+        self.episode += 1
+        self.resource_memory.reset()
+        self.resource_memory_used = 0
+        self.planner_used = 0
+        self.total_actions = 0
+        self.env = build_env(self.config, seed=self.seed + self.episode - 1)
+        self.obs = self.env.reset()
+        self.latent = self.agent.encode(self.obs)
+        self.info = {
+            "drives": {
+                "energy": float(self.obs["energy"]),
+                "hydration": float(self.obs["hydration"]),
+                "temperature": float(self.obs["temperature"]),
+                "health": float(self.obs["health"]),
+            },
+            "event": "reset",
+            "lifespan": 0,
+        }
+
+    def _step_agent(self) -> None:
+        if self.resource_memory_enabled:
+            self.resource_memory.refresh(self.obs)
+        memories = self.agent.retrieve(self.latent)
+        goal = self.agent.choose_goal(self.latent, memories)
+        available = self.env.available_actions()
+        action = self.agent.choose_action(
+            self.latent,
+            goal,
+            memories,
+            available,
+            observation=self.obs,
+        )
+        memory_action = None
+        if self.resource_memory_enabled:
+            memory_action = self.resource_memory.choose_action(self.obs, available)
+            if memory_action is not None:
+                action = memory_action
+                self.resource_memory_used += 1
+        self.obs, _, _, self.info = self.env.step(action)
+        self.latent = self.agent.encode(self.obs)
+        self.total_actions += 1
+        self.planner_used += int(getattr(self.agent, "last_planner_used", False))
+
+    @staticmethod
+    def _positions(grid: np.ndarray, entities: set[int]) -> list[list[int]]:
+        rows, cols = np.where(np.isin(grid, list(entities)))
+        return [[int(c), int(r)] for r, c in zip(rows, cols)]
+
+    @staticmethod
+    def _terrain(grid: np.ndarray) -> list[list[int]]:
+        terrain = np.zeros_like(grid, dtype=np.int64)
+        terrain[(grid == WARM_ZONE) | (grid == COLD_ZONE)] = 1
+        return terrain.tolist()
+
+
+# ---------------------------------------------------------------------------
 # Serveurs HTTP + WebSocket
 # ---------------------------------------------------------------------------
 
@@ -254,8 +521,8 @@ async def broadcaster(source: WorldSource, tick_ms: int):
         await asyncio.sleep(tick_ms / 1000.0)
 
 
-async def run_ws_server(port: int, source: WorldSource, tick_ms: int):
-    async with ws_serve(lambda ws: ws_handler(ws, source), "0.0.0.0", port):
+async def run_ws_server(host: str, port: int, source: WorldSource, tick_ms: int):
+    async with ws_serve(lambda ws: ws_handler(ws, source), host, port):
         await broadcaster(source, tick_ms)
 
 
@@ -270,8 +537,8 @@ class ViewerHandler(SimpleHTTPRequestHandler):
         pass
 
 
-def run_http_server(port: int):
-    HTTPServer(("0.0.0.0", port), ViewerHandler).serve_forever()
+def run_http_server(host: str, port: int):
+    HTTPServer((host, port), ViewerHandler).serve_forever()
 
 
 # ---------------------------------------------------------------------------
@@ -280,28 +547,62 @@ def run_http_server(port: int):
 
 def main():
     parser = argparse.ArgumentParser(description="SeedMind demo front fouloïdes")
+    parser.add_argument("--source", choices=["stub", "micro"], default="stub")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--size", type=int, default=96, help="côté du monde (tuiles)")
     parser.add_argument("--fouloides", type=int, default=14)
     parser.add_argument("--tick-ms", type=int, default=150)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--micro-config", default=DEFAULT_MICRO_CONFIG)
+    parser.add_argument("--micro-checkpoint", default=DEFAULT_MICRO_CHECKPOINT)
+    parser.add_argument("--micro-uncertainty-threshold", type=float, default=None)
+    parser.add_argument("--disable-resource-memory", action="store_true")
+    parser.add_argument("--allow-blocked-moves", action="store_true")
+    parser.add_argument("--allow-noop-interact", action="store_true")
     args = parser.parse_args()
 
-    source = StubFouloideWorld(
-        size=args.size, num_fouloides=args.fouloides,
-        tick_ms=args.tick_ms, seed=args.seed,
-    )
+    if args.source == "micro":
+        source = MicroFouloideWorldSource(
+            config_path=args.micro_config,
+            checkpoint=args.micro_checkpoint,
+            seed=args.seed,
+            tick_ms=args.tick_ms,
+            device_name=args.device,
+            resource_memory=not args.disable_resource_memory,
+            filter_blocked_moves=not args.allow_blocked_moves,
+            filter_noop_interact=not args.allow_noop_interact,
+            uncertainty_threshold=args.micro_uncertainty_threshold,
+        )
+        mode = "micro-fouloide réel"
+        world_label = (
+            f"{source.env.size}x{source.env.size}, checkpoint={args.micro_checkpoint}, "
+            f"unc_thr={source.uncertainty_threshold:.5f}, "
+            f"resource_memory={not args.disable_resource_memory}"
+        )
+    else:
+        source = StubFouloideWorld(
+            size=args.size, num_fouloides=args.fouloides,
+            tick_ms=args.tick_ms, seed=args.seed,
+        )
+        mode = "monde stub"
+        world_label = f"{args.size}x{args.size}, {args.fouloides} fouloïdes"
 
-    threading.Thread(target=run_http_server, args=(args.port,), daemon=True).start()
+    threading.Thread(
+        target=run_http_server,
+        args=(args.host, args.port),
+        daemon=True,
+    ).start()
 
-    print("\n  SeedMind — Demo front fouloïdes (monde stub)")
-    print(f"  Viewer:    http://localhost:{args.port}")
-    print(f"  WebSocket: ws://localhost:{args.port + 1}")
-    print(f"  Monde:     {args.size}x{args.size}, {args.fouloides} fouloïdes")
+    print(f"\n  SeedMind — Demo front fouloïdes ({mode})")
+    print(f"  Viewer:    http://{args.host}:{args.port}")
+    print(f"  WebSocket: ws://{args.host}:{args.port + 1}")
+    print(f"  Monde:     {world_label}")
     print("  Ctrl+C pour arrêter.\n")
 
     try:
-        asyncio.run(run_ws_server(args.port + 1, source, args.tick_ms))
+        asyncio.run(run_ws_server(args.host, args.port + 1, source, args.tick_ms))
     except KeyboardInterrupt:
         pass
 

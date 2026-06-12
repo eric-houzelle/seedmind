@@ -411,7 +411,10 @@ function onWorld(d) {
 
 function onStep(d, now) {
   world.step = d.step;
+  if (d.terrain) world.terrain = d.terrain;
   world.apples = d.apples || [];
+  if (d.baths) world.baths = d.baths;
+  if (d.rocks) world.rocks = d.rocks;
   const seen = new Set();
   for (const f of d.fouloides || []) {
     seen.add(f.id);

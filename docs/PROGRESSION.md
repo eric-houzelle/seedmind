@@ -4597,18 +4597,29 @@ démo visuelle.
   procéduralement, caméra pan/zoom (drag, molette, flèches), HUD type jeu
   (badge population, bannière OBJECTIF), interpolation des déplacements.
 - `scripts/demo_fouloides_front.py` — serveur HTTP + WebSocket (même pattern
-  que `live_sandbox.py`). Le monde est un **stub** (`StubFouloideWorld`,
-  marche aléatoire attirée par les pommes) qui alimente le front avec des
-  données plausibles sur un grand monde (96×96 par défaut).
+  que `live_sandbox.py`). Le mode par défaut reste un **stub**
+  (`StubFouloideWorld`, marche aléatoire attirée par les pommes) qui alimente
+  le front avec des données plausibles sur un grand monde (96×96 par défaut).
+- `scripts/demo_fouloides_front.py --source micro` — premier branchement réel :
+  charge un checkpoint Micro-Fouloïde `resource_navigation`, active le planner
+  calibré + la mémoire de ressources opt-in, et projette l'état réel dans le
+  viewer (agent, pommes, baignoires/eau, obstacles/dangers, HUD HP/H2O/E).
 
 **Point de branchement moteur :** l'interface `WorldSource`
-(`world_message()` statique + `step_message()` par tick). Quand le moteur
-world model sera prêt, écrire un adaptateur implémentant cette interface et
-le passer au serveur à la place du stub — le front est agnostique.
+(`world_message()` statique + `step_message()` par tick). Le premier adaptateur
+réel est `MicroFouloideWorldSource`; le front reste agnostique et peut encore
+servir le stub ou le moteur entraîné.
 
 ```bash
 python scripts/demo_fouloides_front.py --size 96 --fouloides 14
 # Ouvrir http://localhost:8787
+
+python scripts/demo_fouloides_front.py \
+  --source micro \
+  --seed 3 \
+  --device cpu \
+  --micro-uncertainty-threshold 0.69918
+# Ouvrir http://127.0.0.1:8787
 ```
 
 ---
