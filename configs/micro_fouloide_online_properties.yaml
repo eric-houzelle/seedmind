@@ -8,7 +8,7 @@ project:
 
 env:
   type: micro_fouloide
-  size: 16
+  size: 32                  # carte 32×32 (densités d'entités conservées)
   max_steps: 0              # monde infini, pas de timeout
   visibility_radius: 4
   energy_start: 0.75
@@ -29,19 +29,19 @@ env:
   health_floor: 0.20    # ~7 ticks consécutifs sur danger pour mourir depuis le plancher
   health_regen: 0.015
   resource_regrow_steps: 120  # repousse sur place
-  num_food: 8
-  num_water: 6
-  num_warm_zones: 7
-  num_cold_zones: 7
-  num_dangers: 4
-  num_obstacles: 24
+  num_food: 32
+  num_water: 24
+  num_warm_zones: 28
+  num_cold_zones: 28
+  num_dangers: 16
+  num_obstacles: 96
   entities: configs/entities_example.yaml
   property_events: true     # interact_energy/hydration : vocabulaire fixe,
                             # ajouter un comestible ne redimensionne pas le WM
-  num_berry_bush: 3
-  num_berry_seed: 4
-  num_branch: 4
-  num_flint: 4
+  num_berry_bush: 12
+  num_berry_seed: 16
+  num_branch: 16
+  num_flint: 16
   inventory:
     enabled: true
     capacity: 3

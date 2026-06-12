@@ -392,6 +392,7 @@ class MicroFouloideWorldSource:
             "rocks": _grid_positions(grid, _render_ids(self.env.registry, "rock")),
             "dangers": _grid_positions(grid, _render_ids(self.env.registry, "danger")),
             "baths": _grid_positions(grid, _render_ids(self.env.registry, "bath")),
+            "artifacts": _artifact_positions(grid, self.env.registry),
             "vision_radius": self.env.visibility_radius,
             "tick_ms": self.tick_ms,
         }
@@ -436,6 +437,7 @@ class MicroFouloideWorldSource:
             "baths": _grid_positions(grid, _render_ids(self.env.registry, "bath")),
             "rocks": _grid_positions(grid, _render_ids(self.env.registry, "rock")),
             "dangers": _grid_positions(grid, _render_ids(self.env.registry, "danger")),
+            "artifacts": _artifact_positions(grid, self.env.registry),
             "stats": stats,
             "objective": objective,
         }
@@ -493,7 +495,10 @@ def _grid_positions(grid: np.ndarray, entities: set[int]) -> list[list[int]]:
     return [[int(c), int(r)] for r, c in zip(rows, cols)]
 
 
-_KNOWN_RENDERS = {"rock", "danger", "bath", "apple", "terrain_warm", "terrain_cold", "none"}
+_DEDICATED_RENDERS = {"seed", "bush", "branch", "flint", "campfire"}
+_KNOWN_RENDERS = {
+    "rock", "danger", "bath", "apple", "terrain_warm", "terrain_cold", "none",
+} | _DEDICATED_RENDERS
 
 
 def _render_ids(registry, render: str) -> set[int]:
@@ -509,6 +514,16 @@ def _render_ids(registry, render: str) -> set[int]:
             if not e.structural and e.render not in _KNOWN_RENDERS
         }
     return ids
+
+
+def _artifact_positions(grid: np.ndarray, registry) -> dict[str, list[list[int]]]:
+    """Positions per dedicated sprite category (seed, bush, branch, …)."""
+    artifacts: dict[str, list[list[int]]] = {}
+    for render in sorted(_DEDICATED_RENDERS):
+        ids = registry.render_ids(render)
+        if ids:
+            artifacts[render] = _grid_positions(grid, ids)
+    return artifacts
 
 
 def _grid_terrain(grid: np.ndarray, registry) -> list[list[int]]:
@@ -586,6 +601,7 @@ class LiveFouloideWorldSource:
             "rocks": _grid_positions(grid, _render_ids(self.env.registry, "rock")),
             "dangers": _grid_positions(grid, _render_ids(self.env.registry, "danger")),
             "baths": _grid_positions(grid, _render_ids(self.env.registry, "bath")),
+            "artifacts": _artifact_positions(grid, self.env.registry),
             "vision_radius": self.env.visibility_radius,
             "tick_ms": self.tick_ms,
         }
@@ -663,6 +679,7 @@ class LiveFouloideWorldSource:
             "baths": _grid_positions(grid, _render_ids(self.env.registry, "bath")),
             "rocks": _grid_positions(grid, _render_ids(self.env.registry, "rock")),
             "dangers": _grid_positions(grid, _render_ids(self.env.registry, "danger")),
+            "artifacts": _artifact_positions(grid, self.env.registry),
             "stats": stats,
             "objective": objective,
         }

@@ -93,6 +93,15 @@
     background: #2a3a22;
     box-shadow: inset 0 0 0 9px rgba(8, 14, 6, 0.45);
   }
+
+  #event-ticker {
+    bottom: 48px; left: 50%; transform: translateX(-50%);
+    padding: 6px 14px; background: rgba(10, 20, 8, 0.85); color: #f2e6b8;
+    border: 2px solid #6b5638; border-radius: 4px;
+    font-size: 13px; letter-spacing: 1px; font-weight: 700;
+    opacity: 0; transition: opacity 0.4s ease;
+  }
+  #event-ticker.show { opacity: 1; }
 </style>
 </head>
 <body>
@@ -113,6 +122,8 @@
 <div class="hud" id="tools-btn">&#128296;</div>
 
 <div class="hud" id="legend"><div class="title">L&Eacute;GENDE</div></div>
+
+<div class="hud" id="event-ticker"></div>
 
 <div class="hud" id="status">connexion&hellip;</div>
 <div class="hud" id="help">glisser : d&eacute;placer &middot; molette : zoom &middot; fl&egrave;ches : cam&eacute;ra</div>
@@ -228,6 +239,69 @@ danger: [
 '................',
 '................',
 ],
+seed: [
+'........',
+'........',
+'...sn...',
+'..snn...',
+'..nns...',
+'...ss...',
+'........',
+'........',
+],
+bush: [
+'................',
+'.....GGgg.......',
+'...GghhhgGG.....',
+'..GghAhhgAgG....',
+'.GghhhgghhhgG...',
+'.GgAhhgghAhgG...',
+'..GghhhAhhgG....',
+'...GGgghhgG.....',
+'.....nn.........',
+'................',
+],
+branch: [
+'................',
+'..........nn....',
+'.......nnnNn....',
+'....nnNNNn......',
+'..nNNNnn........',
+'.nNn............',
+'................',
+'................',
+],
+flint: [
+'........',
+'...UW...',
+'..UWWS..',
+'..SWWU..',
+'...SU...',
+'........',
+'........',
+'........',
+],
+campfire: [
+'................',
+'......Y.........',
+'.....YOY..Y.....',
+'....YOVOYOY.....',
+'....OVVVOVO.....',
+'...YOVVVVVOY....',
+'....nNNNNNn.....',
+'...nNNnnNNNn....',
+'................',
+'................',
+],
+};
+
+// Sprites d'artefacts dédiés : render hint -> sprite + décalage en pixels-tuile
+const ARTIFACT_SPRITES = {
+  seed:     { spr: 'seed', dx: 4, dy: 5 },
+  bush:     { spr: 'bush', dx: 0, dy: 3 },
+  branch:   { spr: 'branch', dx: 0, dy: 4 },
+  flint:    { spr: 'flint', dx: 4, dy: 5 },
+  campfire: { spr: 'campfire', dx: 0, dy: 3 },
 };
 
 function makeSprite(rows) {
@@ -319,6 +393,11 @@ function legendSwatch(drawFn) {
     [onGrass(SPR.danger, 0, 3), 'danger \u2014 blesse, peut tuer'],
     [onGrass(SPR.bath, 0, 2), 'eau \u2014 boire (INTERACT)'],
     [onGrass(SPR.apple, 4, 4), 'pomme \u2014 manger (INTERACT)'],
+    [onGrass(SPR.bush, 0, 3), 'buisson \u00e0 baies \u2014 manger'],
+    [onGrass(SPR.seed, 4, 5), 'graine \u2014 ramasser, planter'],
+    [onGrass(SPR.branch, 0, 4), 'branche \u2014 ramasser, combiner'],
+    [onGrass(SPR.flint, 4, 5), 'silex \u2014 ramasser, combiner'],
+    [onGrass(SPR.campfire, 0, 3), 'feu de camp \u2014 r\u00e9chauffe'],
     [legendSwatch(c => c.drawImage(SPR.fouloide, 0, 0)), 'fouloïde'],
     [legendSwatch(c => {
       c.drawImage(TILES[0][0], 0, 0);
@@ -359,6 +438,7 @@ const world = {
   terrain: null,          // Int array [y][x] : 0 herbe, 1 zone chaude, 2 zone froide
   trees: [], rocks: [], baths: [], dangers: [],
   apples: [],
+  artifacts: {},          // render hint -> [[x,y], ...] (seed, bush, branch, ...)
   visionRadius: null,     // rayon Manhattan de perception (null = vision totale)
   fouloides: new Map(),   // id -> {x, y, px, py, tx, ty, t0, carry}
   step: 0,
@@ -473,6 +553,13 @@ function render(now) {
       drawList.push({ y: y * TILE + 12, f: () => drawSprite(SPR.bath, x * TILE, y * TILE, 0, 0) });
     for (const [x, y] of world.apples)
       drawList.push({ y: y * TILE + 8, f: () => drawSprite(SPR.apple, x * TILE + 4, y * TILE + 4, 0, 0) });
+    for (const [name, positions] of Object.entries(world.artifacts)) {
+      const art = ARTIFACT_SPRITES[name];
+      if (!art) continue;
+      for (const [x, y] of positions)
+        drawList.push({ y: y * TILE + 8, f: () =>
+          drawSprite(SPR[art.spr], x * TILE + art.dx, y * TILE + art.dy, 0, 0) });
+    }
     for (const f of world.fouloides.values()) {
       // interpolation entre la position précédente et la cible
       const t = Math.min(1, (now - f.t0) / world.tickMs);
@@ -542,6 +629,7 @@ function onWorld(d) {
   world.rocks = d.rocks || [];
   world.baths = d.baths || [];
   world.dangers = d.dangers || [];
+  world.artifacts = d.artifacts || {};
   world.visionRadius = (d.vision_radius === undefined) ? null : d.vision_radius;
   if (d.tick_ms) world.tickMs = d.tick_ms;
   cam.x = world.width * TILE / 2;
@@ -556,6 +644,7 @@ function onStep(d, now) {
   if (d.baths) world.baths = d.baths;
   if (d.rocks) world.rocks = d.rocks;
   if (d.dangers) world.dangers = d.dangers;
+  if (d.artifacts) world.artifacts = d.artifacts;
   const seen = new Set();
   for (const f of d.fouloides || []) {
     seen.add(f.id);
@@ -575,6 +664,31 @@ function onStep(d, now) {
   for (const id of world.fouloides.keys()) if (!seen.has(id)) world.fouloides.delete(id);
   if (d.stats && d.stats.population !== undefined) popEl.textContent = d.stats.population;
   if (d.objective) objEl.textContent = d.objective;
+  if (d.stats && d.stats.event) showEvent(d.stats.event);
+}
+
+// --- Ticker des découvertes -------------------------------------------------
+const EVENT_LABELS = {
+  pick_ok: '\u{1F91A} a ramass\u00e9 quelque chose',
+  drop_ok: 'a pos\u00e9 un objet',
+  plant_ok: '\u{1F331} a plant\u00e9 !',
+  combine_ok: '\u{1F525} a fabriqu\u00e9 quelque chose !',
+  interact_hydration: '\u{1F4A7} a bu',
+  interact_water: '\u{1F4A7} a bu',
+  interact_energy: '\u{1F34E} a mang\u00e9',
+  interact_food: '\u{1F34E} a mang\u00e9',
+  death: '\u{1F480} est mort\u2026',
+};
+const tickerEl = document.getElementById('event-ticker');
+let tickerTimeout = null;
+
+function showEvent(event) {
+  const label = EVENT_LABELS[event];
+  if (!label) return;
+  tickerEl.textContent = label;
+  tickerEl.classList.add('show');
+  if (tickerTimeout) clearTimeout(tickerTimeout);
+  tickerTimeout = setTimeout(() => tickerEl.classList.remove('show'), 2500);
 }
 
 function connect() {

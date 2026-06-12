@@ -18,28 +18,28 @@ entities:
     consumable: {drive: energy, gain: 0.15}
     count_key: num_berry_bush
     default_count: 4
-    render: apple
+    render: bush
   - name: berry_seed
     portable: true
     plantable: {becomes: berry_bush}
     count_key: num_berry_seed
     default_count: 4
-    render: apple
+    render: seed
   - name: branch
     portable: true
     count_key: num_branch
     default_count: 4
-    render: rock
+    render: branch
   - name: flint
     portable: true
     count_key: num_flint
     default_count: 4
-    render: rock
+    render: flint
   - name: campfire
     temperature_delta: 0.03
     count_key: num_campfire
     default_count: 0
-    render: terrain_warm
+    render: campfire
 
 # Recettes : résolues par le moteur, jamais exposées à l'agent.
 # Chaîne « se réchauffer » : froid → PICK branche + silex → COMBINE →
