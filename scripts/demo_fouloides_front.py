@@ -1,8 +1,10 @@
 """SeedMind — Demo front fouloïdes.
 
 Sert le viewer pixel-art fouloïdes dans le navigateur et diffuse l'état d'un
-monde via WebSocket. Le mode par défaut reste un **stub** léger, et le mode
-`--source micro` branche un checkpoint Micro-Fouloïde réel sur le même viewer.
+monde via WebSocket. Le mode par défaut reste un **stub** léger, le mode
+`--source micro` branche un checkpoint Micro-Fouloïde réel sur le même viewer,
+et le mode `--source live` lance un fouloïde **vierge** (aucun checkpoint) qui
+apprend en continu pendant que vous le regardez.
 
 Point de branchement moteur : `WorldSource` (méthodes `world_message()` et
 `step_message()`). Le stub et le Micro-Fouloïde réel utilisent la même
@@ -11,6 +13,7 @@ interface côté viewer.
     python scripts/demo_fouloides_front.py
     python scripts/demo_fouloides_front.py --size 96 --fouloides 14
     python scripts/demo_fouloides_front.py --source micro --device cpu
+    python scripts/demo_fouloides_front.py --source live --tick-ms 60
 
 Ouvrir http://localhost:8787 dans un navigateur.
 """
@@ -21,6 +24,7 @@ import asyncio
 import json
 import random
 import sys
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Protocol, Set, Tuple
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -32,6 +36,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.evaluate_micro_fouloide import resolve_uncertainty_threshold_from_replay  # noqa: E402
+from scripts.run_fouloide_online import OnlineFouloideSession  # noqa: E402
 from scripts.run_micro_fouloide import build_agent, build_env, load_config  # noqa: E402
 from seedmind.agent.goal_generator import GoalGenerator  # noqa: E402
 from seedmind.agent.spatial_resource_memory import SpatialResourceMemory  # noqa: E402
@@ -44,7 +49,7 @@ from seedmind.envs.micro_fouloide_world import (  # noqa: E402
     WARM_ZONE,
 )
 from seedmind.training.device import resolve_device  # noqa: E402
-from seedmind.training.wellbeing import drive_regulation, wellbeing  # noqa: E402
+from seedmind.training.wellbeing import drive_regulation  # noqa: E402
 from websockets.asyncio.server import serve as ws_serve
 
 VIEWER_HTML = (
@@ -475,14 +480,108 @@ class MicroFouloideWorldSource:
 
     @staticmethod
     def _positions(grid: np.ndarray, entities: set[int]) -> list[list[int]]:
-        rows, cols = np.where(np.isin(grid, list(entities)))
-        return [[int(c), int(r)] for r, c in zip(rows, cols)]
+        return _grid_positions(grid, entities)
 
     @staticmethod
     def _terrain(grid: np.ndarray) -> list[list[int]]:
-        terrain = np.zeros_like(grid, dtype=np.int64)
-        terrain[(grid == WARM_ZONE) | (grid == COLD_ZONE)] = 1
-        return terrain.tolist()
+        return _grid_terrain(grid)
+
+
+def _grid_positions(grid: np.ndarray, entities: set[int]) -> list[list[int]]:
+    rows, cols = np.where(np.isin(grid, list(entities)))
+    return [[int(c), int(r)] for r, c in zip(rows, cols)]
+
+
+def _grid_terrain(grid: np.ndarray) -> list[list[int]]:
+    terrain = np.zeros_like(grid, dtype=np.int64)
+    terrain[(grid == WARM_ZONE) | (grid == COLD_ZONE)] = 1
+    return terrain.tolist()
+
+
+# ---------------------------------------------------------------------------
+# Source live : fouloïde vierge qui apprend en direct (aucun checkpoint)
+# ---------------------------------------------------------------------------
+
+LIVE_OBJECTIVE = "FOULO\u00cfDE VIERGE : APPRENDRE \u00c0 VIVRE EN DIRECT."
+
+
+class LiveFouloideWorldSource:
+    """From-scratch agent learning continually while the viewer watches."""
+
+    def __init__(
+        self,
+        config_path: str,
+        seed: int,
+        tick_ms: int,
+        device_name: str,
+    ) -> None:
+        self.tick_ms = int(tick_ms)
+        device = resolve_device(device_name)
+        torch.manual_seed(seed)
+        config = load_config(config_path)
+        self.session = OnlineFouloideSession(config, seed=int(seed), device=device)
+        self.planner_window: deque = deque(maxlen=500)
+        self.wellbeing_window: deque = deque(maxlen=500)
+
+    @property
+    def env(self):
+        return self.session.env
+
+    def world_message(self) -> dict:
+        grid = self.env.grid
+        return {
+            "type": "world",
+            "width": self.env.size,
+            "height": self.env.size,
+            "terrain": _grid_terrain(grid),
+            "trees": [],
+            "rocks": _grid_positions(grid, {OBSTACLE, DANGER}),
+            "baths": _grid_positions(grid, {WATER}),
+            "tick_ms": self.tick_ms,
+        }
+
+    def step_message(self) -> dict:
+        info = self.session.step()
+        self.planner_window.append(int(self.session.last_planner_used))
+        self.wellbeing_window.append(float(self.session.last_wellbeing))
+        learn = self.session.learner.stats()
+        grid = self.env.grid
+        r, c = (int(v) for v in self.env.agent_pos)
+        threshold = learn["uncertainty_threshold"]
+        stats = {
+            "population": 1,
+            "life": self.session.lives,
+            "step": self.session.steps,
+            "event": str(info.get("event", "unknown")),
+            "wellbeing": round(float(np.mean(self.wellbeing_window)), 3),
+            "energy": round(float(info.get("energy", 0.0)), 3),
+            "hydration": round(float(info.get("hydration", 0.0)), 3),
+            "health": round(float(info.get("health", 0.0)), 3),
+            "wm_loss": round(float(learn["wm_loss"]), 4),
+            "td_loss": round(float(learn["td_loss"]), 4),
+            "planner_used": round(float(np.mean(self.planner_window)), 3),
+            "uncertainty_threshold": (
+                None if threshold is None else round(float(threshold), 4)
+            ),
+            "epsilon": round(float(learn["epsilon"]), 3),
+        }
+        objective = (
+            f"{LIVE_OBJECTIVE}  bien-\u00eatre {stats['wellbeing']:.2f} "
+            f"HP {stats['health']:.2f} H2O {stats['hydration']:.2f} E {stats['energy']:.2f}"
+            f"  |  wm_loss {stats['wm_loss']:.3f} planner {stats['planner_used']:.2f} "
+            f"eps {stats['epsilon']:.2f} step {stats['step']} vie {stats['life']}"
+        )
+        return {
+            "type": "step",
+            "step": self.session.steps,
+            "fouloides": [{"id": 0, "x": c, "y": r, "carry": False}],
+            "terrain": _grid_terrain(grid),
+            "apples": _grid_positions(grid, {FOOD}),
+            "baths": _grid_positions(grid, {WATER}),
+            "rocks": _grid_positions(grid, {OBSTACLE, DANGER}),
+            "stats": stats,
+            "objective": objective,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -541,7 +640,7 @@ def run_http_server(host: str, port: int):
 
 def main():
     parser = argparse.ArgumentParser(description="SeedMind demo front fouloïdes")
-    parser.add_argument("--source", choices=["stub", "micro"], default="stub")
+    parser.add_argument("--source", choices=["stub", "micro", "live"], default="stub")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--size", type=int, default=96, help="côté du monde (tuiles)")
@@ -552,6 +651,9 @@ def main():
     parser.add_argument("--micro-config", default=DEFAULT_MICRO_CONFIG)
     parser.add_argument("--micro-checkpoint", default=DEFAULT_MICRO_CHECKPOINT)
     parser.add_argument("--micro-uncertainty-threshold", type=float, default=None)
+    parser.add_argument(
+        "--live-config", default="configs/micro_fouloide_online_homeostatic.yaml",
+    )
     parser.add_argument("--disable-resource-memory", action="store_true")
     parser.add_argument("--allow-blocked-moves", action="store_true")
     parser.add_argument("--allow-noop-interact", action="store_true")
@@ -574,6 +676,18 @@ def main():
             f"{source.env.size}x{source.env.size}, checkpoint={args.micro_checkpoint}, "
             f"unc_thr={source.uncertainty_threshold:.5f}, "
             f"resource_memory={not args.disable_resource_memory}"
+        )
+    elif args.source == "live":
+        source = LiveFouloideWorldSource(
+            config_path=args.live_config,
+            seed=args.seed,
+            tick_ms=args.tick_ms,
+            device_name=args.device,
+        )
+        mode = "apprentissage live (agent vierge)"
+        world_label = (
+            f"{source.env.size}x{source.env.size}, config={args.live_config}, "
+            f"aucun checkpoint — le fouloïde apprend en direct"
         )
     else:
         source = StubFouloideWorld(
