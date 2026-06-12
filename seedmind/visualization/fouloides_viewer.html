@@ -78,6 +78,21 @@
     font-size: 10px; letter-spacing: 1px; pointer-events: none;
     border-radius: 4px;
   }
+
+  #legend {
+    top: 110px; left: 14px; padding: 8px 10px;
+    background: rgba(10, 20, 8, 0.75); color: #cfe8c0;
+    border: 2px solid #16323a; border-radius: 4px;
+    font-size: 10px; letter-spacing: 0.5px; line-height: 1;
+  }
+  #legend .title { color: #9fd28a; font-weight: 700; margin-bottom: 6px; }
+  #legend .row { display: flex; align-items: center; gap: 7px; margin: 4px 0; }
+  #legend canvas { width: 18px; height: 18px; image-rendering: pixelated; flex: none; }
+  #legend .fog-swatch {
+    width: 18px; height: 18px; flex: none; border-radius: 2px;
+    background: #2a3a22;
+    box-shadow: inset 0 0 0 9px rgba(8, 14, 6, 0.45);
+  }
 </style>
 </head>
 <body>
@@ -96,6 +111,8 @@
 
 <div class="hud" id="menu-btn"><span></span><span></span><span></span></div>
 <div class="hud" id="tools-btn">&#128296;</div>
+
+<div class="hud" id="legend"><div class="title">L&Eacute;GENDE</div></div>
 
 <div class="hud" id="status">connexion&hellip;</div>
 <div class="hud" id="help">glisser : d&eacute;placer &middot; molette : zoom &middot; fl&egrave;ches : cam&eacute;ra</div>
@@ -276,6 +293,62 @@ for (let v = 0; v < 3; v++) {
   TILES[1].push(makeTile(1, v));
   TILES[2].push(makeTile(2, v));
 }
+
+// ===========================================================================
+// Légende
+// ===========================================================================
+
+function legendSwatch(drawFn) {
+  const c = document.createElement('canvas');
+  c.width = TILE; c.height = TILE;
+  drawFn(c.getContext('2d'));
+  return c;
+}
+
+(function buildLegend() {
+  const el = document.getElementById('legend');
+  const onGrass = (spr, ox = 0, oy = 0) => legendSwatch(ctx2 => {
+    ctx2.drawImage(TILES[0][0], 0, 0);
+    ctx2.drawImage(spr, ox, oy);
+  });
+  const entries = [
+    [legendSwatch(c => c.drawImage(TILES[0][0], 0, 0)), 'herbe'],
+    [legendSwatch(c => c.drawImage(TILES[1][0], 0, 0)), 'zone chaude (T\u00b0 monte)'],
+    [legendSwatch(c => c.drawImage(TILES[2][0], 0, 0)), 'zone froide (T\u00b0 baisse)'],
+    [onGrass(SPR.rock, 0, 3), 'rocher \u2014 infranchissable'],
+    [onGrass(SPR.danger, 0, 3), 'danger \u2014 blesse, peut tuer'],
+    [onGrass(SPR.bath, 0, 2), 'eau \u2014 boire (INTERACT)'],
+    [onGrass(SPR.apple, 4, 4), 'pomme \u2014 manger (INTERACT)'],
+    [legendSwatch(c => c.drawImage(SPR.fouloide, 0, 0)), 'fouloïde'],
+    [legendSwatch(c => {
+      c.drawImage(TILES[0][0], 0, 0);
+      c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 3, 12, 2);
+      c.fillStyle = '#e25b51'; c.fillRect(2, 3, 9, 2);
+      c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 7, 12, 2);
+      c.fillStyle = '#5aa7e0'; c.fillRect(2, 7, 6, 2);
+      c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 11, 12, 2);
+      c.fillStyle = '#e9b84d'; c.fillRect(2, 11, 10, 2);
+    }), 'sant\u00e9 / hydratation / \u00e9nergie'],
+  ];
+  for (const [swatch, label] of entries) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.appendChild(swatch);
+    const span = document.createElement('span');
+    span.textContent = label;
+    row.appendChild(span);
+    el.appendChild(row);
+  }
+  const fog = document.createElement('div');
+  fog.className = 'row';
+  const fogSwatch = document.createElement('div');
+  fogSwatch.className = 'fog-swatch';
+  fog.appendChild(fogSwatch);
+  const fogLabel = document.createElement('span');
+  fogLabel.textContent = 'assombri \u2014 hors de sa vue';
+  fog.appendChild(fogLabel);
+  el.appendChild(fog);
+})();
 
 // ===========================================================================
 // État du monde
