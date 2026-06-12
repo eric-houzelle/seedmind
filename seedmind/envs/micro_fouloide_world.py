@@ -12,9 +12,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from seedmind.envs.base import EnvironmentAdapter
+from seedmind.envs.entities import EntityRegistry, default_registry
 
 # ---------------------------------------------------------------------------
-# Entity registry
+# Historical entity ids (the default registry reproduces them exactly)
 # ---------------------------------------------------------------------------
 EMPTY = 0
 OBSTACLE = 1
@@ -101,6 +102,8 @@ class MicroFouloideWorld(EnvironmentAdapter):
         visibility_radius: Optional[int] = 4,
         filter_blocked_moves: bool = False,
         filter_noop_interact: bool = False,
+        registry: Optional[EntityRegistry] = None,
+        entity_counts: Optional[Dict[str, int]] = None,
         seed: Optional[int] = None,
     ) -> None:
         self.size = int(size)
@@ -132,6 +135,17 @@ class MicroFouloideWorld(EnvironmentAdapter):
         self.visibility_radius = visibility_radius
         self.filter_blocked_moves = bool(filter_blocked_moves)
         self.filter_noop_interact = bool(filter_noop_interact)
+        if registry is None:
+            registry = default_registry({
+                "food_energy_gain": self.food_energy_gain,
+                "water_hydration_gain": self.water_hydration_gain,
+                "danger_damage": self.danger_damage,
+                "temperature_drift": self.temperature_drift,
+            })
+        self.registry = registry
+        self._entity_counts = dict(entity_counts or {})
+        self._solid_ids = registry.solid_ids
+        self._consumable_ids = {e.id for e in registry.consumables}
         self.rng = np.random.default_rng(seed)
 
         self.grid = np.zeros((self.size, self.size), dtype=np.int64)
@@ -169,14 +183,20 @@ class MicroFouloideWorld(EnvironmentAdapter):
         ]
         self.rng.shuffle(interior)
         idx = 0
-        placements = [
-            (OBSTACLE, self.num_obstacles),
-            (FOOD, self.num_food),
-            (WATER, self.num_water),
-            (WARM_ZONE, self.num_warm_zones),
-            (COLD_ZONE, self.num_cold_zones),
-            (DANGER, self.num_dangers),
-        ]
+        legacy_counts = {
+            "num_obstacles": self.num_obstacles,
+            "num_food": self.num_food,
+            "num_water": self.num_water,
+            "num_warm_zones": self.num_warm_zones,
+            "num_cold_zones": self.num_cold_zones,
+            "num_dangers": self.num_dangers,
+        }
+        placements = []
+        for entity_type in self.registry.placeable():
+            count = legacy_counts.get(entity_type.count_key)
+            if count is None:
+                count = self._entity_counts.get(entity_type.count_key, entity_type.default_count)
+            placements.append((entity_type.id, int(count)))
         for entity, count in placements:
             for _ in range(count):
                 if idx >= len(interior):
@@ -258,16 +278,17 @@ class MicroFouloideWorld(EnvironmentAdapter):
 
     def causal_features(self, observation: Dict[str, Any]) -> np.ndarray:
         grid = np.asarray(observation["grid"], dtype=np.int64)
-        local_danger = float(np.any(grid == DANGER))
-        local_food = float(np.any(grid == FOOD))
-        local_water = float(np.any(grid == WATER))
-        local_heat = float(np.any((grid == WARM_ZONE) | (grid == COLD_ZONE)))
+        registry = self.registry
+        local_danger = float(np.any(np.isin(grid, list(registry.danger_ids))))
+        local_food = float(np.any(np.isin(grid, list(registry.drive_signal_ids("energy")))))
+        local_water = float(np.any(np.isin(grid, list(registry.drive_signal_ids("hydration")))))
+        local_heat = float(np.any(np.isin(grid, list(registry.heat_ids))))
         return np.asarray([
             float(observation.get("energy", 0.0)),
             float(observation.get("hydration", 0.0)),
             float(observation.get("temperature", 0.5)),
             float(observation.get("health", 0.0)),
-            float(observation.get("standing_entity", EMPTY)) / max(NUM_ENTITIES - 1, 1),
+            float(observation.get("standing_entity", EMPTY)) / max(registry.size - 1, 1),
             local_danger,
             local_food,
             local_water,
@@ -275,20 +296,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
         ], dtype=np.float32)
 
     def causal_event_names(self) -> List[str]:
-        return [
-            "move_ok",
-            "move_blocked",
-            "interact_food",
-            "interact_water",
-            "interact_noop",
-            "rest",
-            "wait",
-            "temperature_up",
-            "temperature_down",
-            "damage",
-            "health_loss",
-            "death",
-        ]
+        return self.registry.causal_event_names()
 
     def step(self, action: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         self.steps += 1
@@ -343,12 +351,12 @@ class MicroFouloideWorld(EnvironmentAdapter):
         return (
             0 <= nr < self.size
             and 0 <= nc < self.size
-            and self.grid[nr, nc] != OBSTACLE
+            and int(self.grid[nr, nc]) not in self._solid_ids
         )
 
     def _can_interact(self) -> bool:
         r, c = self.agent_pos
-        return int(self.grid[r, c]) in {FOOD, WATER}
+        return int(self.grid[r, c]) in self._consumable_ids
 
     def _try_move(self, action: str) -> None:
         if not self._can_move(action):
@@ -363,17 +371,15 @@ class MicroFouloideWorld(EnvironmentAdapter):
     def _try_interact(self) -> None:
         r, c = self.agent_pos
         entity = int(self.grid[r, c])
-        if entity == FOOD:
-            self.energy = min(1.0, self.energy + self.food_energy_gain)
+        entity_type = self.registry.get(entity)
+        if entity_type is not None and entity_type.consumable is not None:
+            drive = str(entity_type.consumable.get("drive", "energy"))
+            gain = float(entity_type.consumable.get("gain", 0.0))
+            if drive in {"energy", "hydration", "health"}:
+                setattr(self, drive, min(1.0, getattr(self, drive) + gain))
             self.grid[r, c] = EMPTY
-            self._queue_regrowth(r, c, FOOD)
-            self._last_event = "interact_food"
-            self._last_event_amount = 1
-        elif entity == WATER:
-            self.hydration = min(1.0, self.hydration + self.water_hydration_gain)
-            self.grid[r, c] = EMPTY
-            self._queue_regrowth(r, c, WATER)
-            self._last_event = "interact_water"
+            self._queue_regrowth(r, c, entity)
+            self._last_event = entity_type.interact_event
             self._last_event_amount = 1
         else:
             self._last_event = "interact_noop"
@@ -406,12 +412,14 @@ class MicroFouloideWorld(EnvironmentAdapter):
 
         r, c = self.agent_pos
         entity = int(self.grid[r, c])
-        if entity == WARM_ZONE:
-            self.temperature = min(1.0, self.temperature + self.temperature_drift)
+        entity_type = self.registry.get(entity)
+        temperature_delta = entity_type.temperature_delta if entity_type else 0.0
+        if temperature_delta > 0.0:
+            self.temperature = min(1.0, self.temperature + temperature_delta)
             if self._last_event in {"move_ok", WAIT, REST}:
                 self._last_event = "temperature_up"
-        elif entity == COLD_ZONE:
-            self.temperature = max(0.0, self.temperature - self.temperature_drift)
+        elif temperature_delta < 0.0:
+            self.temperature = max(0.0, self.temperature + temperature_delta)
             if self._last_event in {"move_ok", WAIT, REST}:
                 self._last_event = "temperature_down"
         elif self.temperature < 0.5:
@@ -420,8 +428,9 @@ class MicroFouloideWorld(EnvironmentAdapter):
             self.temperature = max(0.5, self.temperature - self.temperature_recovery)
 
         health_before = self.health
-        if entity == DANGER:
-            self.health = max(0.0, self.health - self.danger_damage)
+        dangerous = entity_type.dangerous if entity_type else 0.0
+        if dangerous > 0.0:
+            self.health = max(0.0, self.health - dangerous)
             self._last_event = "damage"
         critical = (
             self.energy <= self.critical_threshold
@@ -441,7 +450,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
                 self.health = max(0.0, self.health - self.health_decay)
                 if self._last_event not in {"damage", "death"}:
                     self._last_event = "health_loss"
-        elif self.soft_death and entity != DANGER and self.health < self.health_start:
+        elif self.soft_death and dangerous == 0.0 and self.health < self.health_start:
             self.health = min(self.health_start, self.health + self.health_regen)
         self._last_health_delta = self.health - health_before
 

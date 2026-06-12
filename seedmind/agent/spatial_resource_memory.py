@@ -32,10 +32,18 @@ def _agent_pos(obs: dict[str, Any]) -> tuple[int, int]:
 
 @dataclass
 class SpatialResourceMemory:
-    """Remember visible food/water cells and route back when drives are low."""
+    """Remember visible food/water cells and route back when drives are low.
+
+    Entity ids are injectable so the memory works with any entity registry
+    (defaults reproduce the historical hardcoded ids).
+    """
 
     water: set[tuple[int, int]] = field(default_factory=set)
     food: set[tuple[int, int]] = field(default_factory=set)
+    water_ids: set[int] = field(default_factory=lambda: {WATER})
+    food_ids: set[int] = field(default_factory=lambda: {FOOD})
+    solid_ids: set[int] = field(default_factory=lambda: {OBSTACLE})
+    unknown_id: int = UNKNOWN
 
     def reset(self) -> None:
         self.water.clear()
@@ -52,17 +60,17 @@ class SpatialResourceMemory:
         for row in range(grid.shape[0]):
             for col in range(grid.shape[1]):
                 entity = int(grid[row, col])
-                if entity == UNKNOWN:
+                if entity == self.unknown_id:
                     continue
                 pos = (row, col)
                 visible.add(pos)
-                if entity == WATER or (pos == agent_pos and standing_entity == WATER):
+                if entity in self.water_ids or (pos == agent_pos and standing_entity in self.water_ids):
                     self.water.add(pos)
-                if entity == FOOD or (pos == agent_pos and standing_entity == FOOD):
+                if entity in self.food_ids or (pos == agent_pos and standing_entity in self.food_ids):
                     self.food.add(pos)
 
-        self._forget_stale("water", WATER, visible, grid, agent_pos, standing_entity)
-        self._forget_stale("food", FOOD, visible, grid, agent_pos, standing_entity)
+        self._forget_stale("water", self.water_ids, visible, grid, agent_pos, standing_entity)
+        self._forget_stale("food", self.food_ids, visible, grid, agent_pos, standing_entity)
 
     def choose_action(
         self,
@@ -77,17 +85,17 @@ class SpatialResourceMemory:
         energy = float(obs.get("energy", 1.0))
 
         targets: set[tuple[int, int]]
-        target_entity: int
+        target_ids: set[int]
         if hydration <= hydration_threshold:
             targets = self.water
-            target_entity = WATER
+            target_ids = self.water_ids
         elif energy <= energy_threshold:
             targets = self.food
-            target_entity = FOOD
+            target_ids = self.food_ids
         else:
             return None
 
-        if standing_entity == target_entity and INTERACT in available_actions:
+        if standing_entity in target_ids and INTERACT in available_actions:
             return INTERACT
 
         target = self._nearest(agent_pos, targets)
@@ -101,7 +109,7 @@ class SpatialResourceMemory:
                 continue
             nr, nc = agent_pos[0] + dr, agent_pos[1] + dc
             if grid.size and 0 <= nr < grid.shape[0] and 0 <= nc < grid.shape[1]:
-                if int(grid[nr, nc]) == OBSTACLE:
+                if int(grid[nr, nc]) in self.solid_ids:
                     continue
             distance = abs(target[0] - nr) + abs(target[1] - nc)
             candidates.append((distance, action))
@@ -112,7 +120,7 @@ class SpatialResourceMemory:
     def _forget_stale(
         self,
         name: str,
-        entity: int,
+        entity_ids: set[int],
         visible: set[tuple[int, int]],
         grid: np.ndarray,
         agent_pos: tuple[int, int],
@@ -123,8 +131,8 @@ class SpatialResourceMemory:
             pos
             for pos in resources
             if pos in visible
-            and int(grid[pos]) != entity
-            and not (pos == agent_pos and standing_entity == entity)
+            and int(grid[pos]) not in entity_ids
+            and not (pos == agent_pos and standing_entity in entity_ids)
         }
         resources.difference_update(stale)
 

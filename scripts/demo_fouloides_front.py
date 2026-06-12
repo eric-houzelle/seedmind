@@ -40,14 +40,6 @@ from scripts.run_fouloide_online import OnlineFouloideSession  # noqa: E402
 from scripts.run_micro_fouloide import build_agent, build_env, load_config  # noqa: E402
 from seedmind.agent.goal_generator import GoalGenerator  # noqa: E402
 from seedmind.agent.spatial_resource_memory import SpatialResourceMemory  # noqa: E402
-from seedmind.envs.micro_fouloide_world import (  # noqa: E402
-    COLD_ZONE,
-    DANGER,
-    FOOD,
-    OBSTACLE,
-    WATER,
-    WARM_ZONE,
-)
 from seedmind.training.device import resolve_device  # noqa: E402
 from seedmind.training.wellbeing import drive_regulation  # noqa: E402
 from websockets.asyncio.server import serve as ws_serve
@@ -345,7 +337,6 @@ class MicroFouloideWorldSource:
         self.seed = int(seed)
         self.device = resolve_device(device_name)
         self.resource_memory_enabled = bool(resource_memory)
-        self.resource_memory = SpatialResourceMemory()
         self.resource_memory_used = 0
         self.planner_used = 0
         self.total_actions = 0
@@ -370,6 +361,13 @@ class MicroFouloideWorldSource:
         self.agent.goal_generator = GoalGenerator(seed=self.seed)
         self.agent.planner.rng = np.random.default_rng(self.seed)
         self.env = build_env(self.config, seed=self.seed)
+        registry = self.env.registry
+        self.resource_memory = SpatialResourceMemory(
+            water_ids=registry.drive_signal_ids("hydration"),
+            food_ids=registry.drive_signal_ids("energy"),
+            solid_ids=registry.solid_ids,
+            unknown_id=registry.by_name("unknown").id,
+        )
         self.obs = self.env.reset()
         self.latent = self.agent.encode(self.obs)
         self.info: dict[str, Any] = {
@@ -389,11 +387,11 @@ class MicroFouloideWorldSource:
             "type": "world",
             "width": self.env.size,
             "height": self.env.size,
-            "terrain": self._terrain(grid),
+            "terrain": _grid_terrain(grid, self.env.registry),
             "trees": [],
-            "rocks": self._positions(grid, {OBSTACLE}),
-            "dangers": self._positions(grid, {DANGER}),
-            "baths": self._positions(grid, {WATER}),
+            "rocks": _grid_positions(grid, _render_ids(self.env.registry, "rock")),
+            "dangers": _grid_positions(grid, _render_ids(self.env.registry, "danger")),
+            "baths": _grid_positions(grid, _render_ids(self.env.registry, "bath")),
             "vision_radius": self.env.visibility_radius,
             "tick_ms": self.tick_ms,
         }
@@ -433,11 +431,11 @@ class MicroFouloideWorldSource:
                 "h2o": stats["hydration"],
                 "en": stats["energy"],
             }],
-            "terrain": self._terrain(grid),
-            "apples": self._positions(grid, {FOOD}),
-            "baths": self._positions(grid, {WATER}),
-            "rocks": self._positions(grid, {OBSTACLE}),
-            "dangers": self._positions(grid, {DANGER}),
+            "terrain": _grid_terrain(grid, self.env.registry),
+            "apples": _grid_positions(grid, _render_ids(self.env.registry, "apple")),
+            "baths": _grid_positions(grid, _render_ids(self.env.registry, "bath")),
+            "rocks": _grid_positions(grid, _render_ids(self.env.registry, "rock")),
+            "dangers": _grid_positions(grid, _render_ids(self.env.registry, "danger")),
             "stats": stats,
             "objective": objective,
         }
@@ -486,24 +484,41 @@ class MicroFouloideWorldSource:
         self.total_actions += 1
         self.planner_used += int(getattr(self.agent, "last_planner_used", False))
 
-    @staticmethod
-    def _positions(grid: np.ndarray, entities: set[int]) -> list[list[int]]:
-        return _grid_positions(grid, entities)
-
-    @staticmethod
-    def _terrain(grid: np.ndarray) -> list[list[int]]:
-        return _grid_terrain(grid)
 
 
 def _grid_positions(grid: np.ndarray, entities: set[int]) -> list[list[int]]:
+    if not entities:
+        return []
     rows, cols = np.where(np.isin(grid, list(entities)))
     return [[int(c), int(r)] for r, c in zip(rows, cols)]
 
 
-def _grid_terrain(grid: np.ndarray) -> list[list[int]]:
+_KNOWN_RENDERS = {"rock", "danger", "bath", "apple", "terrain_warm", "terrain_cold", "none"}
+
+
+def _render_ids(registry, render: str) -> set[int]:
+    """Entity ids mapped to a viewer sprite category via their render hint.
+
+    Entities with an unknown render hint fall back to the rock sprite so a
+    freshly added YAML entity is always visible.
+    """
+    ids = registry.render_ids(render)
+    if render == "rock":
+        ids = ids | {
+            e.id for e in registry
+            if not e.structural and e.render not in _KNOWN_RENDERS
+        }
+    return ids
+
+
+def _grid_terrain(grid: np.ndarray, registry) -> list[list[int]]:
     terrain = np.zeros_like(grid, dtype=np.int64)
-    terrain[grid == WARM_ZONE] = 1
-    terrain[grid == COLD_ZONE] = 2
+    warm = list(_render_ids(registry, "terrain_warm"))
+    cold = list(_render_ids(registry, "terrain_cold"))
+    if warm:
+        terrain[np.isin(grid, warm)] = 1
+    if cold:
+        terrain[np.isin(grid, cold)] = 2
     return terrain.tolist()
 
 
@@ -540,6 +555,11 @@ class LiveFouloideWorldSource:
         self.thirst_threshold = 0.35
         self._thirst_start: int | None = None
         self._thirst_durations: deque = deque(maxlen=20)
+        registry = self.session.env.registry
+        self._drink_events = {
+            registry[i].interact_event
+            for i in registry.drive_signal_ids("hydration")
+        }
         if (
             not fresh
             and checkpoint_path is not None
@@ -558,11 +578,11 @@ class LiveFouloideWorldSource:
             "type": "world",
             "width": self.env.size,
             "height": self.env.size,
-            "terrain": _grid_terrain(grid),
+            "terrain": _grid_terrain(grid, self.env.registry),
             "trees": [],
-            "rocks": _grid_positions(grid, {OBSTACLE}),
-            "dangers": _grid_positions(grid, {DANGER}),
-            "baths": _grid_positions(grid, {WATER}),
+            "rocks": _grid_positions(grid, _render_ids(self.env.registry, "rock")),
+            "dangers": _grid_positions(grid, _render_ids(self.env.registry, "danger")),
+            "baths": _grid_positions(grid, _render_ids(self.env.registry, "bath")),
             "vision_radius": self.env.visibility_radius,
             "tick_ms": self.tick_ms,
         }
@@ -630,11 +650,11 @@ class LiveFouloideWorldSource:
                 "h2o": stats["hydration"],
                 "en": stats["energy"],
             }],
-            "terrain": _grid_terrain(grid),
-            "apples": _grid_positions(grid, {FOOD}),
-            "baths": _grid_positions(grid, {WATER}),
-            "rocks": _grid_positions(grid, {OBSTACLE}),
-            "dangers": _grid_positions(grid, {DANGER}),
+            "terrain": _grid_terrain(grid, self.env.registry),
+            "apples": _grid_positions(grid, _render_ids(self.env.registry, "apple")),
+            "baths": _grid_positions(grid, _render_ids(self.env.registry, "bath")),
+            "rocks": _grid_positions(grid, _render_ids(self.env.registry, "rock")),
+            "dangers": _grid_positions(grid, _render_ids(self.env.registry, "danger")),
             "stats": stats,
             "objective": objective,
         }
@@ -645,7 +665,7 @@ class LiveFouloideWorldSource:
         if self._thirst_start is None:
             if hydration < self.thirst_threshold:
                 self._thirst_start = self.session.steps
-        elif str(info.get("event", "")) == "interact_water":
+        elif str(info.get("event", "")) in self._drink_events:
             self._thirst_durations.append(self.session.steps - self._thirst_start)
             self._thirst_start = None
         elif info.get("dead"):

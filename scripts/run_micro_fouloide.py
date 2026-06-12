@@ -19,18 +19,14 @@ from seedmind.agent.agent import Agent
 from seedmind.agent.curiosity import compute_prediction_error_tensor
 from seedmind.agent.encoder import Encoder
 from seedmind.agent.goal_generator import GoalGenerator
-from seedmind.agent.micro_fouloide_encoder import (
-    MICRO_FOULOIDE_NUM_CHANNELS,
-    MICRO_FOULOIDE_NUM_SCALARS,
-    micro_fouloide_obs_batch_to_tensors,
-    micro_fouloide_observation_to_vector,
-)
+from seedmind.agent.micro_fouloide_encoder import make_micro_fouloide_obs_fns
 from seedmind.agent.latent_q_network import LatentQNetwork
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
 from seedmind.agent.value_model import ValueModel
 from seedmind.agent.world_model import WorldModel
-from seedmind.envs.micro_fouloide_world import ACTIONS, FOOD, WATER, MicroFouloideWorld
+from seedmind.envs.entities import load_registry
+from seedmind.envs.micro_fouloide_world import ACTIONS, MicroFouloideWorld
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.memory.persistent_memory import PersistentMemory
 from seedmind.objectives import build_objective_scorer
@@ -98,6 +94,8 @@ def build_env(config: dict, seed: int) -> MicroFouloideWorld:
         num_obstacles=int(ec.get("num_obstacles", 20)),
         filter_blocked_moves=bool(ec.get("filter_blocked_moves", False)),
         filter_noop_interact=bool(ec.get("filter_noop_interact", False)),
+        registry=load_registry(config),
+        entity_counts=ec,
         seed=seed,
     )
 
@@ -143,7 +141,9 @@ def build_agent(config: dict, seed: int) -> Agent:
     ec = config.get("env", {})
     grid_size = int(ec.get("size", 16))
     latent_dim = int(ac.get("latent_dim", 64))
-    input_dim = grid_size * grid_size * MICRO_FOULOIDE_NUM_CHANNELS + MICRO_FOULOIDE_NUM_SCALARS
+    registry = load_registry(config)
+    obs_to_vec_fn, obs_batch_fn, num_channels, num_scalars = make_micro_fouloide_obs_fns(registry.size)
+    input_dim = grid_size * grid_size * num_channels + num_scalars
     structured_latent_features = bool(ac.get("structured_latent_features", False))
     structured_feature_dim = len(causal_feature_names(config)) if structured_latent_features else 0
     structured_feature_env = _probe_env(config) if structured_latent_features else None
@@ -151,10 +151,10 @@ def build_agent(config: dict, seed: int) -> Agent:
     encoder = Encoder(
         grid_size=grid_size,
         latent_dim=latent_dim,
-        num_entities=MICRO_FOULOIDE_NUM_CHANNELS,
+        num_entities=num_channels,
         seed=seed or 0,
         input_dim=input_dim,
-        obs_to_vec_fn=micro_fouloide_observation_to_vector,
+        obs_to_vec_fn=obs_to_vec_fn,
         structured_features_fn=(
             structured_feature_env.causal_features
             if structured_feature_env is not None else None
@@ -184,9 +184,9 @@ def build_agent(config: dict, seed: int) -> Agent:
         num_actions=len(ACTIONS),
         conv_channels=int(dc.get("conv_channels", 64)),
         hidden_dim=int(dc.get("hidden_dim", 256)),
-        num_grid_channels=MICRO_FOULOIDE_NUM_CHANNELS,
-        num_scalars=MICRO_FOULOIDE_NUM_SCALARS,
-        obs_batch_fn=micro_fouloide_obs_batch_to_tensors,
+        num_grid_channels=num_channels,
+        num_scalars=num_scalars,
+        obs_batch_fn=obs_batch_fn,
     )
     plc = config.get("planning", {})
     planning_enabled = bool(plc.get("enabled", False))
@@ -331,16 +331,32 @@ def _event_resource_reward(
     grid = np.asarray(observation.get("grid", []), dtype=np.int64)
     active_signal_events = set(cfg.get("local_signal_events", ["move_ok"]))
     if event in active_signal_events and grid.size > 0:
-        if hydration <= low_threshold and bool(np.any(grid == WATER)):
+        water_ids, food_ids = _resource_signal_ids(config)
+        water_visible = bool(np.any(np.isin(grid, water_ids)))
+        food_visible = bool(np.any(np.isin(grid, food_ids)))
+        if hydration <= low_threshold and water_visible:
             reward += float(cfg.get("low_hydration_water_signal_bonus", 0.0))
-        if hydration <= critical_threshold and bool(np.any(grid == WATER)):
+        if hydration <= critical_threshold and water_visible:
             reward += float(cfg.get("critical_hydration_water_signal_bonus", 0.0))
-        if energy <= low_threshold and bool(np.any(grid == FOOD)):
+        if energy <= low_threshold and food_visible:
             reward += float(cfg.get("low_energy_food_signal_bonus", 0.0))
-        if energy <= critical_threshold and bool(np.any(grid == FOOD)):
+        if energy <= critical_threshold and food_visible:
             reward += float(cfg.get("critical_energy_food_signal_bonus", 0.0))
 
     return reward * float(cfg.get("weight", 1.0))
+
+
+def _resource_signal_ids(config: dict) -> tuple[list[int], list[int]]:
+    """Entity ids whose visibility counts as water/food signal (cached in config)."""
+    cached = config.get("_resource_signal_ids")
+    if cached is None:
+        registry = load_registry(config)
+        cached = (
+            sorted(registry.drive_signal_ids("hydration")),
+            sorted(registry.drive_signal_ids("energy")),
+        )
+        config["_resource_signal_ids"] = cached
+    return cached
 
 
 def _learning_reward(

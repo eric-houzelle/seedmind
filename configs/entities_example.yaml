@@ -1,0 +1,17 @@
+# Exemple d'extension du monde par données : une nouvelle entité = un bloc
+# YAML, zéro code. À référencer depuis une config de run :
+#
+#   env:
+#     entities: configs/entities_example.yaml
+#     num_berry_bush: 5
+#
+# Propriétés disponibles : solid, consumable {drive, gain}, dangerous,
+# temperature_delta, count_key/default_count (placement), render (sprite
+# viewer : rock|danger|bath|apple|terrain_warm|terrain_cold|none).
+
+entities:
+  - name: berry_bush
+    consumable: {drive: energy, gain: 0.15}
+    count_key: num_berry_bush
+    default_count: 4
+    render: apple
