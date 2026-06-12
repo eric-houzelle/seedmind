@@ -4457,6 +4457,62 @@ python scripts/demo_micro_fouloide_promoted.py \
   --resource-memory
 ```
 
+Résultat :
+
+```text
+Seed 2 + resource memory :
+- selected_seed = 10039
+- lifespan = 120, dead = false, capped = true
+- drive = 0.668
+- planner_used = 92.5%
+- resource_memory_used = 15.0%
+- events: interact_water=3, interact_food=1, damage=1, health_loss=25
+
+Seed 3 + resource memory :
+- selected_seed = 10027
+- lifespan = 120, dead = false, capped = true
+- drive = 0.612
+- planner_used = 86.7%
+- resource_memory_used = 13.3%
+- events: interact_water=3, interact_food=1, damage=8, health_loss=0
+```
+
+Avec le résultat seed 1 déjà capé à 120, les trois seeds ont maintenant une
+demo médiane courte non morte à 120.
+
+Rapport : `reports/micro_fouloide_resource_navigation_demo.md`
+
+Décision : **GO pour démo visuelle courte**, avec réserve importante.
+
+```text
+La démo courte peut être lancée avec le checkpoint `resource_navigation`, guards
+runtime, objectif runtime désactivé et `--resource-memory`. Cela prouve que le
+blocage des rollouts médians venait bien d'un manque de mémoire spatiale
+persistante plus que d'un manque global de reward ressource.
+
+Ce n'est pas encore un modèle final : `--resource-memory` est un patch de
+déploiement. La prochaine étape sérieuse est d'intégrer cette mémoire spatiale
+dans l'agent/planner, puis de valider que la démo fonctionne sans logique
+spéciale dans le script.
+```
+
+Commande de démo candidate :
+
+```bash
+python scripts/demo_micro_fouloide_promoted.py \
+  --checkpoint runs/micro_fouloide_v0_rough_valueplanner_resource_navigation_seed2/checkpoint_final.pt \
+  --config configs/micro_fouloide_v0_rough_valueplanner_resource_navigation.yaml \
+  --seed 2 \
+  --device mps \
+  --skip-eval \
+  --find-rollout \
+  --rollout-search-count 64 \
+  --rollout-select median \
+  --rollout-max-steps 120 \
+  --disable-survival-objective \
+  --resource-memory
+```
+
 ---
 
 ## 7. Arborescence des configs et runs
