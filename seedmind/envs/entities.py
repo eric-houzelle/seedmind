@@ -14,7 +14,20 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import yaml
+
+# Per-cell perception channels in "properties" observation mode: the agent
+# perceives WHAT things are like, not WHICH entity they are — adding a new
+# entity never changes these dimensions.
+PROPERTY_NAMES: List[str] = [
+    "occupied", "solid", "energy_gain", "hydration_gain",
+    "portable", "plantable", "dangerous", "warming", "cooling",
+    "unknown", "agent",
+]
+PROPERTY_DIM = len(PROPERTY_NAMES)
+DANGEROUS_SCALE = 0.1
+TEMP_SCALE = 0.03
 
 
 @dataclass(frozen=True)
@@ -145,9 +158,66 @@ class EntityRegistry:
         return self._recipe_by_inputs.get(tuple(sorted((int(item_a), int(item_b)))))
 
     # ------------------------------------------------------------------
+    # Property projection ("properties" observation mode)
+    # ------------------------------------------------------------------
+    def property_vector(self, entity_id: int) -> np.ndarray:
+        return self.property_matrix()[int(entity_id)]
+
+    def property_matrix(self) -> np.ndarray:
+        """``(size, PROPERTY_DIM)`` matrix; ``matrix[grid]`` projects a grid."""
+        if getattr(self, "_property_matrix", None) is None:
+            matrix = np.zeros((self.size, PROPERTY_DIM), dtype=np.float32)
+            for e in self._entities:
+                row = matrix[e.id]
+                if e.name == "unknown":
+                    row[PROPERTY_NAMES.index("unknown")] = 1.0
+                    continue
+                if e.name == "agent":
+                    row[PROPERTY_NAMES.index("agent")] = 1.0
+                    continue
+                if e.structural:  # empty: null vector
+                    continue
+                row[PROPERTY_NAMES.index("occupied")] = 1.0
+                row[PROPERTY_NAMES.index("solid")] = float(e.solid)
+                if e.consumable is not None:
+                    drive = e.consumable.get("drive")
+                    gain = float(np.clip(e.consumable.get("gain", 0.0), 0.0, 1.0))
+                    if drive == "energy":
+                        row[PROPERTY_NAMES.index("energy_gain")] = gain
+                    elif drive == "hydration":
+                        row[PROPERTY_NAMES.index("hydration_gain")] = gain
+                row[PROPERTY_NAMES.index("portable")] = float(e.portable)
+                row[PROPERTY_NAMES.index("plantable")] = float(e.plantable is not None)
+                row[PROPERTY_NAMES.index("dangerous")] = float(
+                    np.clip(e.dangerous / DANGEROUS_SCALE, 0.0, 1.0)
+                )
+                row[PROPERTY_NAMES.index("warming")] = float(
+                    np.clip(max(e.temperature_delta, 0.0) / TEMP_SCALE, 0.0, 1.0)
+                )
+                row[PROPERTY_NAMES.index("cooling")] = float(
+                    np.clip(max(-e.temperature_delta, 0.0) / TEMP_SCALE, 0.0, 1.0)
+                )
+            self._property_matrix = matrix
+        return self._property_matrix
+
+    # ------------------------------------------------------------------
     # Causal event vocabulary (order matters: WM event_index depends on it)
     # ------------------------------------------------------------------
-    def causal_event_names(self, include_inventory: bool = False) -> List[str]:
+    def causal_event_names(
+        self,
+        include_inventory: bool = False,
+        property_events: bool = False,
+    ) -> List[str]:
+        """Causal event vocabulary (order is contractual: WM event_index).
+
+        ``property_events=True`` replaces per-entity interact events with a
+        fixed property-level vocabulary (``interact_energy`` …) so adding a
+        consumable entity never resizes the world-model event head.
+        """
+        if property_events:
+            interact_events = ["interact_energy", "interact_hydration", "interact_health"]
+        else:
+            interact_events = [e.interact_event for e in self.consumables]
         inventory_events = (
             [
                 "pick_ok", "pick_noop", "drop_ok", "drop_noop",
@@ -157,7 +227,7 @@ class EntityRegistry:
         )
         return (
             ["move_ok", "move_blocked"]
-            + [e.interact_event for e in self.consumables]
+            + interact_events
             + ["interact_noop"]
             + inventory_events
             + [

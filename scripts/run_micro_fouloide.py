@@ -19,7 +19,11 @@ from seedmind.agent.agent import Agent
 from seedmind.agent.curiosity import compute_prediction_error_tensor
 from seedmind.agent.encoder import Encoder
 from seedmind.agent.goal_generator import GoalGenerator
-from seedmind.agent.micro_fouloide_encoder import make_micro_fouloide_obs_fns
+from seedmind.agent.map_memory import MapMemory
+from seedmind.agent.micro_fouloide_encoder import (
+    make_micro_fouloide_obs_fns,
+    make_micro_fouloide_property_obs_fns,
+)
 from seedmind.agent.latent_q_network import LatentQNetwork
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
@@ -97,6 +101,7 @@ def build_env(config: dict, seed: int) -> MicroFouloideWorld:
         filter_noop_inventory=bool(ec.get("filter_noop_inventory", False)),
         inventory_enabled=bool(ec.get("inventory", {}).get("enabled", False)),
         inventory_capacity=int(ec.get("inventory", {}).get("capacity", 3)),
+        property_events=bool(ec.get("property_events", False)),
         registry=load_registry(config),
         entity_counts=ec,
         seed=seed,
@@ -146,9 +151,19 @@ def build_agent(config: dict, seed: int) -> Agent:
     latent_dim = int(ac.get("latent_dim", 64))
     registry = load_registry(config)
     inventory_enabled = bool(ec.get("inventory", {}).get("enabled", False))
-    obs_to_vec_fn, obs_batch_fn, num_channels, num_scalars = make_micro_fouloide_obs_fns(
-        registry.size, inventory=inventory_enabled,
-    )
+    obs_cfg = ac.get("observation", {})
+    if str(obs_cfg.get("mode", "onehot")) == "properties":
+        obs_to_vec_fn, obs_batch_fn, num_channels, num_scalars = (
+            make_micro_fouloide_property_obs_fns(
+                registry,
+                inventory=inventory_enabled,
+                memory=bool(obs_cfg.get("spatial_memory", {}).get("enabled", False)),
+            )
+        )
+    else:
+        obs_to_vec_fn, obs_batch_fn, num_channels, num_scalars = make_micro_fouloide_obs_fns(
+            registry.size, inventory=inventory_enabled,
+        )
     actions = _probe_env(config).actions
     input_dim = grid_size * grid_size * num_channels + num_scalars
     structured_latent_features = bool(ac.get("structured_latent_features", False))
@@ -259,7 +274,15 @@ def _compact_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
     }
     if "inventory" in obs:
         compact["inventory"] = np.asarray(obs["inventory"], dtype=np.float32)
+    if "memory_grid" in obs:
+        compact["memory_grid"] = np.asarray(obs["memory_grid"], dtype=np.int16)
+        compact["memory_fresh"] = np.asarray(obs["memory_fresh"], dtype=np.float16)
     return compact
+
+
+def _spatial_memory_config(config: dict) -> Optional[dict]:
+    sm = config.get("agent", {}).get("observation", {}).get("spatial_memory", {})
+    return sm if bool(sm.get("enabled", False)) else None
 
 
 def _save_metrics(path: Path, payload: Dict[str, Any]) -> None:
@@ -320,12 +343,12 @@ def _event_resource_reward(
     energy = float(observation.get("energy", info.get("energy", 0.0)))
     low_threshold = float(cfg.get("low_threshold", 0.35))
     critical_threshold = float(cfg.get("critical_threshold", low_threshold))
-    if event == "interact_water":
+    if event in {"interact_water", "interact_hydration"}:
         if hydration <= low_threshold:
             reward += float(cfg.get("low_hydration_water_bonus", 0.0))
         if hydration <= critical_threshold:
             reward += float(cfg.get("critical_hydration_water_bonus", 0.0))
-    elif event == "interact_food":
+    elif event in {"interact_food", "interact_energy"}:
         if energy <= low_threshold:
             reward += float(cfg.get("low_energy_food_bonus", 0.0))
         if energy <= critical_threshold:
@@ -709,9 +732,15 @@ def main() -> None:
         f"device={device}, inference_device={inference_device}, wm_sampler={wm_sampler}"
     )
 
+    sm_cfg = _spatial_memory_config(config)
     for ep in range(start_episode, episodes):
         env = build_env(config, seed=args.seed + ep)
         observation = env.reset()
+        map_memory = None
+        if sm_cfg is not None:
+            map_memory = MapMemory(env.size, horizon=int(sm_cfg.get("horizon", 300)))
+            map_memory.observe(observation)
+            observation = map_memory.augment(observation)
         latent_state = agent.encoder.encode_tensor(observation)
         ep_reward = 0.0
         ep_steps = 0
@@ -732,6 +761,9 @@ def main() -> None:
             )
             action_index = agent.action_index[action]
             next_obs, reward_ext, done, info = env.step(action)
+            if map_memory is not None:
+                map_memory.observe(next_obs)
+                next_obs = map_memory.augment(next_obs)
             next_latent = agent.encoder.encode_tensor(next_obs)
             event = str(info.get("event", "unknown"))
             amount = int(info.get("event_amount", 0))

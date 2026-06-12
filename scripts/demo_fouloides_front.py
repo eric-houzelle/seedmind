@@ -556,10 +556,13 @@ class LiveFouloideWorldSource:
         self._thirst_start: int | None = None
         self._thirst_durations: deque = deque(maxlen=20)
         registry = self.session.env.registry
-        self._drink_events = {
-            registry[i].interact_event
-            for i in registry.drive_signal_ids("hydration")
-        }
+        if self.session.env.property_events:
+            self._drink_events = {"interact_hydration"}
+        else:
+            self._drink_events = {
+                registry[i].interact_event
+                for i in registry.drive_signal_ids("hydration")
+            }
         if (
             not fresh
             and checkpoint_path is not None
@@ -745,7 +748,9 @@ def main():
     parser.add_argument("--micro-checkpoint", default=DEFAULT_MICRO_CHECKPOINT)
     parser.add_argument("--micro-uncertainty-threshold", type=float, default=None)
     parser.add_argument(
-        "--live-config", default="configs/micro_fouloide_online_homeostatic.yaml",
+        "--live-config", default="configs/micro_fouloide_online_properties.yaml",
+        help="config phare (propriétés + mémoire spatiale + artefacts) ; "
+             "ancien cerveau incompatible → premier lancement avec --live-fresh",
     )
     parser.add_argument(
         "--live-checkpoint", default="runs/fouloide_live/checkpoint_live.pt",

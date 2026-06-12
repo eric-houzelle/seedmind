@@ -111,6 +111,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
         filter_noop_inventory: bool = False,
         inventory_enabled: bool = False,
         inventory_capacity: int = 3,
+        property_events: bool = False,
         registry: Optional[EntityRegistry] = None,
         entity_counts: Optional[Dict[str, int]] = None,
         seed: Optional[int] = None,
@@ -147,6 +148,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
         self.filter_noop_inventory = bool(filter_noop_inventory)
         self.inventory_enabled = bool(inventory_enabled)
         self.inventory_capacity = int(inventory_capacity)
+        self.property_events = bool(property_events)
         self.inventory: List[int] = []
         if self.inventory_enabled:
             self.actions: List[str] = [
@@ -333,7 +335,10 @@ class MicroFouloideWorld(EnvironmentAdapter):
         ], dtype=np.float32)
 
     def causal_event_names(self) -> List[str]:
-        return self.registry.causal_event_names(include_inventory=self.inventory_enabled)
+        return self.registry.causal_event_names(
+            include_inventory=self.inventory_enabled,
+            property_events=self.property_events,
+        )
 
     def step(self, action: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         self.steps += 1
@@ -424,7 +429,10 @@ class MicroFouloideWorld(EnvironmentAdapter):
                 setattr(self, drive, min(1.0, getattr(self, drive) + gain))
             self.grid[r, c] = EMPTY
             self._queue_regrowth(r, c, entity)
-            self._last_event = entity_type.interact_event
+            self._last_event = (
+                f"interact_{drive}" if self.property_events
+                else entity_type.interact_event
+            )
             self._last_event_amount = 1
         else:
             self._last_event = "interact_noop"

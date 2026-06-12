@@ -28,11 +28,13 @@ from scripts.run_micro_fouloide import (  # noqa: E402
     _comfort_config,
     _compact_obs,
     _learning_reward,
+    _spatial_memory_config,
     build_agent,
     build_env,
     causal_event_names,
     load_config,
 )
+from seedmind.agent.map_memory import MapMemory  # noqa: E402
 from seedmind.agent.curiosity import compute_prediction_error_tensor  # noqa: E402
 from seedmind.memory.experience_buffer import make_experience  # noqa: E402
 from seedmind.training.checkpointing import load_checkpoint, save_checkpoint  # noqa: E402
@@ -63,6 +65,14 @@ class OnlineFouloideSession:
 
         self.env = build_env(config, seed=seed)
         self.observation = self.env.reset()
+        sm_cfg = _spatial_memory_config(config)
+        self.map_memory = (
+            MapMemory(self.env.size, horizon=int(sm_cfg.get("horizon", 300)))
+            if sm_cfg is not None else None
+        )
+        if self.map_memory is not None:
+            self.map_memory.observe(self.observation)
+            self.observation = self.map_memory.augment(self.observation)
         self.latent_state = self.agent.encoder.encode_tensor(self.observation)
         self.lives = 1
         self.steps = 0
@@ -93,6 +103,9 @@ class OnlineFouloideSession:
         self.last_planner_used = bool(getattr(agent, "last_planner_used", False))
         action_index = agent.action_index[action]
         next_obs, reward_ext, done, info = env.step(action)
+        if self.map_memory is not None:
+            self.map_memory.observe(next_obs)
+            next_obs = self.map_memory.augment(next_obs)
         next_latent = agent.encoder.encode_tensor(next_obs)
         event = str(info.get("event", "unknown"))
 
@@ -140,6 +153,11 @@ class OnlineFouloideSession:
             self.life_steps = 0
             self.lives += 1
             self.observation = self.env.reset()
+            if self.map_memory is not None:
+                # La carte meurt avec l'individu (nouveau layout).
+                self.map_memory.reset()
+                self.map_memory.observe(self.observation)
+                self.observation = self.map_memory.augment(self.observation)
             self.latent_state = agent.encoder.encode_tensor(self.observation)
         return info
 
@@ -261,8 +279,14 @@ def main() -> None:
                 "wellbeing": float(np.mean(wellbeing_window)),
                 "planner_used_rate": float(np.mean(planner_window)),
                 "deaths": session.lives - 1,
-                "interact_water": int(event_counts.get("interact_water", 0)),
-                "interact_food": int(event_counts.get("interact_food", 0)),
+                "interact_water": int(
+                    event_counts.get("interact_water", 0)
+                    + event_counts.get("interact_hydration", 0)
+                ),
+                "interact_food": int(
+                    event_counts.get("interact_food", 0)
+                    + event_counts.get("interact_energy", 0)
+                ),
                 "interact_noop": int(event_counts.get("interact_noop", 0)),
                 "health_loss": int(event_counts.get("health_loss", 0)),
                 **{k: stats[k] for k in (

@@ -73,6 +73,20 @@ def test_event_names_with_inventory_extension():
     assert events[-1] == "death"
 
 
+def test_property_events_vocabulary_is_fixed():
+    small = default_registry()
+    big = load_registry({"env": {"entities": [
+        {"name": "berry", "consumable": {"drive": "energy", "gain": 0.2}},
+        {"name": "spring", "consumable": {"drive": "hydration", "gain": 0.3}},
+    ]}})
+    small_events = small.causal_event_names(property_events=True)
+    big_events = big.causal_event_names(property_events=True)
+    assert small_events == big_events  # ajouter des comestibles ne change rien
+    assert "interact_energy" in small_events
+    assert "interact_hydration" in small_events
+    assert "interact_food" not in small_events
+
+
 def test_recipes_load_and_resolve_names():
     registry = load_registry({"env": {
         "entities": [
