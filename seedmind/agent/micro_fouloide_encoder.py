@@ -24,19 +24,28 @@ def _qnet_channels(observation: Dict[str, Any], num_entities: int) -> np.ndarray
     return channels
 
 
-def _qnet_scalars(observation: Dict[str, Any], num_entities: int) -> np.ndarray:
+def _qnet_scalars(
+    observation: Dict[str, Any], num_entities: int, inventory: bool = False,
+) -> np.ndarray:
     drives = [float(observation.get(key, 0.0)) for key in _SCALAR_KEYS]
     standing = int(observation.get("standing_entity", 0))
     standing_onehot = np.zeros(num_entities, dtype=np.float32)
     if 0 <= standing < num_entities:
         standing_onehot[standing] = 1.0
-    return np.concatenate([
-        np.asarray(drives, dtype=np.float32),
-        standing_onehot,
-    ])
+    parts = [np.asarray(drives, dtype=np.float32), standing_onehot]
+    if inventory:
+        counts = np.zeros(num_entities, dtype=np.float32)
+        raw = observation.get("inventory")
+        if raw is not None:
+            raw = np.asarray(raw, dtype=np.float32).ravel()
+            counts[: min(len(raw), num_entities)] = raw[:num_entities]
+        parts.append(counts)
+    return np.concatenate(parts)
 
 
-def _observation_to_vector(observation: Dict[str, Any], num_entities: int) -> np.ndarray:
+def _observation_to_vector(
+    observation: Dict[str, Any], num_entities: int, inventory: bool = False,
+) -> np.ndarray:
     grid = np.asarray(observation["grid"], dtype=np.int64)
     onehot = np.zeros((grid.size, num_entities), dtype=np.float32)
     flat = grid.ravel()
@@ -44,11 +53,11 @@ def _observation_to_vector(observation: Dict[str, Any], num_entities: int) -> np
     onehot[np.arange(grid.size)[valid], flat[valid]] = 1.0
     return np.concatenate([
         onehot.reshape(-1),
-        _qnet_scalars(observation, num_entities),
+        _qnet_scalars(observation, num_entities, inventory=inventory),
     ])
 
 
-def make_micro_fouloide_obs_fns(num_entities: int) -> Tuple[
+def make_micro_fouloide_obs_fns(num_entities: int, inventory: bool = False) -> Tuple[
     Callable[[Dict[str, Any]], np.ndarray],
     Callable[[Sequence[Dict[str, Any]]], Tuple[torch.Tensor, torch.Tensor]],
     int,
@@ -56,19 +65,22 @@ def make_micro_fouloide_obs_fns(num_entities: int) -> Tuple[
 ]:
     """Observation encoders sized for a registry of ``num_entities`` entities.
 
-    Returns ``(obs_to_vec_fn, obs_batch_fn, num_channels, num_scalars)``.
+    ``inventory=True`` appends a per-entity inventory-count vector to the
+    scalars. Returns ``(obs_to_vec_fn, obs_batch_fn, num_channels, num_scalars)``.
     """
     n = int(num_entities)
+    inv = bool(inventory)
 
     def obs_to_vec(observation: Dict[str, Any]) -> np.ndarray:
-        return _observation_to_vector(observation, n)
+        return _observation_to_vector(observation, n, inventory=inv)
 
     def obs_batch(observations: Sequence[Dict[str, Any]]) -> Tuple[torch.Tensor, torch.Tensor]:
         channels = np.stack([_qnet_channels(o, n) for o in observations])
-        scalars = np.stack([_qnet_scalars(o, n) for o in observations])
+        scalars = np.stack([_qnet_scalars(o, n, inventory=inv) for o in observations])
         return torch.from_numpy(channels), torch.from_numpy(scalars)
 
-    return obs_to_vec, obs_batch, n, len(_SCALAR_KEYS) + n
+    num_scalars = len(_SCALAR_KEYS) + n + (n if inv else 0)
+    return obs_to_vec, obs_batch, n, num_scalars
 
 
 # ---------------------------------------------------------------------------

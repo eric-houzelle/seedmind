@@ -26,7 +26,7 @@ from seedmind.agent.q_network import QNetwork
 from seedmind.agent.value_model import ValueModel
 from seedmind.agent.world_model import WorldModel
 from seedmind.envs.entities import load_registry
-from seedmind.envs.micro_fouloide_world import ACTIONS, MicroFouloideWorld
+from seedmind.envs.micro_fouloide_world import MicroFouloideWorld
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.memory.persistent_memory import PersistentMemory
 from seedmind.objectives import build_objective_scorer
@@ -94,6 +94,9 @@ def build_env(config: dict, seed: int) -> MicroFouloideWorld:
         num_obstacles=int(ec.get("num_obstacles", 20)),
         filter_blocked_moves=bool(ec.get("filter_blocked_moves", False)),
         filter_noop_interact=bool(ec.get("filter_noop_interact", False)),
+        filter_noop_inventory=bool(ec.get("filter_noop_inventory", False)),
+        inventory_enabled=bool(ec.get("inventory", {}).get("enabled", False)),
+        inventory_capacity=int(ec.get("inventory", {}).get("capacity", 3)),
         registry=load_registry(config),
         entity_counts=ec,
         seed=seed,
@@ -142,7 +145,11 @@ def build_agent(config: dict, seed: int) -> Agent:
     grid_size = int(ec.get("size", 16))
     latent_dim = int(ac.get("latent_dim", 64))
     registry = load_registry(config)
-    obs_to_vec_fn, obs_batch_fn, num_channels, num_scalars = make_micro_fouloide_obs_fns(registry.size)
+    inventory_enabled = bool(ec.get("inventory", {}).get("enabled", False))
+    obs_to_vec_fn, obs_batch_fn, num_channels, num_scalars = make_micro_fouloide_obs_fns(
+        registry.size, inventory=inventory_enabled,
+    )
+    actions = _probe_env(config).actions
     input_dim = grid_size * grid_size * num_channels + num_scalars
     structured_latent_features = bool(ac.get("structured_latent_features", False))
     structured_feature_dim = len(causal_feature_names(config)) if structured_latent_features else 0
@@ -163,7 +170,7 @@ def build_agent(config: dict, seed: int) -> Agent:
     )
     world_model = WorldModel(
         latent_dim=latent_dim,
-        num_actions=len(ACTIONS),
+        num_actions=len(actions),
         hidden_dim=int(wmc.get("hidden_dim", 128)),
         num_layers=int(wmc.get("num_layers", 2)),
         causal_feature_dim=(
@@ -181,7 +188,7 @@ def build_agent(config: dict, seed: int) -> Agent:
     )
     q_network = QNetwork(
         grid_size=grid_size,
-        num_actions=len(ACTIONS),
+        num_actions=len(actions),
         conv_channels=int(dc.get("conv_channels", 64)),
         hidden_dim=int(dc.get("hidden_dim", 256)),
         num_grid_channels=num_channels,
@@ -210,7 +217,7 @@ def build_agent(config: dict, seed: int) -> Agent:
             seed=seed,
         ),
         memory=PersistentMemory(),
-        actions=list(ACTIONS),
+        actions=actions,
         memory_top_k=int(ac.get("memory_top_k", 5)),
         use_planner=planning_enabled,
         q_network=q_network,
@@ -242,7 +249,7 @@ def build_agent(config: dict, seed: int) -> Agent:
 
 
 def _compact_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    compact = {
         "grid": np.asarray(obs["grid"], dtype=np.int16),
         "standing_entity": int(obs.get("standing_entity", 0)),
         "energy": float(obs.get("energy", 0.0)),
@@ -250,6 +257,9 @@ def _compact_obs(obs: Dict[str, Any]) -> Dict[str, Any]:
         "temperature": float(obs.get("temperature", 0.5)),
         "health": float(obs.get("health", 0.0)),
     }
+    if "inventory" in obs:
+        compact["inventory"] = np.asarray(obs["inventory"], dtype=np.float32)
+    return compact
 
 
 def _save_metrics(path: Path, payload: Dict[str, Any]) -> None:
@@ -604,7 +614,7 @@ def main() -> None:
     if latent_policy_enabled:
         latent_q_network = LatentQNetwork(
             latent_dim=int(config.get("agent", {}).get("latent_dim", 64)),
-            num_actions=len(ACTIONS),
+            num_actions=len(agent.actions),
             hidden_dim=int(lpc.get("hidden_dim", 128)),
             num_layers=int(lpc.get("num_layers", 2)),
         ).to(device)
@@ -893,7 +903,7 @@ def main() -> None:
                     latent_dyna_losses = train_latent_dqn_dyna(
                         latent_q_network, target_latent_q_network, agent.world_model,
                         buffer, latent_q_optimizer,
-                        num_actions=len(ACTIONS),
+                        num_actions=len(agent.actions),
                         batch_size=int(latent_policy_dyna.get("batch_size", lpc.get("batch_size", q_batch))),
                         gamma=float(latent_policy_dyna.get("gamma", lpc.get("gamma", gamma))),
                         num_updates=int(latent_policy_dyna.get("updates_per_train", 1)),

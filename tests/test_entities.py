@@ -63,6 +63,25 @@ def test_world_without_registry_behaves_as_before():
     assert env.causal_event_names()[2:4] == ["interact_food", "interact_water"]
 
 
+def test_event_names_with_inventory_extension():
+    events = default_registry().causal_event_names(include_inventory=True)
+    idx = events.index("interact_noop")
+    assert events[idx + 1: idx + 9] == [
+        "pick_ok", "pick_noop", "drop_ok", "drop_noop",
+        "plant_ok", "plant_noop", "combine_ok", "combine_noop",
+    ]
+    assert events[-1] == "death"
+
+
+def test_registry_rejects_unknown_plantable_target():
+    with pytest.raises(ValueError):
+        load_registry({"env": {"entities": [{
+            "name": "ghost_seed",
+            "portable": True,
+            "plantable": {"becomes": "nonexistent"},
+        }]}})
+
+
 def test_registry_rejects_non_dense_ids():
     with pytest.raises(ValueError):
         EntityRegistry([

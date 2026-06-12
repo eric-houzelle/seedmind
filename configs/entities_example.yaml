@@ -5,13 +5,23 @@
 #     entities: configs/entities_example.yaml
 #     num_berry_bush: 5
 #
-# Propriétés disponibles : solid, consumable {drive, gain}, dangerous,
-# temperature_delta, count_key/default_count (placement), render (sprite
-# viewer : rock|danger|bath|apple|terrain_warm|terrain_cold|none).
+# Propriétés disponibles : solid, consumable {drive, gain}, portable,
+# plantable {becomes}, dangerous, temperature_delta, count_key/default_count
+# (placement), render (sprite viewer :
+# rock|danger|bath|apple|terrain_warm|terrain_cold|none).
+#
+# Chaîne découvrable (nécessite env.inventory.enabled: true) :
+# graine → PICK → PLANT → buisson → INTERACT (manger).
 
 entities:
   - name: berry_bush
     consumable: {drive: energy, gain: 0.15}
     count_key: num_berry_bush
+    default_count: 4
+    render: apple
+  - name: berry_seed
+    portable: true
+    plantable: {becomes: berry_bush}
+    count_key: num_berry_seed
     default_count: 4
     render: apple

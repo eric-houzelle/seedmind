@@ -116,9 +116,19 @@ class QNetwork(nn.Module):
         return self.q_values_tensor(observation).cpu().numpy().astype(np.float32)
 
     def make_scorer(
-        self, observation: Dict[str, Any], actions: List[str]
+        self,
+        observation: Dict[str, Any],
+        actions: List[str],
+        action_index: Optional[Dict[str, int]] = None,
     ) -> Callable[[str], float]:
-        """Return a scorer ``action -> Q-value`` for the epsilon-greedy policy."""
+        """Return a scorer ``action -> Q-value`` for the epsilon-greedy policy.
+
+        ``action_index`` must map action names to the network's output indices
+        (the *full* action space). Without it, indices are inferred by
+        enumerating ``actions`` — only correct when ``actions`` is the full,
+        unfiltered list (a filtered subset would misalign Q-values).
+        """
         values = self.q_values_tensor(observation).detach().cpu().numpy().astype(np.float32)
-        action_index = {a: i for i, a in enumerate(actions)}
+        if action_index is None:
+            action_index = {a: i for i, a in enumerate(actions)}
         return lambda action: float(values[action_index[action]])

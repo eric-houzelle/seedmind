@@ -116,7 +116,9 @@ class Agent:
         has_wm = self.use_planner and self.planning_weight > 0
 
         if has_q and has_wm:
-            q_scorer = self.q_network.make_scorer(observation, available_actions)
+            q_scorer = self.q_network.make_scorer(
+                observation, available_actions, action_index=self.action_index,
+            )
             current_features = (
                 self.causal_features_fn(observation)
                 if self.causal_features_fn is not None and observation is not None
@@ -143,7 +145,9 @@ class Agent:
                         for i, a in enumerate(available_actions)}
             scorer = lambda action: combined[action]
         elif has_q:
-            scorer = self.q_network.make_scorer(observation, available_actions)
+            scorer = self.q_network.make_scorer(
+                observation, available_actions, action_index=self.action_index,
+            )
         elif self.use_planner:
             current_features = (
                 self.causal_features_fn(observation)

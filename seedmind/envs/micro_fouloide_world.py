@@ -49,6 +49,10 @@ MOVE_DOWN = "MOVE_DOWN"
 MOVE_LEFT = "MOVE_LEFT"
 MOVE_RIGHT = "MOVE_RIGHT"
 INTERACT = "INTERACT"
+PICK = "PICK"
+DROP = "DROP"
+COMBINE = "COMBINE"
+PLANT = "PLANT"
 REST = "REST"
 WAIT = "WAIT"
 
@@ -56,6 +60,8 @@ ACTIONS: List[str] = [
     MOVE_UP, MOVE_DOWN, MOVE_LEFT, MOVE_RIGHT,
     INTERACT, REST, WAIT,
 ]
+
+INVENTORY_ACTIONS: List[str] = [PICK, DROP, COMBINE, PLANT]
 
 _MOVE_DELTAS = {
     MOVE_UP: (-1, 0),
@@ -102,6 +108,9 @@ class MicroFouloideWorld(EnvironmentAdapter):
         visibility_radius: Optional[int] = 4,
         filter_blocked_moves: bool = False,
         filter_noop_interact: bool = False,
+        filter_noop_inventory: bool = False,
+        inventory_enabled: bool = False,
+        inventory_capacity: int = 3,
         registry: Optional[EntityRegistry] = None,
         entity_counts: Optional[Dict[str, int]] = None,
         seed: Optional[int] = None,
@@ -135,6 +144,18 @@ class MicroFouloideWorld(EnvironmentAdapter):
         self.visibility_radius = visibility_radius
         self.filter_blocked_moves = bool(filter_blocked_moves)
         self.filter_noop_interact = bool(filter_noop_interact)
+        self.filter_noop_inventory = bool(filter_noop_inventory)
+        self.inventory_enabled = bool(inventory_enabled)
+        self.inventory_capacity = int(inventory_capacity)
+        self.inventory: List[int] = []
+        if self.inventory_enabled:
+            self.actions: List[str] = [
+                MOVE_UP, MOVE_DOWN, MOVE_LEFT, MOVE_RIGHT,
+                INTERACT, PICK, DROP, COMBINE, PLANT,
+                REST, WAIT,
+            ]
+        else:
+            self.actions = list(ACTIONS)
         if registry is None:
             registry = default_registry({
                 "food_energy_gain": self.food_energy_gain,
@@ -226,6 +247,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
         self._last_event_amount = 0
         self._last_health_delta = 0.0
         self._regrow_queue = []
+        self.inventory = []
         return self.observe()
 
     def observe(self) -> Dict[str, Any]:
@@ -239,7 +261,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
                 for col in range(self.size):
                     if abs(row - ar) + abs(col - ac) > self.visibility_radius:
                         view[row, col] = UNKNOWN
-        return {
+        observation = {
             "grid": view,
             "agent_pos": self.agent_pos,
             "standing_entity": standing_entity,
@@ -248,11 +270,17 @@ class MicroFouloideWorld(EnvironmentAdapter):
             "temperature": self.temperature,
             "health": self.health,
         }
+        if self.inventory_enabled:
+            counts = np.zeros(self.registry.size, dtype=np.float32)
+            for item in self.inventory:
+                counts[item] += 1.0
+            observation["inventory"] = counts / max(self.inventory_capacity, 1)
+        return observation
 
     def available_actions(self) -> List[str]:
         return [
             action
-            for action in ACTIONS
+            for action in self.actions
             if self._action_is_available(action)
         ]
 
@@ -261,6 +289,13 @@ class MicroFouloideWorld(EnvironmentAdapter):
             return False
         if self.filter_noop_interact and action == INTERACT and not self._can_interact():
             return False
+        if self.filter_noop_inventory:
+            if action == PICK and not self._can_pick():
+                return False
+            if action == DROP and not self._can_drop():
+                return False
+            if action == PLANT and not self._can_plant():
+                return False
         return True
 
     def causal_feature_names(self) -> List[str]:
@@ -296,7 +331,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
         ], dtype=np.float32)
 
     def causal_event_names(self) -> List[str]:
-        return self.registry.causal_event_names()
+        return self.registry.causal_event_names(include_inventory=self.inventory_enabled)
 
     def step(self, action: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         self.steps += 1
@@ -309,6 +344,14 @@ class MicroFouloideWorld(EnvironmentAdapter):
             self._try_move(action)
         elif action == INTERACT:
             self._try_interact()
+        elif action == PICK:
+            self._try_pick()
+        elif action == DROP:
+            self._try_drop()
+        elif action == PLANT:
+            self._try_plant()
+        elif action == COMBINE:
+            self._try_combine()
         elif action == REST:
             self._last_event = "rest"
         elif action == WAIT:
@@ -383,6 +426,68 @@ class MicroFouloideWorld(EnvironmentAdapter):
             self._last_event_amount = 1
         else:
             self._last_event = "interact_noop"
+
+    # ------------------------------------------------------------------
+    # Inventory actions (A2) — property-driven, no entity-specific code
+    # ------------------------------------------------------------------
+    def _can_pick(self) -> bool:
+        r, c = self.agent_pos
+        entity_type = self.registry.get(int(self.grid[r, c]))
+        return (
+            entity_type is not None
+            and entity_type.portable
+            and len(self.inventory) < self.inventory_capacity
+        )
+
+    def _can_drop(self) -> bool:
+        r, c = self.agent_pos
+        return bool(self.inventory) and int(self.grid[r, c]) == EMPTY
+
+    def _can_plant(self) -> bool:
+        if not self.inventory:
+            return False
+        r, c = self.agent_pos
+        held = self.registry.get(self.inventory[-1])
+        return (
+            held is not None
+            and held.plantable is not None
+            and int(self.grid[r, c]) == EMPTY
+        )
+
+    def _try_pick(self) -> None:
+        if not self._can_pick():
+            self._last_event = "pick_noop"
+            return
+        r, c = self.agent_pos
+        self.inventory.append(int(self.grid[r, c]))
+        self.grid[r, c] = EMPTY
+        self._last_event = "pick_ok"
+        self._last_event_amount = 1
+
+    def _try_drop(self) -> None:
+        if not self._can_drop():
+            self._last_event = "drop_noop"
+            return
+        r, c = self.agent_pos
+        self.grid[r, c] = self.inventory.pop()
+        self._last_event = "drop_ok"
+        self._last_event_amount = 1
+
+    def _try_plant(self) -> None:
+        if not self._can_plant():
+            self._last_event = "plant_noop"
+            return
+        r, c = self.agent_pos
+        held = self.registry.get(self.inventory.pop())
+        becomes = self.registry.by_name(str(held.plantable["becomes"]))
+        self.grid[r, c] = becomes.id
+        self._last_event = "plant_ok"
+        self._last_event_amount = 1
+
+    def _try_combine(self) -> None:
+        # Recipe engine lands in A4; the action and its events are reserved
+        # now so inventory-enabled brains survive that upgrade.
+        self._last_event = "combine_noop"
 
     def _queue_regrowth(self, r: int, c: int, entity: int) -> None:
         if self.resource_regrow_steps > 0:

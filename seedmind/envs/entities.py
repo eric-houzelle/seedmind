@@ -23,6 +23,8 @@ class EntityType:
     name: str
     solid: bool = False              # blocks movement
     consumable: Optional[Dict[str, Any]] = None  # {"drive": "energy"|"hydration", "gain": float}
+    portable: bool = False           # can be picked up into the inventory
+    plantable: Optional[Dict[str, Any]] = None   # {"becomes": "<entity name>"} when planted
     dangerous: float = 0.0           # health damage per step standing on it
     temperature_delta: float = 0.0   # per-step temperature drift (warm > 0, cold < 0)
     structural: bool = False         # EMPTY/AGENT/UNKNOWN: never placed nor interacted
@@ -51,6 +53,14 @@ class EntityRegistry:
             raise ValueError(f"Duplicate entity names in registry: {names}")
         self._entities: List[EntityType] = by_id
         self._by_name: Dict[str, EntityType] = {e.name: e for e in by_id}
+        for entity in by_id:
+            if entity.plantable is not None:
+                becomes = entity.plantable.get("becomes")
+                if becomes not in self._by_name:
+                    raise ValueError(
+                        f"Entity {entity.name!r}: plantable.becomes references "
+                        f"unknown entity {becomes!r}."
+                    )
 
     def __len__(self) -> int:
         return len(self._entities)
@@ -89,6 +99,10 @@ class EntityRegistry:
         return {e.id for e in self._entities if e.dangerous > 0.0}
 
     @property
+    def portable_ids(self) -> set:
+        return {e.id for e in self._entities if e.portable}
+
+    @property
     def heat_ids(self) -> set:
         return {e.id for e in self._entities if e.temperature_delta != 0.0}
 
@@ -110,12 +124,21 @@ class EntityRegistry:
     # ------------------------------------------------------------------
     # Causal event vocabulary (order matters: WM event_index depends on it)
     # ------------------------------------------------------------------
-    def causal_event_names(self) -> List[str]:
+    def causal_event_names(self, include_inventory: bool = False) -> List[str]:
+        inventory_events = (
+            [
+                "pick_ok", "pick_noop", "drop_ok", "drop_noop",
+                "plant_ok", "plant_noop", "combine_ok", "combine_noop",
+            ]
+            if include_inventory else []
+        )
         return (
             ["move_ok", "move_blocked"]
             + [e.interact_event for e in self.consumables]
+            + ["interact_noop"]
+            + inventory_events
             + [
-                "interact_noop", "rest", "wait",
+                "rest", "wait",
                 "temperature_up", "temperature_down",
                 "damage", "health_loss", "death",
             ]
@@ -171,7 +194,8 @@ def default_registry(env_cfg: Optional[Dict[str, Any]] = None) -> EntityRegistry
 # ---------------------------------------------------------------------------
 
 _ENTITY_FIELDS = {
-    "id", "name", "solid", "consumable", "dangerous", "temperature_delta",
+    "id", "name", "solid", "consumable", "portable", "plantable",
+    "dangerous", "temperature_delta",
     "structural", "count_key", "default_count", "render",
 }
 

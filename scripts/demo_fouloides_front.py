@@ -625,6 +625,10 @@ class LiveFouloideWorldSource:
             "life_steps": self.session.life_steps,
             "best_life_steps": self.session.best_life_steps,
         }
+        if self.session.env.inventory_enabled:
+            stats["inventory"] = (
+                f"{len(self.session.env.inventory)}/{self.session.env.inventory_capacity}"
+            )
         thirst_label = (
             f"{stats['thirst_to_water_avg']:.0f}" if stats["thirst_to_water_avg"] is not None
             else "—"
@@ -632,11 +636,12 @@ class LiveFouloideWorldSource:
         record_label = (
             f"{stats['best_life_steps']}" if stats["best_life_steps"] > 0 else "—"
         )
+        sack_label = f" sac {stats['inventory']}" if "inventory" in stats else ""
         objective = (
             f"{LIVE_OBJECTIVE}  bien-\u00eatre {stats['wellbeing']:.2f} "
             f"HP {stats['health']:.2f} H2O {stats['hydration']:.2f} E {stats['energy']:.2f}"
             f"  |  vie n\u00b0{stats['life']} : {stats['life_steps']} steps "
-            f"(record {record_label})"
+            f"(record {record_label}){sack_label}"
             f"  |  soif\u2192eau {thirst_label} wm_loss {stats['wm_loss']:.3f} "
             f"planner {stats['planner_used']:.2f} "
             f"eps {stats['epsilon']:.2f} step {stats['step']}"
