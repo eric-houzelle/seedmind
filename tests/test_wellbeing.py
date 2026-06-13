@@ -51,3 +51,9 @@ def test_wellbeing_penalizes_temperature_distance_from_target():
 def test_wellbeing_is_zero_at_extreme_deprivation():
     drives = {"energy": 0.0, "hydration": 0.0, "temperature": 1.0, "health": 0.0}
     assert wellbeing(drives, COMFORT) == pytest.approx(0.0)
+
+
+def test_wellbeing_can_require_all_vital_drives_to_be_viable():
+    comfort = dict(COMFORT, aggregation="mean_min_product")
+    drives = {"energy": 0.8, "hydration": 0.0, "temperature": 0.5, "health": 1.0}
+    assert wellbeing(drives, comfort) == pytest.approx(0.0)

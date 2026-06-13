@@ -58,4 +58,9 @@ def wellbeing(drives: Mapping[str, Any], comfort: Optional[Mapping[str, Any]] = 
         low=max(0.0, target - tolerance),
         high=min(1.0, target + tolerance),
     ))
-    return float(np.mean(scores))
+    mean_score = float(np.mean(scores))
+    if str(comfort.get("aggregation", "mean")) == "mean_min_product":
+        # Homeostatic viability is conjunctive: a single collapsed vital drive
+        # cannot be compensated by the others.
+        return mean_score * float(min(scores))
+    return mean_score

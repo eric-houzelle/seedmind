@@ -106,9 +106,10 @@ drive_reward:
   mode: absolute
   comfort:
     enabled: true
+    aggregation: mean_min_product
     energy: {low: 0.5, high: 1.0}
     hydration: {low: 0.5, high: 1.0}
-    health: {low: 0.6, high: 1.0}
+    health: {low: 0.95, high: 1.0}
     temperature: {target: 0.5, tolerance: 0.15}
 
 resource_reward:
