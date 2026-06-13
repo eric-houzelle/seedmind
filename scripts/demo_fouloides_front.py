@@ -24,7 +24,7 @@ import asyncio
 import json
 import random
 import sys
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import Any, Dict, List, Protocol, Set, Tuple
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -564,6 +564,8 @@ class LiveFouloideWorldSource:
         self.session = OnlineFouloideSession(config, seed=int(seed), device=device)
         self.planner_window: deque = deque(maxlen=500)
         self.wellbeing_window: deque = deque(maxlen=500)
+        self.action_window: deque = deque(maxlen=500)
+        self.event_window: deque = deque(maxlen=500)
         self.checkpoint_path = checkpoint_path
         self.checkpoint_every = int(checkpoint_every)
         self.resumed_steps = 0
@@ -616,6 +618,8 @@ class LiveFouloideWorldSource:
             self.session.save(self.checkpoint_path)
         self.planner_window.append(int(self.session.last_planner_used))
         self.wellbeing_window.append(float(self.session.last_wellbeing))
+        self.action_window.append(str(self.session.last_action))
+        self.event_window.append(str(info.get("event", "unknown")))
         self._track_thirst(info)
         learn = self.session.learner.stats()
         grid = self.env.grid
@@ -643,7 +647,39 @@ class LiveFouloideWorldSource:
             ),
             "life_steps": self.session.life_steps,
             "best_life_steps": self.session.best_life_steps,
+            "action": str(self.session.last_action),
         }
+        action_counts = Counter(self.action_window)
+        event_counts = Counter(self.event_window)
+        action_denom = max(len(self.action_window), 1)
+        event_denom = max(len(self.event_window), 1)
+        stats.update({
+            "move_rate": round(
+                sum(action_counts[a] for a in ("MOVE_UP", "MOVE_DOWN", "MOVE_LEFT", "MOVE_RIGHT"))
+                / action_denom,
+                3,
+            ),
+            "passive_rate": round(
+                sum(action_counts[a] for a in ("REST", "WAIT")) / action_denom,
+                3,
+            ),
+            "drink_rate": round(
+                sum(event_counts[e] for e in ("interact_water", "interact_hydration"))
+                / event_denom,
+                3,
+            ),
+            "eat_rate": round(
+                sum(event_counts[e] for e in ("interact_food", "interact_energy", "interact_berry_bush"))
+                / event_denom,
+                3,
+            ),
+            "artifact_rate": round(
+                sum(event_counts[e] for e in ("pick_ok", "plant_ok", "combine_ok"))
+                / event_denom,
+                3,
+            ),
+            "blocked_rate": round(float(event_counts["move_blocked"]) / event_denom, 3),
+        })
         if self.session.env.inventory_enabled:
             stats["inventory"] = (
                 f"{len(self.session.env.inventory)}/{self.session.env.inventory_capacity}"
@@ -664,6 +700,9 @@ class LiveFouloideWorldSource:
             f"  |  soif\u2192eau {thirst_label} wm_loss {stats['wm_loss']:.3f} "
             f"planner {stats['planner_used']:.2f} "
             f"eps {stats['epsilon']:.2f} step {stats['step']}"
+            f"  |  act {stats['action']} move {stats['move_rate']:.0%} "
+            f"passif {stats['passive_rate']:.0%} boire {stats['drink_rate']:.1%} "
+            f"manger {stats['eat_rate']:.1%} obj {stats['artifact_rate']:.1%}"
         )
         return {
             "type": "step",

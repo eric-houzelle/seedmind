@@ -4528,8 +4528,9 @@ centrale ; l'objectif devient la démo d'apprentissage **visible en live**.
 **Implémenté (commits `0bdc979` → `c6059ad`, issues seedmind-rdb/dpy/bxh/bvt/pvg) :**
 
 - *Monde doux persistant* (`micro_fouloide_world.py`, opt-in rétro-compatible) :
-  `soft_death` (drives critiques ⇒ santé plancher 0.20, états dégradés ; seul
-  le DANGER répété tue ; régénération quand les drives vont bien),
+  `soft_death` (drives critiques ⇒ santé plancher 0.20 pendant une grâce
+  bornée, puis la faim/soif peuvent tuer ; régénération quand les drives vont
+  bien),
   `resource_regrow_steps` (repousse sur place ⇒ géographie stable, routines
   possibles), `max_steps: 0` (monde infini, plus de resets).
 - *Bien-être* (`seedmind/training/wellbeing.py`) : zones de confort par drive
@@ -4592,6 +4593,15 @@ carte égocentrique apprise, remplie par le vécu, en canaux d'entrée de
 l'encodeur (seedmind-cfg). Ensuite : reproduction/population (phase 2 de la
 vision).
 
+**Ajustement live suivant (2026-06-13).** La démo `online_properties` ne doit
+pas valider une survie artificielle à `HP=0.20` avec `E=0/H2O=0`. Le plancher
+devient une fenêtre d'apprentissage (`soft_death_grace_steps: 300`) : assez
+longue pour apprendre en ligne, mais finie. Après expiration, la privation
+continue tue réellement. En parallèle, la curiosité est relevée et les actions
+d'objets (`pick/plant/combine`) reçoivent un signal positif/négatif explicite ;
+le HUD affiche aussi les taux roulants mouvement/passivité/boire/manger/objet
+pour vérifier si le fouloïde explore ou s'immobilise.
+
 ```bash
 # Démo live (agent vierge, cerveau persistant auto-repris)
 python scripts/demo_fouloides_front.py --source live --tick-ms 60
@@ -4599,7 +4609,7 @@ python scripts/demo_fouloides_front.py --source live --tick-ms 60
 
 # Validation headless
 python scripts/run_fouloide_online.py \
-  --config configs/micro_fouloide_online_homeostatic.yaml \
+  --config configs/micro_fouloide_online_properties.yaml \
   --steps 100000 --seed 1
 ```
 

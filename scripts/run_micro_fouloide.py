@@ -89,6 +89,12 @@ def build_env(config: dict, seed: int) -> MicroFouloideWorld:
         soft_death=bool(ec.get("soft_death", False)),
         health_floor=float(ec.get("health_floor", 0.05)),
         health_regen=float(ec.get("health_regen", 0.01)),
+        soft_death_grace_steps=int(ec.get("soft_death_grace_steps", 0)),
+        critical_kill_health_decay=(
+            float(ec["critical_kill_health_decay"])
+            if "critical_kill_health_decay" in ec
+            else None
+        ),
         resource_regrow_steps=int(ec.get("resource_regrow_steps", 0)),
         num_food=int(ec.get("num_food", 10)),
         num_water=int(ec.get("num_water", 8)),

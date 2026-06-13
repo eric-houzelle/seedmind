@@ -79,6 +79,7 @@ class OnlineFouloideSession:
         self.life_steps = 0
         self.best_life_steps = 0
         self.last_info: Dict[str, Any] = {"drives": dict(self.observation_drives()), "event": "reset"}
+        self.last_action = "reset"
         self.last_planner_used = False
         self.last_wellbeing = wellbeing(self.last_info["drives"], self.comfort)
 
@@ -100,6 +101,7 @@ class OnlineFouloideSession:
             latent_np, goal, memories, env.available_actions(),
             observation=self.observation,
         )
+        self.last_action = action
         self.last_planner_used = bool(getattr(agent, "last_planner_used", False))
         action_index = agent.action_index[action]
         next_obs, reward_ext, done, info = env.step(action)

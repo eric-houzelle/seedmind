@@ -98,6 +98,8 @@ class MicroFouloideWorld(EnvironmentAdapter):
         soft_death: bool = False,
         health_floor: float = 0.05,
         health_regen: float = 0.01,
+        soft_death_grace_steps: int = 0,
+        critical_kill_health_decay: Optional[float] = None,
         resource_regrow_steps: int = 0,
         num_food: int = 10,
         num_water: int = 8,
@@ -135,6 +137,12 @@ class MicroFouloideWorld(EnvironmentAdapter):
         self.soft_death = bool(soft_death)
         self.health_floor = float(health_floor)
         self.health_regen = float(health_regen)
+        self.soft_death_grace_steps = int(soft_death_grace_steps)
+        self.critical_kill_health_decay = (
+            float(critical_kill_health_decay)
+            if critical_kill_health_decay is not None
+            else self.health_decay
+        )
         self.resource_regrow_steps = int(resource_regrow_steps)
         self.num_food = int(num_food)
         self.num_water = int(num_water)
@@ -181,6 +189,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
         self._last_event = "reset"
         self._last_event_amount = 0
         self._last_health_delta = 0.0
+        self._critical_drive_steps = 0
         self._regrow_queue: List[Tuple[int, int, int, int]] = []
 
         self.reset()
@@ -248,6 +257,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
         self._last_event = "reset"
         self._last_event_amount = 0
         self._last_health_delta = 0.0
+        self._critical_drive_steps = 0
         self._regrow_queue = []
         self.inventory = []
         return self.observe()
@@ -585,10 +595,23 @@ class MicroFouloideWorld(EnvironmentAdapter):
             or self.temperature >= 1.0 - self.critical_threshold
         )
         if critical:
+            self._critical_drive_steps += 1
             if self.soft_death:
                 # Degraded state: critical drives erode health down to a floor,
-                # only danger tiles can take health below it.
-                if self.health > self.health_floor:
+                # then, optionally, keep only a bounded grace period before
+                # starvation/dehydration can kill.
+                grace_expired = (
+                    self.soft_death_grace_steps > 0
+                    and self._critical_drive_steps > self.soft_death_grace_steps
+                )
+                if grace_expired:
+                    self.health = max(
+                        0.0,
+                        self.health - self.critical_kill_health_decay,
+                    )
+                    if self._last_event not in {"damage", "death"}:
+                        self._last_event = "health_loss"
+                elif self.health > self.health_floor:
                     self.health = max(self.health_floor, self.health - self.health_decay)
                     if self._last_event not in {"damage", "death"}:
                         self._last_event = "health_loss"
@@ -596,8 +619,10 @@ class MicroFouloideWorld(EnvironmentAdapter):
                 self.health = max(0.0, self.health - self.health_decay)
                 if self._last_event not in {"damage", "death"}:
                     self._last_event = "health_loss"
-        elif self.soft_death and dangerous == 0.0 and self.health < self.health_start:
-            self.health = min(self.health_start, self.health + self.health_regen)
+        else:
+            self._critical_drive_steps = 0
+            if self.soft_death and dangerous == 0.0 and self.health < self.health_start:
+                self.health = min(self.health_start, self.health + self.health_regen)
         self._last_health_delta = self.health - health_before
 
     def describe_transition(self) -> str:
