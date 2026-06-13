@@ -701,7 +701,7 @@ class LiveFouloideWorldSource:
             f"  |  soif\u2192eau {thirst_label} wm_loss {stats['wm_loss']:.3f} "
             f"planner {stats['planner_used']:.2f} "
             f"eps {stats['epsilon']:.2f} step {stats['step']}"
-            f"  |  act {stats['action']} move {stats['move_rate']:.0%} "
+            f"  |  move {stats['move_rate']:.0%} "
             f"passif {stats['passive_rate']:.0%} boire {stats['drink_rate']:.1%} "
             f"manger {stats['eat_rate']:.1%} obj {stats['artifact_rate']:.1%}"
         )
