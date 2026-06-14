@@ -118,8 +118,8 @@ resource_reward:
   low_threshold: 0.35
   critical_threshold: 0.18
   event_rewards:
-    interact_hydration: 0.10
-    interact_energy: 0.06
+    interact_hydration: 0.35
+    interact_energy: 0.25
     interact_noop: -0.08
     pick_ok: 0.04
     plant_ok: 0.08
@@ -129,11 +129,12 @@ resource_reward:
     combine_noop: -0.04
     move_blocked: -0.03
     damage: -0.08
-    health_loss: -0.12
-  low_hydration_water_bonus: 0.45
-  critical_hydration_water_bonus: 0.70
-  low_energy_food_bonus: 0.25
-  critical_energy_food_bonus: 0.40
+    health_loss: -0.30
+    death: -1.00
+  low_hydration_water_bonus: 0.90
+  critical_hydration_water_bonus: 1.40
+  low_energy_food_bonus: 0.55
+  critical_energy_food_bonus: 0.90
   # Bonus "signal" supprimés : rente farmable sans échéance de mort — l'agent
   # tournait autour de l'eau éternellement assoiffé sans boire (seedmind-pvg).
   # Les bonus de consommation (one-shot, non farmables) suffisent.
@@ -147,12 +148,12 @@ policy:
 
 planning:
   enabled: true
-  weight: 0.25
+  weight: 0.08
   horizon: 5
   num_samples: 8
   terminal_value_weight: 1.0
-  margin_threshold: 0.01
-  q_advantage_threshold: 0.02
+  margin_threshold: 0.05
+  q_advantage_threshold: 0.15
   # uncertainty_threshold piloté en ligne par OnlineLearner (quantile glissant)
 
 dqn:
@@ -171,7 +172,7 @@ dqn:
 online:
   update_every: 8           # un cycle d'apprentissage tous les 8 steps env
   updates_per_cycle: 4      # minibatchs WM/DQN/Value par cycle
-  warmup_steps: 2000        # planner fermé avant ce cap
+  warmup_steps: 12000       # planner fermé longtemps : Q apprend d'abord du réel
   threshold_refresh_steps: 500
-  threshold_quantile: 0.60
+  threshold_quantile: 0.35
   threshold_samples: 2000

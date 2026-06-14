@@ -4602,6 +4602,14 @@ d'objets (`pick/plant/combine`) reçoivent un signal positif/négatif explicite 
 le HUD affiche aussi les taux roulants mouvement/passivité/boire/manger/objet
 pour vérifier si le fouloïde explore ou s'immobilise.
 
+**Ajustement du 2026-06-14.** Le passage au bien-être strict a rendu la démo
+plus honnête mais trop dure : à ~61k steps, vie 131, record 1271, l'agent
+était à `bien-être=0`, `E=0/H2O=0`, buvait/mangeait ~0.4 % du temps, avec
+~29 % de blocages et un planner utilisé ~94 %. Diagnostic : le planner online
+prenait trop tôt le contrôle avec un WM encore mauvais. Fix : planner plus
+conservateur (`warmup_steps: 12000`, quantile 0.35, poids 0.08, marges plus
+strictes) et signal de survie plus net pour boire/manger/perte de HP/mort.
+
 ```bash
 # Démo live (agent vierge, cerveau persistant auto-repris)
 python scripts/demo_fouloides_front.py --source live --tick-ms 60
