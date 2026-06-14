@@ -807,12 +807,12 @@ def main():
     parser.add_argument("--micro-checkpoint", default=DEFAULT_MICRO_CHECKPOINT)
     parser.add_argument("--micro-uncertainty-threshold", type=float, default=None)
     parser.add_argument(
-        "--live-config", default="configs/micro_fouloide_online_properties.yaml",
-        help="config phare (propriétés + mémoire spatiale + artefacts) ; "
-             "ancien cerveau incompatible → premier lancement avec --live-fresh",
+        "--live-config", default="configs/micro_fouloide_online_homeostatic.yaml",
+        help="config live de reconstruction incrémentale ; passer "
+             "configs/micro_fouloide_online_properties.yaml pour la branche riche gelée",
     )
     parser.add_argument(
-        "--live-checkpoint", default="runs/fouloide_live/checkpoint_live.pt",
+        "--live-checkpoint", default="runs/fouloide_live_homeostatic/checkpoint_live.pt",
         help="cerveau persistant du fouloïde live (auto-repris s'il existe)",
     )
     parser.add_argument(

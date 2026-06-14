@@ -4726,6 +4726,14 @@ Critères minimum avant chaque ajout : `bien-être_avg` remonte et reste haut,
 `boire` et `manger` restent non nuls, `soif→eau` baisse, et le record progresse
 sans camping au plancher `HP=0.20`.
 
+**Branche de reprise :** `codex-homeostasis-rebuild` repart de ce gel mais
+repointe le mode live par défaut vers
+`configs/micro_fouloide_online_homeostatic.yaml` avec un checkpoint séparé
+`runs/fouloide_live_homeostatic/checkpoint_live.pt`. La config riche reste
+exécutable explicitement via `--live-config
+configs/micro_fouloide_online_properties.yaml`, mais n'est plus le chemin par
+défaut de reconstruction.
+
 ---
 
 ## 9. Demo front fouloïdes (préparation)
