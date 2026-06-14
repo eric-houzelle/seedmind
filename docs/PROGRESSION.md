@@ -4703,6 +4703,29 @@ active aussi les filtres d'actions physiquement inutiles (`move_blocked`,
 `interact_noop`, inventaire impossible) afin que l'exploration aléatoire
 produise plus souvent des expériences informatives sans écrire la stratégie.
 
+**Gel de branche `sandbox-world` (14 juin 2026).** Verdict de la démo riche
+online : **échec partiel à ne pas masquer**. Malgré les garde-fous, à ~39k
+steps la vie 60 affiche `record=6584`, `HP=0.20`, `E=0.00`, `H2O=0.00`,
+`bien-être=0.00`, `bien-être_avg=0.158`, `boire=0.0%` sur la fenêtre récente
+et `manger=0.2%`. C'est très inférieur au baseline homéostatique précédent
+(`configs/micro_fouloide_online_homeostatic.yaml`) qui atteignait 40k+ steps et
+un bien-être stable `0.96-0.98` à exploration faible. Conclusion : la branche
+actuelle est conservée comme témoin de régression riche. La suite se fait sur
+une nouvelle branche dédiée : repartir du monde `online_homeostatic` validé,
+puis réintroduire **une nouveauté à la fois** avec critères de passage
+explicites :
+
+1. baseline homéostatique 16×16 inchangée ;
+2. carte plus grande seule ;
+3. mémoire spatiale seule ;
+4. regrowth non exploitable (respawn non fixe si besoin) ;
+5. entités/propriétés visibles sans actions d'artefacts ;
+6. actions `PICK/DROP/PLANT/COMBINE` après stabilité.
+
+Critères minimum avant chaque ajout : `bien-être_avg` remonte et reste haut,
+`boire` et `manger` restent non nuls, `soif→eau` baisse, et le record progresse
+sans camping au plancher `HP=0.20`.
+
 ---
 
 ## 9. Demo front fouloïdes (préparation)
