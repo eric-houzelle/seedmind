@@ -649,6 +649,7 @@ class LiveFouloideWorldSource:
             "life_steps": self.session.life_steps,
             "best_life_steps": self.session.best_life_steps,
             "action": str(self.session.last_action),
+            "artifact_unlocked": bool(self.session.artifact_actions_unlocked),
         }
         action_counts = Counter(self.action_window)
         event_counts = Counter(self.event_window)
@@ -693,12 +694,13 @@ class LiveFouloideWorldSource:
             f"{stats['best_life_steps']}" if stats["best_life_steps"] > 0 else "—"
         )
         sack_label = f" sac {stats['inventory']}" if "inventory" in stats else ""
+        phase_label = "objets" if stats["artifact_unlocked"] else "survie"
         objective = (
             f"{LIVE_OBJECTIVE}  bien-\u00eatre {stats['wellbeing']:.2f} "
             f"HP {stats['health']:.2f} H2O {stats['hydration']:.2f} E {stats['energy']:.2f}"
             f"  |  vie n\u00b0{stats['life']} : {stats['life_steps']} steps "
             f"(record {record_label}){sack_label}"
-            f"  |  soif\u2192eau {thirst_label} wm_loss {stats['wm_loss']:.3f} "
+            f"  |  phase {phase_label} soif\u2192eau {thirst_label} wm_loss {stats['wm_loss']:.3f} "
             f"planner {stats['planner_used']:.2f} "
             f"eps {stats['epsilon']:.2f} step {stats['step']}"
             f"  |  move {stats['move_rate']:.0%} "

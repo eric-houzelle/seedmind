@@ -36,12 +36,77 @@ from scripts.run_micro_fouloide import (  # noqa: E402
 )
 from seedmind.agent.map_memory import MapMemory  # noqa: E402
 from seedmind.agent.curiosity import compute_prediction_error_tensor  # noqa: E402
+from seedmind.envs.micro_fouloide_world import COMBINE, DROP, PICK, PLANT  # noqa: E402
 from seedmind.memory.experience_buffer import make_experience  # noqa: E402
 from seedmind.training.checkpointing import load_checkpoint, save_checkpoint  # noqa: E402
 from seedmind.training.device import resolve_device  # noqa: E402
 from seedmind.training.latent_utils import latent_to_numpy  # noqa: E402
 from seedmind.training.online import OnlineLearner  # noqa: E402
 from seedmind.training.wellbeing import wellbeing  # noqa: E402
+
+
+ARTIFACT_ACTIONS = frozenset({PICK, DROP, PLANT, COMBINE})
+
+
+def _curriculum_cfg(config: dict[str, Any]) -> dict[str, Any]:
+    cfg = config.get("action_curriculum")
+    if cfg is None:
+        cfg = config.get("online", {}).get("action_curriculum", {})
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def artifact_actions_unlocked(
+    config: dict[str, Any],
+    steps: int,
+    recent_wellbeing: deque[float],
+    recent_events: deque[str],
+) -> bool:
+    """Return whether object manipulation should be exposed to the policy."""
+    cfg = _curriculum_cfg(config)
+    if not bool(cfg.get("enabled", False)):
+        return True
+
+    if steps < int(cfg.get("unlock_after_steps", 0)):
+        return False
+
+    min_samples = int(cfg.get("min_recent_samples", 0))
+    if min_samples > 0 and len(recent_wellbeing) < min_samples:
+        return False
+
+    min_wellbeing = cfg.get("min_recent_wellbeing")
+    if min_wellbeing is not None:
+        if not recent_wellbeing:
+            return False
+        if float(np.mean(recent_wellbeing)) < float(min_wellbeing):
+            return False
+
+    counts = Counter(recent_events)
+    if counts["interact_hydration"] + counts["interact_water"] < int(
+        cfg.get("min_recent_hydration_events", 0)
+    ):
+        return False
+    if counts["interact_energy"] + counts["interact_food"] + counts["interact_berry_bush"] < int(
+        cfg.get("min_recent_energy_events", 0)
+    ):
+        return False
+    return True
+
+
+def curriculum_available_actions(
+    actions: list[str],
+    config: dict[str, Any],
+    steps: int,
+    recent_wellbeing: deque[float],
+    recent_events: deque[str],
+) -> tuple[list[str], bool]:
+    """Filter high-level artifact actions until basic homeostasis is visible."""
+    unlocked = artifact_actions_unlocked(config, steps, recent_wellbeing, recent_events)
+    if unlocked:
+        return list(actions), True
+    cfg = _curriculum_cfg(config)
+    blocked = set(cfg.get("artifact_actions", ARTIFACT_ACTIONS))
+    filtered = [action for action in actions if action not in blocked]
+    return (filtered if filtered else list(actions)), False
 
 
 class OnlineFouloideSession:
@@ -82,6 +147,11 @@ class OnlineFouloideSession:
         self.last_action = "reset"
         self.last_planner_used = False
         self.last_wellbeing = wellbeing(self.last_info["drives"], self.comfort)
+        self.recent_wellbeing: deque[float] = deque(maxlen=1000)
+        self.recent_events: deque[str] = deque(maxlen=1000)
+        self.artifact_actions_unlocked = artifact_actions_unlocked(
+            self.config, self.steps, self.recent_wellbeing, self.recent_events
+        )
 
     def observation_drives(self) -> Dict[str, float]:
         return {
@@ -97,8 +167,15 @@ class OnlineFouloideSession:
         latent_np = latent_to_numpy(self.latent_state)
         memories = agent.retrieve(latent_np)
         goal = agent.choose_goal(latent_np, memories)
+        available_actions, self.artifact_actions_unlocked = curriculum_available_actions(
+            env.available_actions(),
+            self.config,
+            self.steps,
+            self.recent_wellbeing,
+            self.recent_events,
+        )
         action = agent.choose_action(
-            latent_np, goal, memories, env.available_actions(),
+            latent_np, goal, memories, available_actions,
             observation=self.observation,
         )
         self.last_action = action
@@ -148,6 +225,8 @@ class OnlineFouloideSession:
         self.latent_state = next_latent
         self.last_info = info
         self.last_wellbeing = wellbeing(info.get("drives", {}), self.comfort)
+        self.recent_wellbeing.append(float(self.last_wellbeing))
+        self.recent_events.append(event)
 
         self.life_steps += 1
         if done:

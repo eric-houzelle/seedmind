@@ -31,6 +31,9 @@ env:
   critical_kill_health_decay: 0.028
   health_regen: 0.015
   resource_regrow_steps: 120  # repousse sur place
+  filter_blocked_moves: true
+  filter_noop_interact: true
+  filter_noop_inventory: true
   num_food: 32
   num_water: 24
   num_warm_zones: 28
@@ -176,3 +179,14 @@ online:
   threshold_refresh_steps: 500
   threshold_quantile: 0.35
   threshold_samples: 2000
+
+action_curriculum:
+  enabled: true
+  # Les artefacts restent visibles dès le début, mais la manipulation
+  # d'objets attend que l'agent démontre d'abord une survie basique.
+  artifact_actions: [PICK, DROP, PLANT, COMBINE]
+  unlock_after_steps: 20000
+  min_recent_samples: 500
+  min_recent_wellbeing: 0.65
+  min_recent_hydration_events: 3
+  min_recent_energy_events: 1

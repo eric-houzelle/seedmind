@@ -4690,6 +4690,19 @@ d'un agent qui apprend sa mémoire en interne, mais elle transforme le patch de
 déploiement en composant testable et réutilisable pour brancher une première
 démo visuelle.
 
+**Démo live riche (14 juin 2026) :** le viewer doit refléter le chantier réel,
+pas revenir à une vitrine plus simple. Le diagnostic actuel est que les actions
+d'artefacts (`PICK`, `DROP`, `PLANT`, `COMBINE`) arrivent trop tôt : elles
+diluent l'exploration alors que boire/manger n'est pas encore stabilisé. La
+solution retenue est un curriculum d'actions : les objets restent visibles et
+observables, mais leur manipulation ne se débloque qu'après une compétence
+récente de survie (bien-être moyen, eau et nourriture consommées). Ce n'est pas
+une règle métier codée en dur ; c'est une progression de complexité pour que
+l'apprentissage online commence par l'homéostasie avant le craft. La démo live
+active aussi les filtres d'actions physiquement inutiles (`move_blocked`,
+`interact_noop`, inventaire impossible) afin que l'exploration aléatoire
+produise plus souvent des expériences informatives sans écrire la stratégie.
+
 ---
 
 ## 9. Demo front fouloïdes (préparation)
@@ -4750,4 +4763,4 @@ L'architecture (registres, adapters, modules découplés) est conçue pour accue
 
 ---
 
-*Dernière mise à jour : 12 juin 2026*
+*Dernière mise à jour : 14 juin 2026*
