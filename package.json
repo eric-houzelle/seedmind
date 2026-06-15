@@ -1,5 +1,7 @@
 {
+  "private": true,
   "scripts": {
+    "build": "npm run build:vercel",
     "build:vercel": "node scripts/build_fouloides_front.mjs"
   },
   "devDependencies": {}

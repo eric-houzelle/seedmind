@@ -1,5 +1,19 @@
 {
-  "buildCommand": "npm run build:vercel",
-  "outputDirectory": "public",
-  "installCommand": "npm install --ignore-scripts"
+  "version": 2,
+  "installCommand": "npm install --ignore-scripts",
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "public"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/$1"
+    }
+  ]
 }
