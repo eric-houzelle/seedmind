@@ -87,8 +87,8 @@ Pré-requis :
 
 ```text
 www.releaskills.com pointe vers l'IP publique de ta machine
-les ports 80 et 443 sont ouverts vers cette machine
-aucun autre service n'écoute sur 80/443
+le port choisi, par défaut 8443, est ouvert vers cette machine
+aucun autre service n'écoute sur ce port
 Docker et Docker Compose sont installés
 ```
 
@@ -106,6 +106,7 @@ cp .env.fouloides.example .env.fouloides
 ```text
 FOULOIDES_DOMAIN=www.releaskills.com
 ACME_EMAIL=ton-email@example.com
+FOULOIDES_TLS_PORT=8443
 SOURCE=stub
 ```
 
@@ -118,14 +119,14 @@ docker compose --env-file .env.fouloides -f docker-compose.fouloides.tls.yml up 
 Le backend reste privé dans le réseau Docker. Seul le conteneur Nginx expose :
 
 ```text
-https://www.releaskills.com
-wss://www.releaskills.com/fouloides
+https://www.releaskills.com:8443
+wss://www.releaskills.com:8443/fouloides
 ```
 
 Vérifie :
 
 ```bash
-curl https://www.releaskills.com/fouloides-healthz
+curl https://www.releaskills.com:8443/fouloides-healthz
 ```
 
 Logs :
@@ -137,7 +138,7 @@ docker compose --env-file .env.fouloides -f docker-compose.fouloides.tls.yml log
 Si ça ne démarre pas, les causes les plus fréquentes sont :
 
 ```text
-un autre Nginx/Apache utilise déjà 80/443 sur l'hôte
+un autre service utilise déjà le port 8443
 les certificats n'existent pas aux chemins attendus
 le DNS www.releaskills.com ne pointe pas vers cette machine
 ```
@@ -145,7 +146,7 @@ le DNS www.releaskills.com ne pointe pas vers cette machine
 L'URL WebSocket publique est :
 
 ```text
-wss://www.releaskills.com/fouloides
+wss://www.releaskills.com:8443/fouloides
 ```
 
 Commandes utiles :
@@ -221,7 +222,7 @@ Framework Preset: Other
 Ajoute une variable d'environnement Vercel :
 
 ```text
-SEEDMIND_WS_URL=wss://www.releaskills.com/fouloides
+SEEDMIND_WS_URL=wss://www.releaskills.com:8443/fouloides
 ```
 
 `SEEDMIND_WS_URL` est l'URL WebSocket publique de ton backend. Elle doit

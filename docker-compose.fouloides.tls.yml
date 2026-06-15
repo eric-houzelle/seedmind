@@ -25,8 +25,7 @@ services:
     depends_on:
       - fouloides-backend
     ports:
-      - "80:80"
-      - "443:443"
+      - "${FOULOIDES_TLS_PORT:-8443}:443"
     volumes:
       - ./deploy/fouloides/nginx.releaskills.docker.conf:/etc/nginx/conf.d/default.conf:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
