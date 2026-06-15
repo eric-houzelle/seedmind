@@ -28,8 +28,8 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      FOULOIDES_DOMAIN: ${FOULOIDES_DOMAIN:-api.hektore.com}
-      ACME_EMAIL: ${ACME_EMAIL:-admin@hektore.com}
+      FOULOIDES_DOMAIN: ${FOULOIDES_DOMAIN:-www.releaskills.com}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@releaskills.com}
     volumes:
       - ./deploy/fouloides/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
