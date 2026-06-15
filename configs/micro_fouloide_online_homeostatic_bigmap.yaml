@@ -39,6 +39,10 @@ env:
 agent:
   latent_dim: 64
   memory_top_k: 5
+  observation:
+    spatial_memory:
+      enabled: true
+      horizon: 300
 
 world_model:
   enabled: true
