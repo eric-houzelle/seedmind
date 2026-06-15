@@ -69,24 +69,26 @@ Pour le mode `live`, garde un volume persistant sur `/app/runs` afin de conserve
 
 ## 2. Production sur ta machine
 
-### Option recommandée avec Nginx et tes certificats existants
+### Option recommandée : tout gérer avec Docker
 
-Si `www.releaskills.com` est déjà servi par ta machine avec les certificats :
+Cette option lance deux conteneurs :
+
+- `fouloides-backend` : simulation Python + WebSocket interne.
+- `fouloides-proxy` : Nginx Docker qui expose HTTPS/WSS avec tes certificats.
+
+Elle utilise les certificats déjà présents sur l'hôte :
 
 ```text
 /etc/letsencrypt/live/www.releaskills.com-0001/fullchain.pem
 /etc/letsencrypt/live/www.releaskills.com-0001/privkey.pem
 ```
 
-ne lance pas Caddy sur 80/443. Lance seulement le backend Docker en localhost,
-puis configure Nginx pour faire le TLS et le proxy WebSocket.
-
 Pré-requis :
 
 ```text
 www.releaskills.com pointe vers l'IP publique de ta machine
 les ports 80 et 443 sont ouverts vers cette machine
-Nginx est installé
+aucun autre service n'écoute sur 80/443
 Docker et Docker Compose sont installés
 ```
 
@@ -107,43 +109,37 @@ ACME_EMAIL=ton-email@example.com
 SOURCE=stub
 ```
 
-Lance uniquement le backend Python :
+Lance le backend et le proxy TLS :
 
 ```bash
-docker compose --env-file .env.fouloides -f docker-compose.fouloides.backend.yml up -d --build
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.tls.yml up -d --build
 ```
 
-Le backend écoute alors seulement en local :
+Le backend reste privé dans le réseau Docker. Seul le conteneur Nginx expose :
 
 ```text
-http://127.0.0.1:8787/healthz
-ws://127.0.0.1:8788
-```
-
-Si tu n'as pas encore de bloc Nginx pour ce domaine, installe le fichier complet :
-
-```bash
-sudo cp deploy/fouloides/nginx.releaskills.full.conf /etc/nginx/sites-available/releaskills-fouloides
-sudo ln -sf /etc/nginx/sites-available/releaskills-fouloides /etc/nginx/sites-enabled/releaskills-fouloides
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-Si tu crées plus tard un autre bloc Nginx pour `www.releaskills.com`, ne garde
-pas deux `server` blocks actifs pour le même domaine/port. Dans ce cas, copie
-seulement les `location` de `deploy/fouloides/nginx.releaskills.conf` dans ton
-bloc existant.
-
-Pour vérifier la config complète :
-
-```bash
-sudo nginx -T | grep -A80 "server_name www.releaskills.com"
+https://www.releaskills.com
+wss://www.releaskills.com/fouloides
 ```
 
 Vérifie :
 
 ```bash
 curl https://www.releaskills.com/fouloides-healthz
+```
+
+Logs :
+
+```bash
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.tls.yml logs -f
+```
+
+Si ça ne démarre pas, les causes les plus fréquentes sont :
+
+```text
+un autre Nginx/Apache utilise déjà 80/443 sur l'hôte
+les certificats n'existent pas aux chemins attendus
+le DNS www.releaskills.com ne pointe pas vers cette machine
 ```
 
 L'URL WebSocket publique est :
@@ -155,18 +151,28 @@ wss://www.releaskills.com/fouloides
 Commandes utiles :
 
 ```bash
-docker compose --env-file .env.fouloides -f docker-compose.fouloides.backend.yml logs -f
-docker compose --env-file .env.fouloides -f docker-compose.fouloides.backend.yml restart
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.tls.yml ps
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.tls.yml restart
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.tls.yml down
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.tls.yml up -d --build
+```
+
+### Option alternative : backend seul derrière un proxy hôte
+
+Si tu préfères utiliser un Nginx installé sur l'hôte, lance seulement :
+
+```bash
 docker compose --env-file .env.fouloides -f docker-compose.fouloides.backend.yml up -d --build
 ```
 
-### Option Caddy si le domaine n'est pas déjà servi
+Puis utilise `deploy/fouloides/nginx.releaskills.full.conf` comme base de
+configuration Nginx hôte.
+
+### Option Caddy si tu veux des certificats automatiques
 
 La config `docker-compose.fouloides.prod.yml` utilise Caddy devant le backend
-Python. Caddy obtient le certificat SSL automatiquement et expose le WebSocket
-en `wss://`. Utilise-la seulement si Docker peut prendre les ports 80 et 443.
-
-Lance :
+Python. Utilise-la seulement si tu veux que Docker/Caddy obtienne et renouvelle
+les certificats lui-même.
 
 ```bash
 docker compose --env-file .env.fouloides -f docker-compose.fouloides.prod.yml up -d --build
