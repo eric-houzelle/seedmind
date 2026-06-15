@@ -97,7 +97,7 @@ Sur la machine :
 ```bash
 git clone https://github.com/eric-houzelle/seedmind.git
 cd seedmind
-git checkout main
+git checkout sandbox-world
 cp .env.fouloides.example .env.fouloides
 ```
 
@@ -107,7 +107,10 @@ cp .env.fouloides.example .env.fouloides
 FOULOIDES_DOMAIN=www.releaskills.com
 ACME_EMAIL=ton-email@example.com
 FOULOIDES_TLS_PORT=8443
-SOURCE=stub
+SOURCE=live
+LIVE_CONFIG=configs/micro_fouloide_online_properties.yaml
+LIVE_CHECKPOINT=runs/fouloide_live/checkpoint_live.pt
+TICK_MS=60
 ```
 
 Lance le backend et le proxy TLS :
