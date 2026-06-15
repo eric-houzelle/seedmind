@@ -4734,6 +4734,15 @@ exécutable explicitement via `--live-config
 configs/micro_fouloide_online_properties.yaml`, mais n'est plus le chemin par
 défaut de reconstruction.
 
+**Validation après run long (15 juin 2026).** La baseline de reprise est
+confirmée fonctionnelle en démo live après temps d'apprentissage suffisant :
+l'agent vierge repart bien de zéro, puis atteint de nouveaux records autour de
+25k+ steps. La phase initiale peut paraître mauvaise visuellement, mais elle se
+redresse quand l'expérience accumulée devient suffisante. Verdict : `master`
+peut représenter cet état fonctionnel ; la suite doit continuer par
+l'introduction isolée d'une **carte plus grande seule**, sans artefacts ni autre
+nouveauté simultanée.
+
 ---
 
 ## 9. Demo front fouloïdes (préparation)
@@ -4794,4 +4803,4 @@ L'architecture (registres, adapters, modules découplés) est conçue pour accue
 
 ---
 
-*Dernière mise à jour : 14 juin 2026*
+*Dernière mise à jour : 15 juin 2026*
