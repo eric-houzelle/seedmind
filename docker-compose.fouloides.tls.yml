@@ -1,0 +1,32 @@
+services:
+  fouloides-backend:
+    build: .
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      WS_PORT: 8788
+      SOURCE: ${SOURCE:-stub}
+      TICK_MS: ${TICK_MS:-150}
+      SIZE: ${SIZE:-96}
+      FOULOIDES: ${FOULOIDES:-14}
+      DEVICE: ${DEVICE:-cpu}
+      LIVE_CHECKPOINT: ${LIVE_CHECKPOINT:-runs/fouloide_live_homeostatic/checkpoint_live.pt}
+      LIVE_CHECKPOINT_EVERY: ${LIVE_CHECKPOINT_EVERY:-5000}
+    expose:
+      - "8787"
+      - "8788"
+    volumes:
+      - ./runs:/app/runs
+
+  fouloides-proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - fouloides-backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/fouloides/nginx.releaskills.docker.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
