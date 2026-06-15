@@ -72,15 +72,21 @@ Pour le mode `live`, garde un volume persistant sur `/app/runs` afin de conserve
 Dans Vercel, importe le repo et configure :
 
 ```text
-Build Command: npm run build:vercel
-Output Directory: public
 Install Command: npm install --ignore-scripts
+Framework Preset: Other
 ```
 
 Ajoute une variable d'environnement Vercel :
 
 ```text
 SEEDMIND_WS_URL=wss://fouloides-backend.example.com
+```
+
+`SEEDMIND_WS_URL` est l'URL WebSocket publique de ton backend. Elle doit
+commencer par `wss://` si le site Vercel est en HTTPS. Exemple :
+
+```text
+SEEDMIND_WS_URL=wss://api.example.com/fouloides
 ```
 
 Le build génère `public/index.html` depuis `seedmind/visualization/fouloides_viewer.html` et injecte cette URL.
