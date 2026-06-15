@@ -16,6 +16,7 @@ from seedmind.agent.goal_generator import GoalGenerator
 from seedmind.agent.planner import Planner
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
+from seedmind.agent.value_model import ValueModel
 from seedmind.agent.world_model import WorldModel
 from seedmind.memory.persistent_memory import PersistentMemory
 
@@ -33,6 +34,23 @@ class Agent:
         memory_top_k: int = 5,
         use_planner: bool = True,
         q_network: Optional[QNetwork] = None,
+        planning_weight: float = 0.0,
+        planner_horizon: int = 4,
+        planner_samples: int = 16,
+        causal_feature_weights: Optional[np.ndarray] = None,
+        causal_feature_targets: Optional[np.ndarray] = None,
+        causal_features_fn: Optional[Any] = None,
+        value_model: Optional[ValueModel] = None,
+        planner_terminal_value_weight: float = 0.0,
+        planner_objective_scorer: Optional[Any] = None,
+        planner_objective_weight: float = 0.0,
+        planner_action_penalties: Optional[Dict[str, float]] = None,
+        planner_force_feature_indices: Optional[List[int]] = None,
+        planner_force_feature_thresholds: Optional[List[float]] = None,
+        planner_seed: Optional[int] = None,
+        planner_uncertainty_threshold: Optional[float] = None,
+        planner_margin_threshold: float = 0.0,
+        planner_q_advantage_threshold: float = 0.0,
     ) -> None:
         self.encoder = encoder
         self.world_model = world_model
@@ -44,10 +62,32 @@ class Agent:
         self.action_index = {a: i for i, a in enumerate(actions)}
         self.memory_top_k = memory_top_k
         self.use_planner = use_planner
-        self.planner = Planner(world_model, actions, curiosity)
-        # V2: a learned action-value network. When present it drives the greedy
-        # branch of the epsilon-greedy policy instead of the planner.
+        self.planner = Planner(
+            world_model, actions, curiosity,
+            horizon=planner_horizon, num_samples=planner_samples,
+            causal_feature_weights=causal_feature_weights,
+            causal_feature_targets=causal_feature_targets,
+            value_model=value_model,
+            terminal_value_weight=planner_terminal_value_weight,
+            objective_scorer=planner_objective_scorer,
+            objective_weight=planner_objective_weight,
+            action_penalties=planner_action_penalties,
+            seed=planner_seed,
+        )
         self.q_network = q_network
+        self.value_model = value_model
+        # When both Q-network and planner are active, the greedy branch
+        # uses: score = (1 - planning_weight) * Q + planning_weight * WM
+        self.planning_weight = planning_weight
+        self.causal_features_fn = causal_features_fn
+        self.planner_uncertainty_threshold = planner_uncertainty_threshold
+        self.planner_margin_threshold = float(planner_margin_threshold)
+        self.planner_q_advantage_threshold = float(planner_q_advantage_threshold)
+        self.planner_force_feature_indices = list(planner_force_feature_indices or [])
+        self.planner_force_feature_thresholds = [
+            float(v) for v in (planner_force_feature_thresholds or [])
+        ]
+        self.last_planner_used = False
 
     # ------------------------------------------------------------------
     # Decision pieces (used by the main loop, SPEC section 17)
@@ -69,13 +109,57 @@ class Agent:
         available_actions: List[str],
         observation: Optional[Dict[str, Any]] = None,
     ) -> str:
-        # Greedy-branch scorer priority: learned Q-network > planner > random.
-        if self.q_network is not None and observation is not None:
-            scorer = self.q_network.make_scorer(observation, available_actions)
+        scorer = None
+        self.last_planner_used = False
+
+        has_q = self.q_network is not None and observation is not None
+        has_wm = self.use_planner and self.planning_weight > 0
+
+        if has_q and has_wm:
+            q_scorer = self.q_network.make_scorer(
+                observation, available_actions, action_index=self.action_index,
+            )
+            current_features = (
+                self.causal_features_fn(observation)
+                if self.causal_features_fn is not None and observation is not None
+                else None
+            )
+            wm_values, wm_stats = self.planner.action_values_with_stats(
+                latent_state, available_actions, current_features=current_features,
+            )
+            force_planner = self._planner_force_allows(current_features)
+            q_vals = {a: q_scorer(a) for a in available_actions}
+            # Normalise each score set to [0, 1] to make the weight meaningful
+            q_arr = np.array([q_vals[a] for a in available_actions])
+            wm_arr = np.array([wm_values[a] for a in available_actions])
+            q_norm = self._normalise(q_arr)
+            wm_norm = self._normalise(wm_arr)
+            alpha = self.planning_weight
+            if not force_planner and not self._planner_gate_allows(available_actions, wm_arr, wm_stats):
+                alpha = 0.0
+            elif not force_planner and not self._planner_q_advantage_allows(q_norm, wm_norm):
+                alpha = 0.0
+            else:
+                self.last_planner_used = alpha > 0.0
+            combined = {a: float((1 - alpha) * q_norm[i] + alpha * wm_norm[i])
+                        for i, a in enumerate(available_actions)}
+            scorer = lambda action: combined[action]
+        elif has_q:
+            scorer = self.q_network.make_scorer(
+                observation, available_actions, action_index=self.action_index,
+            )
         elif self.use_planner:
-            scorer = self.planner.make_scorer(latent_state, available_actions)
-        else:
-            scorer = None
+            current_features = (
+                self.causal_features_fn(observation)
+                if self.causal_features_fn is not None and observation is not None
+                else None
+            )
+            values = self.planner.action_values(
+                latent_state, available_actions, current_features=current_features,
+            )
+            self.last_planner_used = True
+            scorer = lambda action: values.get(action, float("-inf"))
+
         return self.policy.choose(
             latent_state=latent_state,
             goal=goal,
@@ -83,6 +167,59 @@ class Agent:
             available_actions=available_actions,
             action_scorer=scorer,
         )
+
+    @staticmethod
+    def _normalise(arr: np.ndarray) -> np.ndarray:
+        rng = arr.max() - arr.min()
+        if rng < 1e-8:
+            return np.ones_like(arr) * 0.5
+        return (arr - arr.min()) / rng
+
+    def _planner_gate_allows(
+        self,
+        actions: List[str],
+        wm_values: np.ndarray,
+        wm_stats: Dict[str, Dict[str, float]],
+    ) -> bool:
+        if len(actions) == 0:
+            return False
+        order = np.argsort(wm_values)
+        best_idx = int(order[-1])
+        if len(order) > 1:
+            margin = float(wm_values[order[-1]] - wm_values[order[-2]])
+        else:
+            margin = float("inf")
+        if margin < self.planner_margin_threshold:
+            return False
+        if self.planner_uncertainty_threshold is None:
+            return True
+        best_action = actions[best_idx]
+        uncertainty = float(wm_stats.get(best_action, {}).get("uncertainty", float("inf")))
+        return uncertainty <= self.planner_uncertainty_threshold
+
+    def _planner_q_advantage_allows(self, q_norm: np.ndarray, wm_norm: np.ndarray) -> bool:
+        if self.planner_q_advantage_threshold <= 0.0:
+            return True
+        if q_norm.size == 0 or wm_norm.size == 0:
+            return False
+        q_best_idx = int(np.argmax(q_norm))
+        wm_best_idx = int(np.argmax(wm_norm))
+        advantage = float(wm_norm[wm_best_idx] - wm_norm[q_best_idx])
+        return advantage >= self.planner_q_advantage_threshold
+
+    def _planner_force_allows(self, current_features: Optional[np.ndarray]) -> bool:
+        if current_features is None:
+            return False
+        if len(self.planner_force_feature_indices) != len(self.planner_force_feature_thresholds):
+            return False
+        features = np.asarray(current_features, dtype=np.float32)
+        for idx, threshold in zip(
+            self.planner_force_feature_indices,
+            self.planner_force_feature_thresholds,
+        ):
+            if 0 <= idx < features.shape[0] and float(features[idx]) <= threshold:
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Factory

@@ -1,0 +1,48 @@
+# Exemple d'extension du monde par données : une nouvelle entité = un bloc
+# YAML, zéro code. À référencer depuis une config de run :
+#
+#   env:
+#     entities: configs/entities_example.yaml
+#     num_berry_bush: 5
+#
+# Propriétés disponibles : solid, consumable {drive, gain}, portable,
+# plantable {becomes}, dangerous, temperature_delta, count_key/default_count
+# (placement), render (sprite viewer :
+# rock|danger|bath|apple|terrain_warm|terrain_cold|none).
+#
+# Chaîne découvrable (nécessite env.inventory.enabled: true) :
+# graine → PICK → PLANT → buisson → INTERACT (manger).
+
+entities:
+  - name: berry_bush
+    consumable: {drive: energy, gain: 0.15}
+    count_key: num_berry_bush
+    default_count: 4
+    render: bush
+  - name: berry_seed
+    portable: true
+    plantable: {becomes: berry_bush}
+    count_key: num_berry_seed
+    default_count: 4
+    render: seed
+  - name: branch
+    portable: true
+    count_key: num_branch
+    default_count: 4
+    render: branch
+  - name: flint
+    portable: true
+    count_key: num_flint
+    default_count: 4
+    render: flint
+  - name: campfire
+    temperature_delta: 0.03
+    count_key: num_campfire
+    default_count: 0
+    render: campfire
+
+# Recettes : résolues par le moteur, jamais exposées à l'agent.
+# Chaîne « se réchauffer » : froid → PICK branche + silex → COMBINE →
+# feu de camp posé sur place → s'y tenir → température remonte.
+recipes:
+  - {inputs: [branch, flint], output: campfire}

@@ -13,12 +13,21 @@ Setting ``horizon=1`` recovers the simplest possible planner.
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Protocol
 
 import numpy as np
 
 from seedmind.agent.curiosity import CuriosityModule
+from seedmind.agent.value_model import ValueModel
 from seedmind.agent.world_model import WorldModel
+
+
+class ObjectiveScorer(Protocol):
+    def score_batch(self, features: np.ndarray) -> np.ndarray:
+        ...
+
+    def score_transition_batch(self, before: np.ndarray, after: np.ndarray) -> np.ndarray:
+        ...
 
 
 class Planner:
@@ -31,6 +40,13 @@ class Planner:
         num_samples: int = 16,
         gamma: float = 0.95,
         goal_progress_weight: float = 0.0,
+        causal_feature_weights: Optional[np.ndarray] = None,
+        causal_feature_targets: Optional[np.ndarray] = None,
+        value_model: Optional[ValueModel] = None,
+        terminal_value_weight: float = 0.0,
+        objective_scorer: Optional[ObjectiveScorer] = None,
+        objective_weight: float = 0.0,
+        action_penalties: Optional[Dict[str, float]] = None,
         seed: Optional[int] = None,
     ) -> None:
         self.world_model = world_model
@@ -41,11 +57,122 @@ class Planner:
         self.num_samples = max(1, num_samples)
         self.gamma = gamma
         self.goal_progress_weight = goal_progress_weight
+        self.causal_feature_weights = (
+            np.asarray(causal_feature_weights, dtype=np.float32)
+            if causal_feature_weights is not None else None
+        )
+        self.causal_feature_targets = (
+            np.asarray(causal_feature_targets, dtype=np.float32)
+            if causal_feature_targets is not None else None
+        )
+        self.value_model = value_model
+        self.terminal_value_weight = float(terminal_value_weight)
+        self.objective_scorer = objective_scorer
+        self.objective_weight = float(objective_weight)
+        self.action_penalties = {
+            str(action): float(penalty)
+            for action, penalty in (action_penalties or {}).items()
+            if float(penalty) != 0.0
+        }
         self.rng = np.random.default_rng(seed)
 
+    def _action_penalty(self, action_indices: np.ndarray) -> np.ndarray:
+        if not self.action_penalties:
+            return np.zeros(len(action_indices), dtype=np.float32)
+        penalties = np.zeros(len(action_indices), dtype=np.float32)
+        for action, penalty in self.action_penalties.items():
+            idx = self.action_index.get(action)
+            if idx is None:
+                continue
+            penalties = penalties + np.where(action_indices == idx, penalty, 0.0)
+        return penalties.astype(np.float32)
+
+    def _objective_value(
+        self,
+        before_features: Optional[np.ndarray],
+        after_features: Optional[np.ndarray],
+    ) -> np.ndarray:
+        if (
+            after_features is None
+            or self.objective_scorer is None
+            or self.objective_weight == 0.0
+        ):
+            return np.asarray(0.0, dtype=np.float32)
+        if before_features is not None and hasattr(self.objective_scorer, "score_transition_batch"):
+            return self.objective_weight * self.objective_scorer.score_transition_batch(
+                before_features,
+                after_features,
+            )
+        return self.objective_weight * self.objective_scorer.score_batch(after_features)
+
+    def _causal_value(
+        self,
+        latents: np.ndarray,
+        actions: np.ndarray,
+        current_features: Optional[np.ndarray] = None,
+    ) -> tuple[np.ndarray, Optional[np.ndarray]]:
+        """Causal shaping value + feature propagation through imagination.
+
+        Feature propagation (``features + predicted delta``) is independent of
+        the causal shaping value: an objective scorer needs evolving features
+        even when no ``causal_feature_weights`` are configured.
+        """
+        zeros = np.zeros(len(actions), dtype=np.float32)
+        has_shaping = (
+            self.causal_feature_weights is not None
+            and self.causal_feature_weights.size > 0
+        )
+        needs_features = (
+            current_features is not None
+            and self.objective_scorer is not None
+            and self.objective_weight != 0.0
+        )
+        if not has_shaping and not needs_features:
+            return zeros, current_features
+
+        delta, _ = self.world_model.predict_causal_batch(latents, actions)
+
+        cur = None
+        nxt = current_features
+        if current_features is not None and delta.shape[1] > 0:
+            cur = np.asarray(current_features, dtype=np.float32)
+            if cur.ndim == 1:
+                cur = np.repeat(cur[None, :], len(actions), axis=0)
+            if delta.shape[1] == cur.shape[1]:
+                nxt = np.clip(cur + delta, 0.0, 1.0)
+            else:
+                cur = None
+
+        if not has_shaping or delta.shape[1] != self.causal_feature_weights.shape[0]:
+            return zeros, nxt
+        if (
+            cur is not None
+            and self.causal_feature_targets is not None
+            and self.causal_feature_targets.shape[0] == delta.shape[1]
+        ):
+            before = np.abs(self.causal_feature_targets[None, :] - cur)
+            after = np.abs(self.causal_feature_targets[None, :] - nxt)
+            value = ((before - after) * self.causal_feature_weights[None, :]).sum(axis=1)
+            return value.astype(np.float32), nxt
+        return (delta @ self.causal_feature_weights).astype(np.float32), nxt
+
     def action_values(
-        self, latent_state: np.ndarray, available_actions: List[str]
+        self,
+        latent_state: np.ndarray,
+        available_actions: List[str],
+        current_features: Optional[np.ndarray] = None,
     ) -> Dict[str, float]:
+        values, _ = self.action_values_with_stats(
+            latent_state, available_actions, current_features=current_features,
+        )
+        return values
+
+    def action_values_with_stats(
+        self,
+        latent_state: np.ndarray,
+        available_actions: List[str],
+        current_features: Optional[np.ndarray] = None,
+    ) -> tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
         """Vectorised random-shooting value estimate for each first action."""
         num_actions = self.world_model.num_actions
         first_idx = np.array([self.action_index[a] for a in available_actions])
@@ -55,20 +182,62 @@ class Planner:
         latent = np.asarray(latent_state, dtype=np.float32)
         particles = np.repeat(latent[None, :], a * n, axis=0)
         first_actions = np.repeat(first_idx, n)
+        feature_particles = None
+        if current_features is not None:
+            feature_particles = np.repeat(
+                np.asarray(current_features, dtype=np.float32)[None, :],
+                a * n,
+                axis=0,
+            )
 
         next_l, reward, uncertainty = self.world_model.predict_batch(particles, first_actions)
-        value = reward + self.curiosity.compute_array(uncertainty)
+        uncertainty_sum = uncertainty.astype(np.float32).copy()
+        uncertainty_count = np.ones_like(uncertainty_sum, dtype=np.float32)
+        feature_before = feature_particles
+        causal_value, feature_particles = self._causal_value(
+            particles, first_actions, feature_particles,
+        )
+        value = (
+            reward
+            + self.curiosity.compute_array(uncertainty)
+            + causal_value
+            + self._objective_value(feature_before, feature_particles)
+            - self._action_penalty(first_actions)
+        )
 
         cur = next_l
         disc = self.gamma
         for _ in range(self.horizon - 1):
             rand_actions = self.rng.integers(0, num_actions, size=a * n)
-            cur, reward, uncertainty = self.world_model.predict_batch(cur, rand_actions)
-            value = value + disc * (reward + self.curiosity.compute_array(uncertainty))
+            prev = cur
+            cur, reward, uncertainty = self.world_model.predict_batch(prev, rand_actions)
+            uncertainty_sum = uncertainty_sum + uncertainty.astype(np.float32)
+            uncertainty_count = uncertainty_count + 1.0
+            feature_before = feature_particles
+            causal_value, feature_particles = self._causal_value(
+                prev, rand_actions, feature_particles,
+            )
+            value = value + disc * (
+                reward
+                + self.curiosity.compute_array(uncertainty)
+                + causal_value
+                + self._objective_value(feature_before, feature_particles)
+                - self._action_penalty(rand_actions)
+            )
             disc *= self.gamma
 
+        if self.value_model is not None and self.terminal_value_weight != 0.0:
+            terminal = self.value_model.predict_batch(cur)
+            value = value + disc * self.terminal_value_weight * terminal
+
         agg = value.reshape(a, n).mean(axis=1)
-        return {action: float(agg[i]) for i, action in enumerate(available_actions)}
+        unc = (uncertainty_sum / np.maximum(uncertainty_count, 1.0)).reshape(a, n).mean(axis=1)
+        values = {action: float(agg[i]) for i, action in enumerate(available_actions)}
+        stats = {
+            action: {"uncertainty": float(unc[i])}
+            for i, action in enumerate(available_actions)
+        }
+        return values, stats
 
     def score_action(self, latent_state: np.ndarray, action: str) -> float:
         """Single-action score (1-step), kept for convenience/tests."""

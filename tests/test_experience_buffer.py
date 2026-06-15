@@ -22,6 +22,24 @@ def _exp(step: int, error: float, reward: float = 0.0) -> dict:
     )
 
 
+def _event_exp(step: int, event: str) -> dict:
+    return make_experience(
+        episode_id="episode_000001",
+        world_id="sandbox",
+        step=step,
+        observation="o",
+        action="HARVEST",
+        next_observation="o2",
+        reward_external=0.0,
+        reward_intrinsic=0.0,
+        goal="explore",
+        prediction_error=0.0,
+        done=False,
+        event=event,
+        event_amount=1,
+    )
+
+
 def test_make_experience_schema():
     e = _exp(0, 0.5)
     for key in [
@@ -30,6 +48,12 @@ def test_make_experience_schema():
         "prediction_error", "memory_used", "done", "timestamp",
     ]:
         assert key in e
+
+
+def test_make_experience_stores_causal_event():
+    e = _event_exp(0, "craft_tool")
+    assert e["event"] == "craft_tool"
+    assert e["event_amount"] == 1
 
 
 def test_add_and_len():
@@ -74,3 +98,28 @@ def test_save_and_load(tmp_path):
     other = ExperienceBuffer()
     other.load(str(path))
     assert len(other) == 6
+
+
+def test_sample_causal_returns_event_transitions_by_generic_event_key():
+    buf = ExperienceBuffer(seed=0)
+    for i in range(5):
+        buf.add(_event_exp(i, "wait"))
+    buf.add(_event_exp(10, "craft_tool"))
+    buf.add(_event_exp(11, "harvest_food_tool"))
+    sample = buf.sample_causal(10)
+    events = {e["event"] for e in sample}
+    assert events
+    assert all(e.get("event") is not None for e in sample)
+    assert {"craft_tool", "harvest_food_tool"} <= events
+
+
+def test_n_step_sequence_stays_within_episode_and_stops_at_done():
+    buf = ExperienceBuffer(seed=0)
+    for i in range(4):
+        e = _exp(i, 0.0, reward=1.0)
+        e["episode_id"] = "a"
+        e["done"] = i == 2
+        buf.add(e)
+    start = buf.sample_recent(4)[0]
+    seq = buf.n_step_sequence(start, 4)
+    assert [e["step"] for e in seq] == [0, 1, 2]

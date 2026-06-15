@@ -1,0 +1,561 @@
+"""Evaluate and rollout a promoted Micro-Fouloide checkpoint."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.evaluate_micro_fouloide import (  # noqa: E402
+    load_config,
+    resolve_uncertainty_threshold_from_replay,
+    run_trained,
+)
+from scripts.run_micro_fouloide import build_agent, build_env  # noqa: E402
+from seedmind.agent.goal_generator import GoalGenerator  # noqa: E402
+from seedmind.agent.spatial_resource_memory import SpatialResourceMemory  # noqa: E402
+from seedmind.training.device import resolve_device  # noqa: E402
+
+
+def _preset_params(name: str | None) -> dict[str, Any]:
+    if name is None or name == "wm-calibrated":
+        return {
+            "planning_weight": 0.25,
+            "terminal_value_weight": 1.0,
+            "planner_uncertainty_quantile": 0.60,
+            "planner_margin_threshold": 0.01,
+            "planner_q_advantage_threshold": 0.02,
+            "planner_horizon": 5,
+            "planner_samples": 8,
+        }
+    raise ValueError(f"Unknown planner preset: {name}")
+
+
+def _load_manifest(path: str) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _seed_entry(manifest: dict[str, Any], seed: int) -> dict[str, Any]:
+    for row in manifest.get("seeds", []):
+        if int(row.get("seed", -1)) == int(seed):
+            return row
+    raise ValueError(f"Seed {seed} is not present in manifest {manifest.get('name', '<unknown>')}.")
+
+
+def _configure_planner(config: dict, params: dict[str, Any], threshold: float) -> dict:
+    configured = dict(config)
+    planning = dict(configured.get("planning", {}))
+    planning.update({
+        "enabled": True,
+        "weight": float(params["planning_weight"]),
+        "terminal_value_weight": float(params["terminal_value_weight"]),
+        "uncertainty_threshold": float(threshold),
+        "margin_threshold": float(params["planner_margin_threshold"]),
+        "q_advantage_threshold": float(params["planner_q_advantage_threshold"]),
+        "horizon": int(params["planner_horizon"]),
+        "num_samples": int(params["planner_samples"]),
+    })
+    configured["planning"] = planning
+    return configured
+
+
+def _configure_runtime_guards(
+    config: dict,
+    filter_blocked_moves: bool,
+    filter_noop_interact: bool,
+    survival_objective: bool,
+    survival_objective_weight: float,
+) -> dict:
+    configured = dict(config)
+    env_cfg = dict(configured.get("env", {}))
+    env_cfg["filter_blocked_moves"] = bool(filter_blocked_moves)
+    env_cfg["filter_noop_interact"] = bool(filter_noop_interact)
+    configured["env"] = env_cfg
+    configured["objective"] = {
+        "enabled": bool(survival_objective),
+        "type": "survival_v0",
+        "planner_weight": float(survival_objective_weight),
+        "mode": "delta",
+        "critical_threshold": 0.18,
+        "risk_weight": 3.0,
+        "decline_weight": 4.0,
+        "critical_decline_weight": 8.0,
+        "action_penalties": {
+            "REST": 0.35,
+            "WAIT": 0.35,
+        },
+        "weights": {
+            "energy": 0.8,
+            "hydration": 2.5,
+            "temperature": 0.5,
+            "health": 3.0,
+        },
+    }
+    return configured
+
+
+def _drive(info: dict[str, Any]) -> float:
+    drives = info.get("drives", {})
+    values = [
+        float(drives.get("energy", 0.0)),
+        float(drives.get("hydration", 0.0)),
+        1.0 - abs(float(drives.get("temperature", 0.5)) - 0.5) * 2.0,
+        float(drives.get("health", 0.0)),
+    ]
+    return float(np.mean([max(0.0, min(1.0, v)) for v in values]))
+
+
+def _load_agent(config: dict, checkpoint: str, device: torch.device):
+    agent = build_agent(config, seed=0)
+    ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
+    agent.encoder.load_state_dict(ckpt["encoder_state"])
+    agent.world_model.load_state_dict(ckpt["world_model_state"])
+    agent.q_network.load_state_dict(ckpt["q_network_state"])
+    if agent.value_model is not None and "value_model_state" in ckpt:
+        agent.value_model.load_state_dict(ckpt["value_model_state"])
+    agent.encoder.to(device)
+    agent.world_model.to(device)
+    agent.q_network.to(device)
+    if agent.value_model is not None:
+        agent.value_model.to(device)
+    agent.policy.epsilon_start = 0.0
+    agent.policy.epsilon_end = 0.0
+    return agent
+
+
+PASSIVE_ACTIONS = {"REST", "WAIT"}
+
+
+def _debug_objective_lines(
+    agent: Any, latent: np.ndarray, obs: dict[str, Any], available_actions: list[str]
+) -> list[str]:
+    """Per-action WM values with vs without objective (planner rng preserved)."""
+    planner = agent.planner
+    features = (
+        agent.causal_features_fn(obs)
+        if agent.causal_features_fn is not None else None
+    )
+    rng_state = planner.rng.bit_generator.state
+    with_obj = planner.action_values(latent, available_actions, current_features=features)
+    planner.rng.bit_generator.state = rng_state
+    saved_weight = planner.objective_weight
+    planner.objective_weight = 0.0
+    without_obj = planner.action_values(latent, available_actions, current_features=features)
+    planner.objective_weight = saved_weight
+    planner.rng.bit_generator.state = rng_state
+    return [
+        f"      {a:<10} wm={without_obj[a]:+.4f} "
+        f"obj={with_obj[a] - without_obj[a]:+.4f} total={with_obj[a]:+.4f}"
+        for a in available_actions
+    ]
+
+
+def _run_rollout_with_agent(
+    agent: Any,
+    config: dict,
+    rollout_seed: int,
+    max_steps: int,
+    trace_every: int,
+    collect_trace: bool = True,
+    debug_objective: bool = False,
+    debug_objective_steps: int = 8,
+    resource_memory: bool = False,
+    resource_memory_hydration_threshold: float = 0.55,
+    resource_memory_energy_threshold: float = 0.25,
+) -> dict[str, Any]:
+    agent.goal_generator = GoalGenerator(seed=rollout_seed)
+    agent.planner.rng = np.random.default_rng(rollout_seed)
+    env = build_env(config, seed=rollout_seed)
+    obs = env.reset()
+    latent = agent.encode(obs)
+    events: Counter[str] = Counter()
+    actions: Counter[str] = Counter()
+    planner_used = 0
+    passive_steps = 0
+    planner_used_passive = 0
+    resource_memory_used = 0
+    resource_memory_store = SpatialResourceMemory()
+    trace: list[str] = []
+    done = False
+    info: dict[str, Any] = {}
+
+    while not done and env.steps < max_steps:
+        if resource_memory:
+            resource_memory_store.refresh(obs)
+        memories = agent.retrieve(latent)
+        goal = agent.choose_goal(latent, memories)
+        available = env.available_actions()
+        debug_lines: list[str] = []
+        if debug_objective and env.steps < debug_objective_steps:
+            debug_lines = _debug_objective_lines(agent, latent, obs, available)
+        action = agent.choose_action(
+            latent,
+            goal,
+            memories,
+            available,
+            observation=obs,
+        )
+        memory_action = None
+        if resource_memory:
+            memory_action = resource_memory_store.choose_action(
+                obs,
+                available,
+                hydration_threshold=resource_memory_hydration_threshold,
+                energy_threshold=resource_memory_energy_threshold,
+            )
+            if memory_action is not None:
+                action = memory_action
+                resource_memory_used += 1
+        obs, _, done, info = env.step(action)
+        latent = agent.encode(obs)
+        event = str(info.get("event", "unknown"))
+        actions[action] += 1
+        events[event] += 1
+        planner_used += int(getattr(agent, "last_planner_used", False))
+        if action in PASSIVE_ACTIONS:
+            passive_steps += 1
+            planner_used_passive += int(getattr(agent, "last_planner_used", False))
+        if collect_trace and debug_lines:
+            trace.append(f"{env.steps:03d} [objective debug] chosen={action}")
+            trace.extend(debug_lines)
+        should_trace = (
+            env.steps == 1
+            or env.steps % max(trace_every, 1) == 0
+            or event not in {"move_ok", "wait"}
+            or done
+        )
+        if collect_trace and should_trace:
+            trace.append(
+                f"{env.steps:03d} action={action:<10} event={event:<14} "
+                f"E={float(info.get('energy', 0.0)):.2f} "
+                f"H2O={float(info.get('hydration', 0.0)):.2f} "
+                f"T={float(info.get('temperature', 0.5)):.2f} "
+                f"HP={float(info.get('health', 0.0)):.2f} "
+                f"drive={_drive(info):.3f} "
+                f"planner={int(getattr(agent, 'last_planner_used', False))} "
+                f"resmem={int(memory_action is not None)}"
+            )
+
+    total_actions = max(sum(actions.values()), 1)
+    return {
+        "lifespan": int(info.get("lifespan", env.steps)),
+        "dead": bool(info.get("dead", False)),
+        "timeout": bool(info.get("timeout", False)),
+        "capped": bool(not done and env.steps >= max_steps),
+        "drive": _drive(info) if info else 0.0,
+        "planner_used": planner_used / total_actions,
+        "resource_memory_used": resource_memory_used / total_actions,
+        "passive_steps": passive_steps,
+        "planner_used_passive": (
+            planner_used_passive / passive_steps if passive_steps else 0.0
+        ),
+        "events": dict(events),
+        "actions": dict(actions),
+        "trace": trace,
+        "seed": int(rollout_seed),
+    }
+
+
+def _run_rollout(
+    config: dict,
+    checkpoint: str,
+    device: torch.device,
+    rollout_seed: int,
+    max_steps: int,
+    trace_every: int,
+    debug_objective: bool = False,
+    debug_objective_steps: int = 8,
+    resource_memory: bool = False,
+    resource_memory_hydration_threshold: float = 0.55,
+    resource_memory_energy_threshold: float = 0.25,
+) -> dict[str, Any]:
+    agent = _load_agent(config, checkpoint, device)
+    return _run_rollout_with_agent(
+        agent,
+        config,
+        rollout_seed=rollout_seed,
+        max_steps=max_steps,
+        trace_every=trace_every,
+        collect_trace=True,
+        debug_objective=debug_objective,
+        debug_objective_steps=debug_objective_steps,
+        resource_memory=resource_memory,
+        resource_memory_hydration_threshold=resource_memory_hydration_threshold,
+        resource_memory_energy_threshold=resource_memory_energy_threshold,
+    )
+
+
+def _rollout_rank_key(rollout: dict[str, Any]) -> tuple[float, float, float, float]:
+    return (
+        float(not rollout["dead"]),
+        float(rollout["lifespan"]),
+        float(rollout["drive"]),
+        float(-rollout["planner_used"]),
+    )
+
+
+def _select_rollout(candidates: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+    ranked = sorted(candidates, key=_rollout_rank_key)
+    if mode == "worst":
+        return ranked[0]
+    if mode == "best":
+        return ranked[-1]
+    if mode == "median":
+        return ranked[len(ranked) // 2]
+    raise ValueError(f"Unknown rollout selection mode: {mode}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--manifest",
+        default="runs/micro_fouloide_promoted/wm_calibrated_v0/manifest.json",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Evaluate/roll out this checkpoint directly instead of reading a promoted manifest.",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Config to use with --checkpoint. Defaults to the manifest config otherwise.",
+    )
+    parser.add_argument("--planner-preset", default=None)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--device", default="auto", choices=["cpu", "auto", "cuda", "mps"])
+    parser.add_argument("--num-episodes", type=int, default=100)
+    parser.add_argument("--rollout-seed", type=int, default=9999)
+    parser.add_argument("--rollout-max-steps", type=int, default=80)
+    parser.add_argument("--trace-every", type=int, default=10)
+    parser.add_argument("--find-rollout", action="store_true")
+    parser.add_argument("--rollout-search-count", type=int, default=32)
+    parser.add_argument(
+        "--rollout-select",
+        default="median",
+        choices=["best", "median", "worst"],
+    )
+    parser.add_argument("--skip-eval", action="store_true")
+    parser.add_argument("--skip-rollout", action="store_true")
+    parser.add_argument(
+        "--allow-blocked-moves",
+        action="store_true",
+        help="Keep blocked moves in available_actions for legacy behavior.",
+    )
+    parser.add_argument(
+        "--allow-noop-interact",
+        action="store_true",
+        help="Keep no-op interactions in available_actions for legacy behavior.",
+    )
+    parser.add_argument("--disable-survival-objective", action="store_true")
+    parser.add_argument("--survival-objective-weight", type=float, default=0.5)
+    parser.add_argument(
+        "--debug-objective",
+        action="store_true",
+        help="Trace per-action WM value with/without objective on early rollout steps.",
+    )
+    parser.add_argument("--debug-objective-steps", type=int, default=8)
+    parser.add_argument(
+        "--resource-memory",
+        action="store_true",
+        help="Use a deployment-only memory of seen food/water locations during rollout.",
+    )
+    parser.add_argument("--resource-memory-hydration-threshold", type=float, default=0.55)
+    parser.add_argument("--resource-memory-energy-threshold", type=float, default=0.25)
+    args = parser.parse_args()
+
+    manifest = None
+    row = None
+    if args.checkpoint is None:
+        manifest = _load_manifest(args.manifest)
+        row = _seed_entry(manifest, args.seed)
+        checkpoint = str(row["promoted_checkpoint"])
+        config_path = str(args.config or manifest["config"])
+        preset_name = str(args.planner_preset or manifest.get("planner_preset", "wm-calibrated"))
+        label = str(manifest.get("name", args.manifest))
+    else:
+        checkpoint = str(args.checkpoint)
+        if args.config is None:
+            raise ValueError("--config is required when --checkpoint is provided.")
+        config_path = str(args.config)
+        preset_name = str(args.planner_preset or "wm-calibrated")
+        label = "direct-checkpoint"
+    config = _configure_runtime_guards(
+        load_config(config_path),
+        filter_blocked_moves=not args.allow_blocked_moves,
+        filter_noop_interact=not args.allow_noop_interact,
+        survival_objective=not args.disable_survival_objective,
+        survival_objective_weight=float(args.survival_objective_weight),
+    )
+    device = resolve_device(args.device)
+    params = _preset_params(preset_name)
+    threshold = resolve_uncertainty_threshold_from_replay(
+        config,
+        checkpoint,
+        device,
+        float(params["planner_uncertainty_quantile"]),
+    )
+
+    print(f"Source: {label}")
+    print(f"Seed: {args.seed}")
+    print(f"Config: {config_path}")
+    print(f"Checkpoint: {checkpoint}")
+    print(f"Device: {device}")
+    print(f"Planner threshold q{params['planner_uncertainty_quantile']:.2f}: {threshold:.5f}")
+    print(
+        "Runtime guards: "
+        f"filter_blocked_moves={not args.allow_blocked_moves} "
+        f"filter_noop_interact={not args.allow_noop_interact}"
+    )
+    print(
+        "Objective: "
+        f"survival_v0={not args.disable_survival_objective} "
+        f"planner_weight={float(args.survival_objective_weight):.3f}"
+    )
+    print(
+        "Resource memory: "
+        f"enabled={bool(args.resource_memory)} "
+        f"hydration_threshold={float(args.resource_memory_hydration_threshold):.3f} "
+        f"energy_threshold={float(args.resource_memory_energy_threshold):.3f}"
+    )
+    if row is not None:
+        print(
+            "Validated metrics: "
+            f"Q-only={float(row['q_lifespan']):.1f} "
+            f"Q+WM={float(row['planner_lifespan']):.1f} "
+            f"delta={float(row['delta_lifespan']):+.1f}"
+        )
+    else:
+        print("Validated metrics: unavailable for direct checkpoint")
+
+    if not args.skip_eval:
+        q_stats = run_trained(config, checkpoint, args.num_episodes, device, decision_mode="q")
+        planner_stats = run_trained(
+            config,
+            checkpoint,
+            args.num_episodes,
+            device,
+            decision_mode="planner",
+            planning_weight=float(params["planning_weight"]),
+            planner_horizon=int(params["planner_horizon"]),
+            planner_samples=int(params["planner_samples"]),
+            terminal_value_weight=float(params["terminal_value_weight"]),
+            planner_uncertainty_threshold=threshold,
+            planner_margin_threshold=float(params["planner_margin_threshold"]),
+            planner_q_advantage_threshold=float(params["planner_q_advantage_threshold"]),
+        )
+        print("\nEvaluation")
+        print(
+            f"  Q-only lifespan={q_stats['mean_lifespan']:.1f} "
+            f"max={q_stats['max_lifespan']:.0f}"
+        )
+        print(
+            f"  Q+WM   lifespan={planner_stats['mean_lifespan']:.1f} "
+            f"delta={planner_stats['mean_lifespan'] - q_stats['mean_lifespan']:+.1f} "
+            f"used={planner_stats.get('planner_used', 0.0):.1%} "
+            f"max={planner_stats['max_lifespan']:.0f}"
+        )
+
+    if not args.skip_rollout:
+        rollout_config = _configure_planner(config, params, threshold)
+        if args.find_rollout:
+            agent = _load_agent(rollout_config, checkpoint, device)
+            start_seed = int(args.rollout_seed)
+            count = max(1, int(args.rollout_search_count))
+            candidates = [
+                _run_rollout_with_agent(
+                    agent,
+                    rollout_config,
+                    rollout_seed=start_seed + i,
+                    max_steps=int(args.rollout_max_steps),
+                    trace_every=int(args.trace_every),
+                    collect_trace=False,
+                    resource_memory=bool(args.resource_memory),
+                    resource_memory_hydration_threshold=float(
+                        args.resource_memory_hydration_threshold
+                    ),
+                    resource_memory_energy_threshold=float(
+                        args.resource_memory_energy_threshold
+                    ),
+                )
+                for i in range(count)
+            ]
+            selected = _select_rollout(candidates, str(args.rollout_select))
+            preview = sorted(candidates, key=_rollout_rank_key, reverse=True)[:5]
+            print("\nRollout search")
+            print(
+                f"  scanned={count} start_seed={start_seed} "
+                f"select={args.rollout_select} selected_seed={selected['seed']}"
+            )
+            print("  top candidates:")
+            for candidate in preview:
+                print(
+                    f"    seed={candidate['seed']} lifespan={candidate['lifespan']} "
+                    f"dead={candidate['dead']} capped={candidate['capped']} "
+                    f"drive={candidate['drive']:.3f} "
+                    f"planner_used={candidate['planner_used']:.1%} "
+                    f"resmem_used={candidate['resource_memory_used']:.1%}"
+                )
+            rollout = _run_rollout_with_agent(
+                agent,
+                rollout_config,
+                rollout_seed=int(selected["seed"]),
+                max_steps=int(args.rollout_max_steps),
+                trace_every=int(args.trace_every),
+                collect_trace=True,
+                debug_objective=bool(args.debug_objective),
+                debug_objective_steps=int(args.debug_objective_steps),
+                resource_memory=bool(args.resource_memory),
+                resource_memory_hydration_threshold=float(
+                    args.resource_memory_hydration_threshold
+                ),
+                resource_memory_energy_threshold=float(
+                    args.resource_memory_energy_threshold
+                ),
+            )
+        else:
+            rollout = _run_rollout(
+                rollout_config,
+                checkpoint,
+                device,
+                rollout_seed=int(args.rollout_seed),
+                max_steps=int(args.rollout_max_steps),
+                trace_every=int(args.trace_every),
+                debug_objective=bool(args.debug_objective),
+                debug_objective_steps=int(args.debug_objective_steps),
+                resource_memory=bool(args.resource_memory),
+                resource_memory_hydration_threshold=float(
+                    args.resource_memory_hydration_threshold
+                ),
+                resource_memory_energy_threshold=float(
+                    args.resource_memory_energy_threshold
+                ),
+            )
+        print("\nRollout")
+        print(
+            f"  seed={rollout['seed']} lifespan={rollout['lifespan']} "
+            f"dead={rollout['dead']} timeout={rollout['timeout']} "
+            f"capped={rollout['capped']} drive={rollout['drive']:.3f} "
+            f"planner_used={rollout['planner_used']:.1%} "
+            f"resource_memory_used={rollout['resource_memory_used']:.1%}"
+        )
+        print(
+            f"  passive_steps={rollout['passive_steps']} "
+            f"planner_used_passive={rollout['planner_used_passive']:.1%}"
+        )
+        print(f"  events={rollout['events']}")
+        print("  trace:")
+        for line in rollout["trace"]:
+            print(f"    {line}")
+
+
+if __name__ == "__main__":
+    main()

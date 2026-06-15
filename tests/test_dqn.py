@@ -8,6 +8,7 @@ from seedmind.envs.gridworld import ACTIONS, COLOR_DOOR_CLOSED, COLOR_KEY, EMPTY
 from seedmind.evaluation.scenarios import run_episode
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.training.dqn import (
+    _assemble_dqn_batch,
     make_q_optimizer,
     make_target_network,
     sync_target,
@@ -74,6 +75,24 @@ def test_dqn_update_runs_and_changes_weights():
         not torch.allclose(b, p) for b, p in zip(before, agent.q_network.parameters())
     )
     assert changed
+
+
+def test_dqn_can_use_alternate_learning_reward_key():
+    obs = _obs(np.zeros((5, 5)))
+    batch = [
+        make_experience(
+            episode_id="e", world_id="w", step=0, observation="o", action="INTERACT",
+            next_observation="o2", reward_external=-1.0, reward_intrinsic=0.0,
+            goal="g", prediction_error=0.0, done=True,
+            action_index=2, obs_state=obs, next_obs_state=obs,
+        )
+    ]
+    batch[0]["reward_learning"] = 3.0
+
+    assembled = _assemble_dqn_batch(batch, curiosity_weight=0.0, reward_key="reward_learning")
+
+    assert assembled is not None
+    assert assembled[3].item() == 3.0
 
 
 def test_bc_reduces_loss():

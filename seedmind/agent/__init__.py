@@ -6,6 +6,7 @@ from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.planner import Planner
 from seedmind.agent.q_network import QNetwork
 from seedmind.agent.agent import Agent
+from seedmind.agent.spatial_resource_memory import SpatialResourceMemory
 
 __all__ = [
     "Encoder",
@@ -16,4 +17,5 @@ __all__ = [
     "Planner",
     "QNetwork",
     "Agent",
+    "SpatialResourceMemory",
 ]

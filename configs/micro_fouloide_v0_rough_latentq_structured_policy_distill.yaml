@@ -1,0 +1,119 @@
+project:
+  name: SeedMind
+
+env:
+  type: micro_fouloide
+  size: 16
+  max_steps: 500
+  visibility_radius: 4
+  energy_start: 0.75
+  hydration_start: 0.75
+  temperature_start: 0.5
+  health_start: 1.0
+  energy_decay: 0.007
+  hydration_decay: 0.010
+  rest_energy_decay_scale: 0.35
+  food_energy_gain: 0.32
+  water_hydration_gain: 0.42
+  temperature_drift: 0.018
+  temperature_recovery: 0.004
+  critical_threshold: 0.14
+  health_decay: 0.028
+  danger_damage: 0.09
+  num_food: 8
+  num_water: 6
+  num_warm_zones: 7
+  num_cold_zones: 7
+  num_dangers: 11
+  num_obstacles: 24
+
+agent:
+  latent_dim: 64
+  memory_top_k: 5
+  structured_latent_features: true
+
+world_model:
+  enabled: true
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+  sampler: causal
+
+causal_world_model:
+  enabled: true
+  predict_events: true
+  feature_loss_weight: 2.0
+  event_loss_weight: 0.2
+  event_class_balance: true
+
+value_model:
+  enabled: true
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+  gamma: 0.97
+  target_update: 500
+  sampler: causal
+  reward_key: reward_learning
+  updates_per_train: 8
+
+latent_policy:
+  enabled: true
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+  gamma: 0.97
+  target_update: 500
+  sampler: causal
+  reward_key: reward_learning
+  updates_per_train: 8
+  double_dqn: true
+  distill_from_q_weight: 1.0
+  distill_mode: policy
+
+curiosity:
+  enabled: true
+  weight: 0.5
+  max_reward: 1.0
+
+drive_reward:
+  enabled: true
+  weight: 2.0
+  mode: delta
+
+causal_curiosity:
+  enabled: false
+  weight: 0.2
+  max_reward: 1.0
+  novelty_bonus: 1.0
+  repeat_bonus: 0.2
+
+policy:
+  type: epsilon_greedy
+  epsilon_start: 1.0
+  epsilon_end: 0.1
+  epsilon_decay_steps: 200000
+
+planning:
+  enabled: false
+  weight: 0.0
+  horizon: 3
+  num_samples: 8
+  terminal_value_weight: 1.0
+
+dqn:
+  enabled: true
+  conv_channels: 64
+  hidden_dim: 256
+  learning_rate: 0.0005
+  gamma: 0.97
+  batch_size: 64
+  train_every: 1
+  target_update: 500
+  replay_capacity: 50000
+  min_replay_size: 64
+  sampler: causal
+  reward_key: reward_learning

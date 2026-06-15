@@ -5,8 +5,10 @@ a periodically-synced target network for stability. An optional behavioral
 cloning warm-start imitates the actions taken in successful (high-reward)
 transitions, which bootstraps learning under sparse rewards.
 
-The training reward is ``reward_external + curiosity_weight * reward_intrinsic``
-so curiosity acts as an exploration bonus.
+The default training reward is
+``reward_external + curiosity_weight * reward_intrinsic`` so curiosity acts as
+an exploration bonus. Callers can provide another reward field for value
+learning while keeping the environment reward unchanged in the replay buffer.
 """
 from __future__ import annotations
 
@@ -38,27 +40,57 @@ def sync_target(q_network: QNetwork, target_network: QNetwork) -> None:
     target_network.load_state_dict(q_network.state_dict())
 
 
-def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float):
+def _transition_reward(experience: Dict[str, Any], reward_key: str) -> float:
+    return float(experience.get(reward_key, experience.get("reward_external", 0.0)))
+
+
+def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float,
+                        batch_fn=None, buffer: Optional[ExperienceBuffer] = None,
+                        n_step: int = 1, gamma: float = 0.95,
+                        reward_key: str = "reward_external"):
     """Build TD tensors from experiences; skip those lacking observations."""
-    obs, next_obs, actions, rewards, dones = [], [], [], [], []
+    if batch_fn is None:
+        batch_fn = obs_batch_to_tensors
+    obs, next_obs, actions, rewards, dones, n_steps = [], [], [], [], [], []
     for e in batch:
         if e.get("obs_state") is None or e.get("next_obs_state") is None:
             continue
         if e.get("action_index") is None:
             continue
+        if buffer is not None and n_step > 1:
+            sequence = buffer.n_step_sequence(e, n_step)
+            if not sequence:
+                continue
+            reward = 0.0
+            discount = 1.0
+            last = sequence[-1]
+            for current in sequence:
+                reward += discount * (
+                    _transition_reward(current, reward_key)
+                    + curiosity_weight * float(current.get("reward_intrinsic", 0.0))
+                )
+                discount *= gamma
+        else:
+            reward = (
+                _transition_reward(e, reward_key)
+                + curiosity_weight * float(e.get("reward_intrinsic", 0.0))
+            )
+            last = e
+        if last.get("next_obs_state") is None:
+            continue
+
         obs.append(e["obs_state"])
-        next_obs.append(e["next_obs_state"])
+        next_obs.append(last["next_obs_state"])
         actions.append(int(e["action_index"]))
-        rewards.append(
-            float(e["reward_external"]) + curiosity_weight * float(e.get("reward_intrinsic", 0.0))
-        )
-        dones.append(1.0 if e.get("done", False) else 0.0)
+        rewards.append(reward)
+        dones.append(1.0 if last.get("done", False) else 0.0)
+        n_steps.append(len(sequence) if buffer is not None and n_step > 1 else 1)
 
     if not obs:
         return None
 
-    channels, inventory = obs_batch_to_tensors(obs)
-    next_channels, next_inventory = obs_batch_to_tensors(next_obs)
+    channels, inventory = batch_fn(obs)
+    next_channels, next_inventory = batch_fn(next_obs)
     return (
         channels,
         inventory,
@@ -67,6 +99,7 @@ def _assemble_dqn_batch(batch: List[Dict[str, Any]], curiosity_weight: float):
         next_channels,
         next_inventory,
         torch.tensor(dones, dtype=torch.float32),
+        torch.tensor(n_steps, dtype=torch.float32),
     )
 
 
@@ -75,6 +108,10 @@ def _sample_batch(buffer: ExperienceBuffer, batch_size: int, sampler: str) -> Li
         # Oversample successful transitions to cope with sparse rewards.
         half = max(1, batch_size // 2)
         return buffer.sample(batch_size - half) + buffer.sample_high_reward(half)
+    if sampler == "causal":
+        half = max(1, batch_size // 2)
+        causal = buffer.sample_causal(half)
+        return buffer.sample(batch_size - len(causal)) + causal
     return buffer.sample(batch_size)
 
 
@@ -90,6 +127,8 @@ def train_dqn(
     num_updates: int = 1,
     sampler: str = "uniform",
     grad_clip: float = 10.0,
+    n_step: int = 1,
+    reward_key: str = "reward_external",
 ) -> Dict[str, float]:
     """Run ``num_updates`` TD gradient steps; return the mean TD loss."""
     if len(buffer) == 0:
@@ -99,12 +138,29 @@ def train_dqn(
     total_loss = 0.0
     done_updates = 0
 
+    batch_fn = getattr(q_network, '_obs_batch_fn', obs_batch_to_tensors)
     for _ in range(num_updates):
         batch = _sample_batch(buffer, batch_size, sampler)
-        assembled = _assemble_dqn_batch(batch, curiosity_weight)
+        assembled = _assemble_dqn_batch(
+            batch, curiosity_weight, batch_fn=batch_fn,
+            buffer=buffer, n_step=n_step, gamma=gamma,
+            reward_key=reward_key,
+        )
         if assembled is None:
             continue
-        channels, inventory, actions, rewards, next_channels, next_inventory, dones = assembled
+        (
+            channels, inventory, actions, rewards,
+            next_channels, next_inventory, dones, n_steps,
+        ) = assembled
+        device = next(q_network.parameters()).device
+        channels = channels.to(device)
+        inventory = inventory.to(device)
+        actions = actions.to(device)
+        rewards = rewards.to(device)
+        next_channels = next_channels.to(device)
+        next_inventory = next_inventory.to(device)
+        dones = dones.to(device)
+        n_steps = n_steps.to(device)
 
         q_values = q_network(channels, inventory)
         q_taken = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
@@ -116,7 +172,7 @@ def train_dqn(
                 next_q = next_q_target.gather(1, next_actions).squeeze(1)
             else:
                 next_q = next_q_target.max(dim=1).values
-            td_target = rewards + gamma * next_q * (1.0 - dones)
+            td_target = rewards + (gamma ** n_steps) * next_q * (1.0 - dones)
 
         loss = F.smooth_l1_loss(q_taken, td_target)
 
@@ -166,9 +222,13 @@ def train_bc(
         if not obs:
             continue
 
-        channels, inventory = obs_batch_to_tensors(obs)
+        batch_fn = getattr(q_network, '_obs_batch_fn', obs_batch_to_tensors)
+        channels, inventory = batch_fn(obs)
+        device = next(q_network.parameters()).device
+        channels = channels.to(device)
+        inventory = inventory.to(device)
         logits = q_network(channels, inventory)
-        loss = F.cross_entropy(logits, torch.tensor(actions, dtype=torch.long))
+        loss = F.cross_entropy(logits, torch.tensor(actions, dtype=torch.long, device=device))
 
         optimizer.zero_grad()
         loss.backward()

@@ -7,7 +7,7 @@ text or multimodal inputs.
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
@@ -164,7 +164,23 @@ def observation_to_vector(observation: Dict[str, Any], num_entities: int = NUM_E
 
 
 class Encoder(nn.Module):
-    """Frozen MLP encoder producing a fixed-size latent vector."""
+    """Frozen MLP encoder producing a fixed-size latent vector.
+
+    Parameters
+    ----------
+    grid_size, latent_dim, num_entities, hidden_dim, seed :
+        Standard constructor args (see V1 SPEC).
+    input_dim : int or None
+        Override the input dimension. When ``None`` it is computed from
+        *grid_size*, *num_entities* and ``INVENTORY_DIM``.
+    obs_to_vec_fn : callable or None
+        Custom vectorisation ``observation -> np.ndarray``. When ``None``
+        the default gridworld ``observation_to_vector`` is used.
+    structured_features_fn : callable or None
+        Optional generic perception hook ``observation -> np.ndarray``. When
+        present, these observable features are copied into the tail of the
+        latent vector so downstream latent-space modules can use them directly.
+    """
 
     def __init__(
         self,
@@ -173,18 +189,32 @@ class Encoder(nn.Module):
         num_entities: int = NUM_ENTITIES,
         hidden_dim: int = 256,
         seed: int = 0,
+        input_dim: Optional[int] = None,
+        obs_to_vec_fn: Optional[Any] = None,
+        structured_features_fn: Optional[Any] = None,
+        structured_feature_dim: int = 0,
     ) -> None:
         super().__init__()
         self.grid_size = grid_size
         self.latent_dim = latent_dim
         self.num_entities = num_entities
-        self.input_dim = grid_size * grid_size * num_entities + INVENTORY_DIM
+        self.input_dim = input_dim if input_dim is not None else (
+            grid_size * grid_size * num_entities + INVENTORY_DIM
+        )
+        self._obs_to_vec_fn = obs_to_vec_fn
+        self._structured_features_fn = structured_features_fn
+        self.structured_feature_dim = int(structured_feature_dim)
+        if self.structured_feature_dim < 0:
+            raise ValueError("structured_feature_dim must be non-negative")
+        if self.structured_feature_dim >= latent_dim:
+            raise ValueError("structured_feature_dim must be smaller than latent_dim")
+        self.projected_latent_dim = latent_dim - self.structured_feature_dim
 
         torch.manual_seed(seed)
         self.net = nn.Sequential(
             nn.Linear(self.input_dim, hidden_dim),
             nn.Tanh(),
-            nn.Linear(hidden_dim, latent_dim),
+            nn.Linear(hidden_dim, self.projected_latent_dim),
             nn.Tanh(),
         )
 
@@ -193,19 +223,52 @@ class Encoder(nn.Module):
             p.requires_grad_(False)
         self.eval()
 
+    def _vectorise(self, observation: Dict[str, Any]) -> np.ndarray:
+        if self._obs_to_vec_fn is not None:
+            return self._obs_to_vec_fn(observation)
+        return observation_to_vector(observation, self.num_entities)
+
+    def _structured_features(self, observation: Dict[str, Any]) -> np.ndarray:
+        if self.structured_feature_dim == 0:
+            return np.zeros((0,), dtype=np.float32)
+        if self._structured_features_fn is None:
+            return np.zeros((self.structured_feature_dim,), dtype=np.float32)
+        features = np.asarray(self._structured_features_fn(observation), dtype=np.float32)
+        if features.shape != (self.structured_feature_dim,):
+            raise ValueError(
+                "structured_features_fn returned shape "
+                f"{features.shape}, expected {(self.structured_feature_dim,)}"
+            )
+        return features
+
+    @torch.no_grad()
+    def encode_tensor(self, observation: Dict[str, Any]) -> torch.Tensor:
+        """Encode a single observation into a latent vector on the module device."""
+        vec = self._vectorise(observation)
+        device = next(self.parameters()).device
+        tensor = torch.from_numpy(vec).unsqueeze(0).to(device)
+        projected = self.net(tensor).squeeze(0)
+        if self.structured_feature_dim == 0:
+            return projected
+        features = torch.from_numpy(self._structured_features(observation)).to(device)
+        return torch.cat([projected, features], dim=0)
+
     @torch.no_grad()
     def encode(self, observation: Dict[str, Any]) -> np.ndarray:
         """Encode a single observation into a latent numpy vector."""
-        vec = observation_to_vector(observation, self.num_entities)
-        tensor = torch.from_numpy(vec).unsqueeze(0)
-        latent = self.net(tensor).squeeze(0)
-        return latent.numpy().astype(np.float32)
+        return self.encode_tensor(observation).cpu().numpy().astype(np.float32)
 
     @torch.no_grad()
     def encode_batch(self, observations) -> np.ndarray:
-        vecs = np.stack([observation_to_vector(o, self.num_entities) for o in observations])
-        tensor = torch.from_numpy(vecs)
-        return self.net(tensor).numpy().astype(np.float32)
+        vecs = np.stack([self._vectorise(o) for o in observations])
+        device = next(self.parameters()).device
+        tensor = torch.from_numpy(vecs).to(device)
+        projected = self.net(tensor)
+        if self.structured_feature_dim == 0:
+            return projected.cpu().numpy().astype(np.float32)
+        features = np.stack([self._structured_features(o) for o in observations])
+        features_t = torch.from_numpy(features).to(device)
+        return torch.cat([projected, features_t], dim=1).cpu().numpy().astype(np.float32)
 
     def forward(self, observation: Dict[str, Any]) -> np.ndarray:  # pragma: no cover
         return self.encode(observation)
