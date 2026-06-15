@@ -69,7 +69,7 @@ Pour le mode `live`, garde un volume persistant sur `/app/runs` afin de conserve
 
 ## 2. Production sur ta machine
 
-### Option recommandée avec ton Nginx/Apache existant
+### Option recommandée avec Nginx et tes certificats existants
 
 Si `www.releaskills.com` est déjà servi par ta machine avec les certificats :
 
@@ -79,13 +79,14 @@ Si `www.releaskills.com` est déjà servi par ta machine avec les certificats :
 ```
 
 ne lance pas Caddy sur 80/443. Lance seulement le backend Docker en localhost,
-puis ajoute une route WebSocket dans ton reverse proxy existant.
+puis configure Nginx pour faire le TLS et le proxy WebSocket.
 
 Pré-requis :
 
 ```text
 www.releaskills.com pointe vers l'IP publique de ta machine
-ton reverse proxy HTTPS existant sert déjà www.releaskills.com
+les ports 80 et 443 sont ouverts vers cette machine
+Nginx est installé
 Docker et Docker Compose sont installés
 ```
 
@@ -119,25 +120,24 @@ http://127.0.0.1:8787/healthz
 ws://127.0.0.1:8788
 ```
 
-Si ton reverse proxy est Nginx, ajoute le contenu de
-`deploy/fouloides/nginx.releaskills.conf` dans le bloc HTTPS existant :
-
-```nginx
-server {
-    server_name www.releaskills.com;
-
-    ssl_certificate /etc/letsencrypt/live/www.releaskills.com-0001/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/www.releaskills.com-0001/privkey.pem;
-
-    # colle ici deploy/fouloides/nginx.releaskills.conf
-}
-```
-
-Puis recharge Nginx :
+Si tu n'as pas encore de bloc Nginx pour ce domaine, installe le fichier complet :
 
 ```bash
+sudo cp deploy/fouloides/nginx.releaskills.full.conf /etc/nginx/sites-available/releaskills-fouloides
+sudo ln -sf /etc/nginx/sites-available/releaskills-fouloides /etc/nginx/sites-enabled/releaskills-fouloides
 sudo nginx -t
 sudo systemctl reload nginx
+```
+
+Si tu crées plus tard un autre bloc Nginx pour `www.releaskills.com`, ne garde
+pas deux `server` blocks actifs pour le même domaine/port. Dans ce cas, copie
+seulement les `location` de `deploy/fouloides/nginx.releaskills.conf` dans ton
+bloc existant.
+
+Pour vérifier la config complète :
+
+```bash
+sudo nginx -T | grep -A80 "server_name www.releaskills.com"
 ```
 
 Vérifie :
