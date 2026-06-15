@@ -863,7 +863,7 @@ def main():
              "configs/micro_fouloide_online_properties.yaml pour la branche riche gelée",
     )
     parser.add_argument(
-        "--live-bigmap", action="store_true",
+        "--live-bigmap", action="store_true", default=_env_bool("LIVE_BIGMAP"),
         help="utiliser l'étape incrémentale carte 32×32 seule, sans artefacts ni mémoire",
     )
     parser.add_argument(
