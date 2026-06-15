@@ -69,14 +69,23 @@ Pour le mode `live`, garde un volume persistant sur `/app/runs` afin de conserve
 
 ## 2. Production sur ta machine
 
-La config production utilise Caddy devant le backend Python. Caddy obtient le
-certificat SSL automatiquement et expose le WebSocket en `wss://`.
+### Option recommandée avec ton Nginx/Apache existant
+
+Si `www.releaskills.com` est déjà servi par ta machine avec les certificats :
+
+```text
+/etc/letsencrypt/live/www.releaskills.com-0001/fullchain.pem
+/etc/letsencrypt/live/www.releaskills.com-0001/privkey.pem
+```
+
+ne lance pas Caddy sur 80/443. Lance seulement le backend Docker en localhost,
+puis ajoute une route WebSocket dans ton reverse proxy existant.
 
 Pré-requis :
 
 ```text
-api.hektore.com pointe vers l'IP publique de ta machine
-les ports 80 et 443 sont ouverts vers cette machine
+www.releaskills.com pointe vers l'IP publique de ta machine
+ton reverse proxy HTTPS existant sert déjà www.releaskills.com
 Docker et Docker Compose sont installés
 ```
 
@@ -92,10 +101,70 @@ cp .env.fouloides.example .env.fouloides
 Édite `.env.fouloides` si besoin :
 
 ```text
-FOULOIDES_DOMAIN=api.hektore.com
+FOULOIDES_DOMAIN=www.releaskills.com
 ACME_EMAIL=ton-email@example.com
 SOURCE=stub
 ```
+
+Lance uniquement le backend Python :
+
+```bash
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.backend.yml up -d --build
+```
+
+Le backend écoute alors seulement en local :
+
+```text
+http://127.0.0.1:8787/healthz
+ws://127.0.0.1:8788
+```
+
+Si ton reverse proxy est Nginx, ajoute le contenu de
+`deploy/fouloides/nginx.releaskills.conf` dans le bloc HTTPS existant :
+
+```nginx
+server {
+    server_name www.releaskills.com;
+
+    ssl_certificate /etc/letsencrypt/live/www.releaskills.com-0001/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/www.releaskills.com-0001/privkey.pem;
+
+    # colle ici deploy/fouloides/nginx.releaskills.conf
+}
+```
+
+Puis recharge Nginx :
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Vérifie :
+
+```bash
+curl https://www.releaskills.com/fouloides-healthz
+```
+
+L'URL WebSocket publique est :
+
+```text
+wss://www.releaskills.com/fouloides
+```
+
+Commandes utiles :
+
+```bash
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.backend.yml logs -f
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.backend.yml restart
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.backend.yml up -d --build
+```
+
+### Option Caddy si le domaine n'est pas déjà servi
+
+La config `docker-compose.fouloides.prod.yml` utilise Caddy devant le backend
+Python. Caddy obtient le certificat SSL automatiquement et expose le WebSocket
+en `wss://`. Utilise-la seulement si Docker peut prendre les ports 80 et 443.
 
 Lance :
 
@@ -106,7 +175,7 @@ docker compose --env-file .env.fouloides -f docker-compose.fouloides.prod.yml up
 Vérifie :
 
 ```bash
-curl https://api.hektore.com/healthz
+curl https://www.releaskills.com/healthz
 ```
 
 Si cette commande échoue au premier lancement, regarde les logs Caddy :
@@ -122,7 +191,7 @@ machine, un firewall qui bloque 80/443, ou un autre service déjà branché sur
 L'URL WebSocket publique est :
 
 ```text
-wss://api.hektore.com/fouloides
+wss://www.releaskills.com/fouloides
 ```
 
 Commandes utiles :
@@ -146,7 +215,7 @@ Framework Preset: Other
 Ajoute une variable d'environnement Vercel :
 
 ```text
-SEEDMIND_WS_URL=wss://api.hektore.com/fouloides
+SEEDMIND_WS_URL=wss://www.releaskills.com/fouloides
 ```
 
 `SEEDMIND_WS_URL` est l'URL WebSocket publique de ton backend. Elle doit
