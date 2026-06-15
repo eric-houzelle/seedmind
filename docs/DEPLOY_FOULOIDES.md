@@ -5,7 +5,7 @@ La démo est séparée en deux parties :
 - **Backend Docker** : simulation Python + WebSocket.
 - **Frontend Vercel** : viewer statique HTML/JS.
 
-## 1. Backend Docker
+## 1. Backend Docker local
 
 Construire l'image :
 
@@ -67,7 +67,74 @@ LIVE_CHECKPOINT_EVERY=5000
 
 Pour le mode `live`, garde un volume persistant sur `/app/runs` afin de conserver le checkpoint.
 
-## 2. Frontend Vercel
+## 2. Production sur ta machine
+
+La config production utilise Caddy devant le backend Python. Caddy obtient le
+certificat SSL automatiquement et expose le WebSocket en `wss://`.
+
+Pré-requis :
+
+```text
+api.hektore.com pointe vers l'IP publique de ta machine
+les ports 80 et 443 sont ouverts vers cette machine
+Docker et Docker Compose sont installés
+```
+
+Sur la machine :
+
+```bash
+git clone https://github.com/eric-houzelle/seedmind.git
+cd seedmind
+git checkout main
+cp .env.fouloides.example .env.fouloides
+```
+
+Édite `.env.fouloides` si besoin :
+
+```text
+FOULOIDES_DOMAIN=api.hektore.com
+ACME_EMAIL=ton-email@example.com
+SOURCE=stub
+```
+
+Lance :
+
+```bash
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.prod.yml up -d --build
+```
+
+Vérifie :
+
+```bash
+curl https://api.hektore.com/healthz
+```
+
+Si cette commande échoue au premier lancement, regarde les logs Caddy :
+
+```bash
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.prod.yml logs -f caddy
+```
+
+Les causes les plus fréquentes sont un DNS qui ne pointe pas encore vers la
+machine, un firewall qui bloque 80/443, ou un autre service déjà branché sur
+80/443.
+
+L'URL WebSocket publique est :
+
+```text
+wss://api.hektore.com/fouloides
+```
+
+Commandes utiles :
+
+```bash
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.prod.yml logs -f
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.prod.yml restart
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.prod.yml pull
+docker compose --env-file .env.fouloides -f docker-compose.fouloides.prod.yml up -d --build
+```
+
+## 3. Frontend Vercel
 
 Dans Vercel, importe le repo et configure :
 
@@ -79,7 +146,7 @@ Framework Preset: Other
 Ajoute une variable d'environnement Vercel :
 
 ```text
-SEEDMIND_WS_URL=wss://fouloides-backend.example.com
+SEEDMIND_WS_URL=wss://api.hektore.com/fouloides
 ```
 
 `SEEDMIND_WS_URL` est l'URL WebSocket publique de ton backend. Elle doit
@@ -97,7 +164,7 @@ Sans variable Vercel, tu peux tester avec un paramètre d'URL :
 https://ton-projet.vercel.app/?ws=wss://fouloides-backend.example.com
 ```
 
-## 3. Test local complet
+## 4. Test local complet
 
 Terminal 1 :
 
