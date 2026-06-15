@@ -86,6 +86,9 @@ drive_reward:
   mode: absolute
   comfort:
     enabled: true
+    # Big-map validation uses conjunctive wellbeing: temperature cannot
+    # compensate for collapsed hunger, thirst, or health.
+    aggregation: mean_min_product
     energy: {low: 0.5, high: 1.0}
     hydration: {low: 0.5, high: 1.0}
     health: {low: 0.6, high: 1.0}

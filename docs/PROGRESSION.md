@@ -4748,8 +4748,11 @@ nouveauté après le retour au baseline est volontairement minimale :
 `configs/micro_fouloide_online_homeostatic_bigmap.yaml` garde le même agent, les
 mêmes récompenses, les mêmes actions et le même monde homéostatique, mais passe
 la carte à 32×32 avec des densités de ressources/obstacles approximativement
-conservées. Le viewer live expose cette étape via `--live-bigmap`, avec un
-checkpoint séparé pour ne pas polluer le cerveau validé 16×16 :
+conservées. Le bien-être y utilise l'agrégation stricte
+`mean_min_product` : si eau, énergie, santé ou température sortent vraiment de
+la zone viable, les autres besoins ne peuvent pas compenser artificiellement le
+score. Le viewer live expose cette étape via `--live-bigmap`, avec un checkpoint
+séparé pour ne pas polluer le cerveau validé 16×16 :
 
 ```bash
 python scripts/demo_fouloides_front.py \
