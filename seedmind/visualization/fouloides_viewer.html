@@ -401,13 +401,17 @@ function legendSwatch(drawFn) {
     [legendSwatch(c => c.drawImage(SPR.fouloide, 0, 0)), 'fouloïde'],
     [legendSwatch(c => {
       c.drawImage(TILES[0][0], 0, 0);
-      c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 3, 12, 2);
-      c.fillStyle = '#e25b51'; c.fillRect(2, 3, 9, 2);
+      c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 1, 12, 2);
+      c.fillStyle = '#b777e8'; c.fillRect(2, 1, 8, 2);
+      c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 4, 12, 2);
+      c.fillStyle = '#e25b51'; c.fillRect(2, 4, 9, 2);
       c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 7, 12, 2);
       c.fillStyle = '#5aa7e0'; c.fillRect(2, 7, 6, 2);
-      c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 11, 12, 2);
-      c.fillStyle = '#e9b84d'; c.fillRect(2, 11, 10, 2);
-    }), 'sant\u00e9 / hydratation / \u00e9nergie'],
+      c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 10, 12, 2);
+      c.fillStyle = '#e9b84d'; c.fillRect(2, 10, 10, 2);
+      c.fillStyle = 'rgba(10,16,8,0.8)'; c.fillRect(2, 13, 12, 2);
+      c.fillStyle = '#f08a3c'; c.fillRect(2, 13, 11, 2);
+    }), 'bien-\u00eatre / sant\u00e9 / eau / \u00e9nergie / T\u00b0'],
   ];
   for (const [swatch, label] of entries) {
     const row = document.createElement('div');
@@ -516,6 +520,11 @@ function drawBar(wx, wy, frac, color) {
   ctx.fillRect(sx, sy, w * Math.max(0, Math.min(1, frac)) * cam.zoom, h * cam.zoom);
 }
 
+function temperatureComfort(t) {
+  if (t === undefined || t === null) return null;
+  return Math.max(0, Math.min(1, 1 - Math.abs(t - 0.5) * 2));
+}
+
 function render(now) {
   const pan = 12 / cam.zoom;
   if (keys.ArrowLeft) cam.x -= pan;
@@ -569,9 +578,12 @@ function render(now) {
         drawSprite(SPR.fouloide, px, py, 0, 0);
         if (f.carry) drawSprite(SPR.apple, px + 11, py + 8, 0, 0);
         if (f.drives) {
-          drawBar(px + 1, py - 10, f.drives.hp, '#e25b51');   // santé
-          drawBar(px + 1, py - 7, f.drives.h2o, '#5aa7e0');   // hydratation
-          drawBar(px + 1, py - 4, f.drives.en, '#e9b84d');    // énergie
+          drawBar(px + 1, py - 16, f.drives.wb ?? 0, '#b777e8'); // bien-être
+          drawBar(px + 1, py - 13, f.drives.hp, '#e25b51');      // santé
+          drawBar(px + 1, py - 10, f.drives.h2o, '#5aa7e0');     // hydratation
+          drawBar(px + 1, py - 7, f.drives.en, '#e9b84d');       // énergie
+          const temp = temperatureComfort(f.drives.temp);
+          if (temp !== null) drawBar(px + 1, py - 4, temp, '#f08a3c'); // confort T°
         }
       }});
     }
@@ -649,7 +661,13 @@ function onStep(d, now) {
   for (const f of d.fouloides || []) {
     seen.add(f.id);
     const prev = world.fouloides.get(f.id);
-    const drives = (f.hp === undefined) ? null : { hp: f.hp, h2o: f.h2o, en: f.en };
+    const drives = (f.hp === undefined) ? null : {
+      hp: f.hp,
+      h2o: f.h2o,
+      en: f.en,
+      temp: f.temp,
+      wb: f.wellbeing,
+    };
     if (prev) {
       // l'ancienne cible devient le point de départ de l'interpolation
       world.fouloides.set(f.id, {
