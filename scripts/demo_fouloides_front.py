@@ -812,6 +812,10 @@ def main():
              "configs/micro_fouloide_online_properties.yaml pour la branche riche gelée",
     )
     parser.add_argument(
+        "--live-bigmap", action="store_true",
+        help="utiliser l'étape incrémentale carte 32×32 seule, sans artefacts ni mémoire",
+    )
+    parser.add_argument(
         "--live-checkpoint", default="runs/fouloide_live_homeostatic/checkpoint_live.pt",
         help="cerveau persistant du fouloïde live (auto-repris s'il existe)",
     )
@@ -847,6 +851,10 @@ def main():
             f"resource_memory={not args.disable_resource_memory}"
         )
     elif args.source == "live":
+        if args.live_bigmap:
+            args.live_config = "configs/micro_fouloide_online_homeostatic_bigmap.yaml"
+            if args.live_checkpoint == "runs/fouloide_live_homeostatic/checkpoint_live.pt":
+                args.live_checkpoint = "runs/fouloide_live_bigmap/checkpoint_live.pt"
         source = LiveFouloideWorldSource(
             config_path=args.live_config,
             seed=args.seed,
