@@ -1,0 +1,6 @@
+{
+  "scripts": {
+    "build:vercel": "node scripts/build_fouloides_front.mjs"
+  },
+  "devDependencies": {}
+}
