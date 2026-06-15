@@ -438,6 +438,7 @@ class MicroFouloideWorldSource:
             "drive": round(_drive(self.info), 3),
             "energy": round(float(self.info.get("energy", 0.0)), 3),
             "hydration": round(float(self.info.get("hydration", 0.0)), 3),
+            "temperature": round(float(self.info.get("temperature", 0.5)), 3),
             "health": round(float(self.info.get("health", 0.0)), 3),
             "planner_used": round(self.planner_used / max(self.total_actions, 1), 3),
             "resource_memory_used": round(
@@ -457,6 +458,8 @@ class MicroFouloideWorldSource:
                 "hp": stats["health"],
                 "h2o": stats["hydration"],
                 "en": stats["energy"],
+                "temp": stats["temperature"],
+                "wellbeing": stats["drive"],
             }],
             "terrain": _grid_terrain(grid, self.env.registry),
             "apples": _grid_positions(grid, _render_ids(self.env.registry, "apple")),
@@ -660,6 +663,7 @@ class LiveFouloideWorldSource:
             "wellbeing_avg": round(float(np.mean(self.wellbeing_window)), 3),
             "energy": round(float(info.get("energy", 0.0)), 3),
             "hydration": round(float(info.get("hydration", 0.0)), 3),
+            "temperature": round(float(info.get("temperature", 0.5)), 3),
             "health": round(float(info.get("health", 0.0)), 3),
             "wm_loss": round(float(learn["wm_loss"]), 4),
             "td_loss": round(float(learn["td_loss"]), 4),
@@ -741,6 +745,8 @@ class LiveFouloideWorldSource:
                 "hp": stats["health"],
                 "h2o": stats["hydration"],
                 "en": stats["energy"],
+                "temp": stats["temperature"],
+                "wellbeing": stats["wellbeing"],
             }],
             "terrain": _grid_terrain(grid, self.env.registry),
             "apples": _grid_positions(grid, _render_ids(self.env.registry, "apple")),
@@ -857,6 +863,10 @@ def main():
              "configs/micro_fouloide_online_properties.yaml pour la branche riche gelée",
     )
     parser.add_argument(
+        "--live-bigmap", action="store_true",
+        help="utiliser l'étape incrémentale carte 32×32 seule, sans artefacts ni mémoire",
+    )
+    parser.add_argument(
         "--live-checkpoint", default=_env(
             "LIVE_CHECKPOINT", "runs/fouloide_live_homeostatic/checkpoint_live.pt",
         ),
@@ -906,6 +916,10 @@ def main():
             f"resource_memory={not args.disable_resource_memory}"
         )
     elif args.source == "live":
+        if args.live_bigmap:
+            args.live_config = "configs/micro_fouloide_online_homeostatic_bigmap.yaml"
+            if args.live_checkpoint == "runs/fouloide_live_homeostatic/checkpoint_live.pt":
+                args.live_checkpoint = "runs/fouloide_live_bigmap/checkpoint_live.pt"
         source = LiveFouloideWorldSource(
             config_path=args.live_config,
             seed=args.seed,

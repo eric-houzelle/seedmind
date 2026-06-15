@@ -4743,6 +4743,30 @@ peut représenter cet état fonctionnel ; la suite doit continuer par
 l'introduction isolée d'une **carte plus grande seule**, sans artefacts ni autre
 nouveauté simultanée.
 
+**Étape incrémentale en cours — carte 32×32 seule (15 juin 2026).** La première
+nouveauté après le retour au baseline est volontairement minimale :
+`configs/micro_fouloide_online_homeostatic_bigmap.yaml` garde le même agent, les
+mêmes récompenses, les mêmes actions et le même monde homéostatique, mais passe
+la carte à 32×32 avec des densités de ressources/obstacles approximativement
+conservées. Le bien-être y utilise l'agrégation stricte
+`mean_min_product` : si eau, énergie, santé ou température sortent vraiment de
+la zone viable, les autres besoins ne peuvent pas compenser artificiellement le
+score. Le viewer live expose cette étape via `--live-bigmap`, avec un checkpoint
+séparé pour ne pas polluer le cerveau validé 16×16 :
+
+```bash
+python scripts/demo_fouloides_front.py \
+  --source live \
+  --tick-ms 60 \
+  --live-bigmap \
+  --live-fresh
+```
+
+Critère de passage : laisser apprendre depuis zéro et vérifier visuellement que
+les records repartent à la hausse, que `boire` et `manger` deviennent non nuls,
+et que le bien-être remonte durablement avant d'ajouter la mémoire spatiale ou
+les artefacts.
+
 ---
 
 ## 9. Demo front fouloïdes (préparation)
