@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import random
 import sys
 from collections import Counter, deque
@@ -59,6 +60,31 @@ DEFAULT_MICRO_CHECKPOINT = (
     "runs/micro_fouloide_v0_rough_valueplanner_resource_navigation_seed3/"
     "checkpoint_final.pt"
 )
+
+
+def _env(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return int(value)
+
+
+def _env_float(name: str, default: float | None) -> float | None:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return float(value)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +802,12 @@ async def run_ws_server(host: str, port: int, source: WorldSource, tick_ms: int)
 
 class ViewerHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/healthz":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"ok\n")
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
@@ -795,38 +827,65 @@ def run_http_server(host: str, port: int):
 
 def main():
     parser = argparse.ArgumentParser(description="SeedMind demo front fouloïdes")
-    parser.add_argument("--source", choices=["stub", "micro", "live"], default="stub")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8787)
-    parser.add_argument("--size", type=int, default=96, help="côté du monde (tuiles)")
-    parser.add_argument("--fouloides", type=int, default=14)
-    parser.add_argument("--tick-ms", type=int, default=150)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument("--micro-config", default=DEFAULT_MICRO_CONFIG)
-    parser.add_argument("--micro-checkpoint", default=DEFAULT_MICRO_CHECKPOINT)
-    parser.add_argument("--micro-uncertainty-threshold", type=float, default=None)
+    parser.add_argument("--source", choices=["stub", "micro", "live"], default=_env("SOURCE", "stub"))
+    parser.add_argument("--host", default=_env("HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=_env_int("PORT", 8787))
     parser.add_argument(
-        "--live-config", default="configs/micro_fouloide_online_properties.yaml",
+        "--ws-port", type=int, default=_env_int("WS_PORT", 0),
+        help="port WebSocket ; défaut : port HTTP + 1",
+    )
+    parser.add_argument(
+        "--no-http", action="store_true", default=_env_bool("NO_HTTP"),
+        help="ne lance que le serveur WebSocket",
+    )
+    parser.add_argument("--size", type=int, default=_env_int("SIZE", 96), help="côté du monde (tuiles)")
+    parser.add_argument("--fouloides", type=int, default=_env_int("FOULOIDES", 14))
+    parser.add_argument("--tick-ms", type=int, default=_env_int("TICK_MS", 150))
+    parser.add_argument("--seed", type=int, default=_env_int("SEED", 0))
+    parser.add_argument("--device", default=_env("DEVICE", "cpu"))
+    parser.add_argument("--micro-config", default=_env("MICRO_CONFIG", DEFAULT_MICRO_CONFIG))
+    parser.add_argument("--micro-checkpoint", default=_env("MICRO_CHECKPOINT", DEFAULT_MICRO_CHECKPOINT))
+    parser.add_argument(
+        "--micro-uncertainty-threshold", type=float,
+        default=_env_float("MICRO_UNCERTAINTY_THRESHOLD", None),
+    )
+    parser.add_argument(
+        "--live-config", default=_env(
+            "LIVE_CONFIG", "configs/micro_fouloide_online_properties.yaml",
+        ),
         help="config phare (propriétés + mémoire spatiale + artefacts) ; "
              "ancien cerveau incompatible → premier lancement avec --live-fresh",
     )
     parser.add_argument(
-        "--live-checkpoint", default="runs/fouloide_live/checkpoint_live.pt",
+        "--live-checkpoint", default=_env(
+            "LIVE_CHECKPOINT", "runs/fouloide_live/checkpoint_live.pt",
+        ),
         help="cerveau persistant du fouloïde live (auto-repris s'il existe)",
     )
     parser.add_argument(
-        "--live-checkpoint-every", type=int, default=5000,
+        "--live-checkpoint-every", type=int,
+        default=_env_int("LIVE_CHECKPOINT_EVERY", 5000),
         help="sauvegarde tous les N steps (0 = off)",
     )
     parser.add_argument(
-        "--live-fresh", action="store_true",
+        "--live-fresh", action="store_true", default=_env_bool("LIVE_FRESH"),
         help="ignorer le checkpoint existant et repartir d'un cerveau vierge",
     )
-    parser.add_argument("--disable-resource-memory", action="store_true")
-    parser.add_argument("--allow-blocked-moves", action="store_true")
-    parser.add_argument("--allow-noop-interact", action="store_true")
+    parser.add_argument(
+        "--disable-resource-memory", action="store_true",
+        default=_env_bool("DISABLE_RESOURCE_MEMORY"),
+    )
+    parser.add_argument(
+        "--allow-blocked-moves", action="store_true",
+        default=_env_bool("ALLOW_BLOCKED_MOVES"),
+    )
+    parser.add_argument(
+        "--allow-noop-interact", action="store_true",
+        default=_env_bool("ALLOW_NOOP_INTERACT"),
+    )
     args = parser.parse_args()
+    if args.ws_port <= 0:
+        args.ws_port = args.port + 1
 
     if args.source == "micro":
         source = MicroFouloideWorldSource(
@@ -873,20 +932,25 @@ def main():
         mode = "monde stub"
         world_label = f"{args.size}x{args.size}, {args.fouloides} fouloïdes"
 
-    threading.Thread(
-        target=run_http_server,
-        args=(args.host, args.port),
-        daemon=True,
-    ).start()
+    if not args.no_http:
+        threading.Thread(
+            target=run_http_server,
+            args=(args.host, args.port),
+            daemon=True,
+        ).start()
 
     print(f"\n  SeedMind — Demo front fouloïdes ({mode})")
-    print(f"  Viewer:    http://{args.host}:{args.port}")
-    print(f"  WebSocket: ws://{args.host}:{args.port + 1}")
+    if args.no_http:
+        print("  Viewer:    désactivé (--no-http)")
+    else:
+        print(f"  Viewer:    http://{args.host}:{args.port}")
+        print(f"  Health:    http://{args.host}:{args.port}/healthz")
+    print(f"  WebSocket: ws://{args.host}:{args.ws_port}")
     print(f"  Monde:     {world_label}")
     print("  Ctrl+C pour arrêter.\n")
 
     try:
-        asyncio.run(run_ws_server(args.host, args.port + 1, source, args.tick_ms))
+        asyncio.run(run_ws_server(args.host, args.ws_port, source, args.tick_ms))
     except KeyboardInterrupt:
         pass
     finally:

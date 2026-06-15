@@ -691,9 +691,20 @@ function showEvent(event) {
   tickerTimeout = setTimeout(() => tickerEl.classList.remove('show'), 2500);
 }
 
-function connect() {
+const BUILT_WS_URL = "__SEEDMIND_WS_URL__";
+
+function configuredWsUrl() {
+  const queryWs = new URLSearchParams(location.search).get('ws');
+  if (queryWs) return queryWs;
+  if (window.SEEDMIND_WS_URL) return window.SEEDMIND_WS_URL;
+  if (BUILT_WS_URL && !BUILT_WS_URL.startsWith('__')) return BUILT_WS_URL;
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.hostname}:${parseInt(location.port) + 1}`);
+  const basePort = Number.parseInt(location.port || (location.protocol === 'https:' ? '443' : '80'), 10);
+  return `${proto}://${location.hostname}:${basePort + 1}`;
+}
+
+function connect() {
+  const ws = new WebSocket(configuredWsUrl());
   ws.onopen = () => { statusEl.textContent = 'monde connect\u00e9'; statusEl.classList.remove('offline'); };
   ws.onclose = () => {
     statusEl.textContent = 'd\u00e9connect\u00e9 \u2014 reconnexion\u2026';
