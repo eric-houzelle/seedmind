@@ -1,0 +1,15 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$FOULOIDES_DOMAIN} {
+	encode zstd gzip
+
+	@websocket path /fouloides
+	reverse_proxy @websocket fouloides-backend:8788
+
+	@health path /healthz
+	reverse_proxy @health fouloides-backend:8787
+
+	respond "SeedMind Fouloides backend is running. WebSocket: wss://{$FOULOIDES_DOMAIN}/fouloides\n" 200
+}

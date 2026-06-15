@@ -23,6 +23,7 @@ checkpoints/
 
 # Logs
 *.log
+.env.fouloides
 
 # OS
 .DS_Store
