@@ -3,10 +3,14 @@
 Learns ``(latent_state, action) -> (next_latent_state, reward, uncertainty)``.
 Trained on experiences collected by the agent. The predicted uncertainty is a
 positive scalar (softplus) the planner/curiosity can use later.
+
+``RecurrentWorldModel`` (RSSM trajectory, deterministic variant) adds a GRU
+recurrent state ``h_t`` that integrates encoded observations over time, giving
+the agent memory beyond its (egocentric) field of view.
 """
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -151,3 +155,140 @@ class WorldModel(nn.Module):
         else:
             events = np.zeros((len(latents), 0), dtype=np.float32)
         return delta, events
+
+
+class RecurrentWorldModel(nn.Module):
+    """Deterministic recurrent world model (the "M" of World Models).
+
+    A GRU keeps a deterministic state ``h_t`` that integrates the encoded
+    observations over time, so the agent remembers what is now outside its
+    (egocentric) field of view::
+
+        filtering:    h_t        = GRU([z_t, a_{t-1}], h_{t-1})   z_t = encoder(obs_t)
+        transition:   ẑ_{t+1}, r̂ = heads(h_t, a_t)
+        imagination:  h_{t+1}     = GRU([ẑ_{t+1}, a_t], h_t)      (feeds its own prediction)
+
+    The encoder stays frozen, so the predicted next latent ``z`` remains a stable
+    target — same rationale as the feed-forward :class:`WorldModel`. The model
+    itself is trainable. The latent ``z`` is deterministic (no stochastic prior /
+    KL); the stochastic RSSM variant is a later upgrade.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        num_actions: int,
+        hidden_dim: int = 256,
+        deter_dim: int = 128,
+        num_layers: int = 2,
+        causal_feature_dim: int = 0,
+        num_events: int = 0,
+    ) -> None:
+        super().__init__()
+        self.latent_dim = int(latent_dim)
+        self.num_actions = int(num_actions)
+        self.deter_dim = int(deter_dim)
+        self.causal_feature_dim = int(causal_feature_dim)
+        self.num_events = int(num_events)
+
+        # Recurrence: integrate the current latent + last action into h.
+        self.gru = nn.GRUCell(self.latent_dim + self.num_actions, self.deter_dim)
+
+        # Transition trunk: (h, action) -> features for the prediction heads.
+        input_dim = self.deter_dim + self.num_actions
+        layers = [nn.Linear(input_dim, hidden_dim), nn.ReLU()]
+        for _ in range(max(0, num_layers - 1)):
+            layers += [nn.Linear(hidden_dim, hidden_dim), nn.ReLU()]
+        self.trunk = nn.Sequential(*layers)
+
+        self.next_state_head = nn.Linear(hidden_dim, self.latent_dim)
+        self.reward_head = nn.Linear(hidden_dim, 1)
+        self.uncertainty_head = nn.Linear(hidden_dim, 1)
+        self.causal_feature_delta_head = (
+            nn.Linear(hidden_dim, self.causal_feature_dim)
+            if self.causal_feature_dim > 0 else None
+        )
+        self.event_head = (
+            nn.Linear(hidden_dim, self.num_events) if self.num_events > 0 else None
+        )
+
+    # -- state -----------------------------------------------------------
+    def initial_state(self, batch_size: int = 1, device=None) -> torch.Tensor:
+        device = device or next(self.parameters()).device
+        return torch.zeros(batch_size, self.deter_dim, device=device)
+
+    def _action_onehot(self, action_index: torch.Tensor) -> torch.Tensor:
+        return F.one_hot(action_index.long(), num_classes=self.num_actions).float()
+
+    # -- recurrence (filtering) -----------------------------------------
+    def observe_step(
+        self, latent: torch.Tensor, prev_action_index: torch.Tensor, h_prev: torch.Tensor,
+    ) -> torch.Tensor:
+        """Advance the recurrent state by integrating ``latent`` (``z_t``).
+
+        ``latent`` is the *observed* encoded state and ``prev_action_index`` the
+        action that led here. Returns the new ``h_t``.
+        """
+        x = torch.cat([latent, self._action_onehot(prev_action_index)], dim=-1)
+        return self.gru(x, h_prev)
+
+    # -- transition heads ------------------------------------------------
+    def _trunk_features(self, h: torch.Tensor, action_index: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([h, self._action_onehot(action_index)], dim=-1)
+        return self.trunk(x)
+
+    def forward(
+        self, h: torch.Tensor, action_index: torch.Tensor, detach_uncertainty: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        feat = self._trunk_features(h, action_index)
+        next_state = self.next_state_head(feat)
+        reward = self.reward_head(feat).squeeze(-1)
+        unc_feat = feat.detach() if detach_uncertainty else feat
+        uncertainty = F.softplus(self.uncertainty_head(unc_feat)).squeeze(-1)
+        return next_state, reward, uncertainty
+
+    def forward_aux(
+        self, h: torch.Tensor, action_index: torch.Tensor, detach_uncertainty: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        feat = self._trunk_features(h, action_index)
+        unc_feat = feat.detach() if detach_uncertainty else feat
+        out: Dict[str, torch.Tensor] = {
+            "next_state": self.next_state_head(feat),
+            "reward": self.reward_head(feat).squeeze(-1),
+            "uncertainty": F.softplus(self.uncertainty_head(unc_feat)).squeeze(-1),
+        }
+        if self.causal_feature_delta_head is not None:
+            out["causal_feature_delta"] = self.causal_feature_delta_head(feat)
+        if self.event_head is not None:
+            out["event_logits"] = self.event_head(feat)
+        return out
+
+    # -- imagination (planner) ------------------------------------------
+    @torch.no_grad()
+    def imagine_batch(
+        self, h: torch.Tensor, action_index: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """One imagined step: predict next latent, then advance ``h`` with it.
+
+        Returns ``(h_next, z_next, reward, uncertainty)``. Used to roll
+        particles forward in the planner — each particle carries its own ``h``.
+        """
+        self.eval()
+        next_state, reward, uncertainty = self.forward(h, action_index)
+        h_next = self.observe_step(next_state, action_index, h)
+        return h_next, next_state, reward, uncertainty
+
+    @torch.no_grad()
+    def recur_np(
+        self, latent: np.ndarray, prev_action_index: int, h_prev: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Filtering step from a numpy latent; keeps ``h`` on the module device."""
+        self.eval()
+        device = next(self.parameters()).device
+        z = torch.as_tensor(latent, dtype=torch.float32, device=device)
+        if z.dim() == 1:
+            z = z.unsqueeze(0)
+        if h_prev is None:
+            h_prev = self.initial_state(z.shape[0], device=device)
+        a = torch.as_tensor([int(prev_action_index)], dtype=torch.long, device=device)
+        return self.observe_step(z, a, h_prev)

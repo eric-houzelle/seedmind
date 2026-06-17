@@ -1,0 +1,158 @@
+project:
+  name: SeedMind
+
+# Trajectoire RSSM — Étape 1 : perception ÉGOCENTRÉE CONVOLUTIVE.
+# Dérivé de micro_fouloide_online_homeostatic_bigmap.yaml. UNE seule variable
+# change vs ce baseline : la perception passe de "grille absolue entière" à
+# "fenêtre 11×11 centrée sur l'agent" (encodeur conv gelé). Mêmes monde,
+# rewards, modèle, canaux (onehot).
+#
+# Pas de mémoire globale ici : la densité d'eau (24 sur 32×32 → ~3 visibles
+# dans 11×11) suffit à survivre en vision locale. La mémoire viendra de l'état
+# latent récurrent à l'Étape 2 (RSSM), pas d'une grille construite à la main.
+
+env:
+  type: micro_fouloide
+  size: 32
+  max_steps: 0              # monde infini, pas de timeout
+  visibility_radius: 4
+  energy_start: 0.75
+  hydration_start: 0.75
+  temperature_start: 0.5
+  health_start: 1.0
+  energy_decay: 0.005
+  hydration_decay: 0.006
+  rest_energy_decay_scale: 0.35
+  food_energy_gain: 0.32
+  water_hydration_gain: 0.42
+  temperature_drift: 0.018
+  temperature_recovery: 0.004
+  critical_threshold: 0.14
+  health_decay: 0.028
+  danger_damage: 0.03
+  soft_death: true
+  health_floor: 0.20
+  health_regen: 0.015
+  resource_regrow_steps: 120
+  num_food: 32
+  num_water: 24
+  num_warm_zones: 28
+  num_cold_zones: 28
+  num_dangers: 16
+  num_obstacles: 96
+
+agent:
+  latent_dim: 64
+  memory_top_k: 5
+  observation:
+    egocentric:
+      enabled: true
+      radius: 5            # fenêtre 11×11
+  encoder:
+    conv_channels: 32
+
+world_model:
+  enabled: true
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+  sampler: causal
+  uncertainty_head_updates_per_train: 2
+
+causal_world_model:
+  enabled: true
+  predict_events: true
+  feature_loss_weight: 2.0
+  event_loss_weight: 0.25
+  event_class_balance: true
+  event_sample_names:
+    - interact_water
+    - interact_food
+    - interact_noop
+    - health_loss
+    - death
+  event_sample_name_weight: 2.0
+  event_sample_done_weight: 2.0
+
+value_model:
+  enabled: true
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+  gamma: 0.97
+  target_update: 500
+  sampler: causal
+  reward_key: reward_learning
+
+curiosity:
+  enabled: true
+  weight: 0.5
+  max_reward: 1.0
+
+drive_reward:
+  enabled: true
+  weight: 1.0
+  mode: absolute
+  comfort:
+    enabled: true
+    aggregation: mean_min_product
+    energy: {low: 0.5, high: 1.0}
+    hydration: {low: 0.5, high: 1.0}
+    health: {low: 0.6, high: 1.0}
+    temperature: {target: 0.5, tolerance: 0.15}
+
+resource_reward:
+  enabled: true
+  weight: 1.0
+  low_threshold: 0.35
+  critical_threshold: 0.18
+  event_rewards:
+    interact_water: 0.10
+    interact_food: 0.06
+    interact_noop: -0.08
+    move_blocked: -0.03
+    damage: -0.08
+    health_loss: -0.12
+  low_hydration_water_bonus: 0.45
+  critical_hydration_water_bonus: 0.70
+  low_energy_food_bonus: 0.25
+  critical_energy_food_bonus: 0.40
+  low_drive_passive_penalty: 0.08
+
+policy:
+  type: epsilon_greedy
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay_steps: 30000
+
+planning:
+  enabled: true
+  weight: 0.25
+  horizon: 5
+  num_samples: 8
+  terminal_value_weight: 1.0
+  margin_threshold: 0.01
+  q_advantage_threshold: 0.02
+
+dqn:
+  enabled: true
+  conv_channels: 64
+  hidden_dim: 256
+  learning_rate: 0.0005
+  gamma: 0.97
+  batch_size: 64
+  target_update: 500
+  double_dqn: true
+  sampler: causal
+  curiosity_weight: 1.0
+  reward_key: reward_learning
+
+online:
+  update_every: 8
+  updates_per_cycle: 4
+  warmup_steps: 2000
+  threshold_refresh_steps: 500
+  threshold_quantile: 0.60
+  threshold_samples: 2000

@@ -17,12 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from seedmind.agent.agent import Agent
 from seedmind.agent.curiosity import compute_prediction_error_tensor
-from seedmind.agent.encoder import Encoder
+from seedmind.agent.encoder import ConvEncoder, Encoder
 from seedmind.agent.goal_generator import GoalGenerator
 from seedmind.agent.map_memory import MapMemory
 from seedmind.agent.micro_fouloide_encoder import (
     make_micro_fouloide_obs_fns,
     make_micro_fouloide_property_obs_fns,
+    wrap_egocentric,
 )
 from seedmind.agent.latent_q_network import LatentQNetwork
 from seedmind.agent.policy import EpsilonGreedyPolicy
@@ -30,7 +31,7 @@ from seedmind.agent.q_network import QNetwork
 from seedmind.agent.value_model import ValueModel
 from seedmind.agent.world_model import WorldModel
 from seedmind.envs.entities import load_registry
-from seedmind.envs.micro_fouloide_world import MicroFouloideWorld
+from seedmind.envs.micro_fouloide_world import MicroFouloideWorld, OBSTACLE
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.memory.persistent_memory import PersistentMemory
 from seedmind.objectives import build_objective_scorer
@@ -171,24 +172,56 @@ def build_agent(config: dict, seed: int) -> Agent:
             registry.size, inventory=inventory_enabled,
         )
     actions = _probe_env(config).actions
-    input_dim = grid_size * grid_size * num_channels + num_scalars
+
+    # Egocentric perception: a fixed window centred on the agent makes the
+    # network independent of the world size (and lets the world grow). It crops
+    # the grid before the channel encoders, so it composes with both obs modes.
+    ego_cfg = obs_cfg.get("egocentric", {})
+    egocentric = bool(ego_cfg.get("enabled", False))
+    if egocentric:
+        radius = int(ego_cfg.get("radius", 5))
+        oob_fill = int(ego_cfg.get("oob_fill", OBSTACLE))
+        obs_to_vec_fn, obs_batch_fn = wrap_egocentric(
+            obs_to_vec_fn, obs_batch_fn, radius, oob_fill,
+        )
+        net_grid_size = 2 * radius + 1
+    else:
+        net_grid_size = grid_size
+
+    input_dim = net_grid_size * net_grid_size * num_channels + num_scalars
     structured_latent_features = bool(ac.get("structured_latent_features", False))
     structured_feature_dim = len(causal_feature_names(config)) if structured_latent_features else 0
     structured_feature_env = _probe_env(config) if structured_latent_features else None
-
-    encoder = Encoder(
-        grid_size=grid_size,
-        latent_dim=latent_dim,
-        num_entities=num_channels,
-        seed=seed or 0,
-        input_dim=input_dim,
-        obs_to_vec_fn=obs_to_vec_fn,
-        structured_features_fn=(
-            structured_feature_env.causal_features
-            if structured_feature_env is not None else None
-        ),
-        structured_feature_dim=structured_feature_dim,
+    structured_features_fn = (
+        structured_feature_env.causal_features
+        if structured_feature_env is not None else None
     )
+
+    if egocentric:
+        enc_cfg = ac.get("encoder", {})
+        encoder = ConvEncoder(
+            num_channels=num_channels,
+            num_scalars=num_scalars,
+            window_size=net_grid_size,
+            latent_dim=latent_dim,
+            conv_channels=int(enc_cfg.get("conv_channels", 32)),
+            hidden_dim=int(enc_cfg.get("hidden_dim", 256)),
+            seed=seed or 0,
+            obs_batch_fn=obs_batch_fn,
+            structured_features_fn=structured_features_fn,
+            structured_feature_dim=structured_feature_dim,
+        )
+    else:
+        encoder = Encoder(
+            grid_size=grid_size,
+            latent_dim=latent_dim,
+            num_entities=num_channels,
+            seed=seed or 0,
+            input_dim=input_dim,
+            obs_to_vec_fn=obs_to_vec_fn,
+            structured_features_fn=structured_features_fn,
+            structured_feature_dim=structured_feature_dim,
+        )
     world_model = WorldModel(
         latent_dim=latent_dim,
         num_actions=len(actions),
@@ -208,7 +241,7 @@ def build_agent(config: dict, seed: int) -> Agent:
         enabled=bool(cc.get("enabled", True)),
     )
     q_network = QNetwork(
-        grid_size=grid_size,
+        grid_size=net_grid_size,
         num_actions=len(actions),
         conv_channels=int(dc.get("conv_channels", 64)),
         hidden_dim=int(dc.get("hidden_dim", 256)),

@@ -272,3 +272,116 @@ class Encoder(nn.Module):
 
     def forward(self, observation: Dict[str, Any]) -> np.ndarray:  # pragma: no cover
         return self.encode(observation)
+
+
+class ConvEncoder(nn.Module):
+    """Frozen *convolutional* encoder over a multi-channel grid + scalars.
+
+    Same role and numpy interface as :class:`Encoder` (``encode`` /
+    ``encode_tensor`` / ``encode_batch``), but instead of flattening the whole
+    world into one big vector it runs a small CNN over a channel grid and
+    concatenates the scalar features. This makes the latent **translation-aware**
+    and, when fed an egocentric window of fixed side, **independent of the world
+    size** — so the same encoder transfers across worlds of any size.
+
+    It stays *frozen* (random fixed weights) for the same reason as
+    :class:`Encoder`: the World Model needs a stable latent target to predict.
+    Domain-agnostic: it consumes ``obs_batch_fn`` (observations -> ``(channels,
+    scalars)`` tensors), so it works with any world or observation mode.
+    """
+
+    def __init__(
+        self,
+        num_channels: int,
+        num_scalars: int,
+        window_size: int,
+        latent_dim: int = 128,
+        conv_channels: int = 32,
+        hidden_dim: int = 256,
+        seed: int = 0,
+        obs_batch_fn: Optional[Any] = None,
+        structured_features_fn: Optional[Any] = None,
+        structured_feature_dim: int = 0,
+    ) -> None:
+        super().__init__()
+        if obs_batch_fn is None:
+            raise ValueError("ConvEncoder requires an obs_batch_fn")
+        self.latent_dim = int(latent_dim)
+        self.num_channels = int(num_channels)
+        self.num_scalars = int(num_scalars)
+        self.window_size = int(window_size)
+        self._obs_batch_fn = obs_batch_fn
+        self._structured_features_fn = structured_features_fn
+        self.structured_feature_dim = int(structured_feature_dim)
+        if self.structured_feature_dim < 0:
+            raise ValueError("structured_feature_dim must be non-negative")
+        if self.structured_feature_dim >= latent_dim:
+            raise ValueError("structured_feature_dim must be smaller than latent_dim")
+        self.projected_latent_dim = latent_dim - self.structured_feature_dim
+
+        torch.manual_seed(seed)
+        self.conv = nn.Sequential(
+            nn.Conv2d(self.num_channels, conv_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(conv_channels, conv_channels, kernel_size=3, padding=1),
+            nn.ReLU(),
+        )
+        conv_out = conv_channels * self.window_size * self.window_size
+        self.head = nn.Sequential(
+            nn.Linear(conv_out + self.num_scalars, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, self.projected_latent_dim),
+            nn.Tanh(),
+        )
+
+        # Freeze: the encoder is a fixed random projection, like Encoder.
+        for p in self.parameters():
+            p.requires_grad_(False)
+        self.eval()
+
+    def _structured_features(self, observation: Dict[str, Any]) -> np.ndarray:
+        if self.structured_feature_dim == 0:
+            return np.zeros((0,), dtype=np.float32)
+        if self._structured_features_fn is None:
+            return np.zeros((self.structured_feature_dim,), dtype=np.float32)
+        features = np.asarray(self._structured_features_fn(observation), dtype=np.float32)
+        if features.shape != (self.structured_feature_dim,):
+            raise ValueError(
+                "structured_features_fn returned shape "
+                f"{features.shape}, expected {(self.structured_feature_dim,)}"
+            )
+        return features
+
+    @torch.no_grad()
+    def _project(self, observations) -> torch.Tensor:
+        channels, scalars = self._obs_batch_fn(observations)
+        device = next(self.parameters()).device
+        channels = channels.to(device).float()
+        scalars = scalars.to(device).float()
+        x = self.conv(channels).flatten(1)
+        x = torch.cat([x, scalars], dim=1)
+        return self.head(x)
+
+    @torch.no_grad()
+    def encode_tensor(self, observation: Dict[str, Any]) -> torch.Tensor:
+        projected = self._project([observation]).squeeze(0)
+        if self.structured_feature_dim == 0:
+            return projected
+        features = torch.from_numpy(self._structured_features(observation)).to(projected.device)
+        return torch.cat([projected, features], dim=0)
+
+    @torch.no_grad()
+    def encode(self, observation: Dict[str, Any]) -> np.ndarray:
+        return self.encode_tensor(observation).cpu().numpy().astype(np.float32)
+
+    @torch.no_grad()
+    def encode_batch(self, observations) -> np.ndarray:
+        projected = self._project(observations)
+        if self.structured_feature_dim == 0:
+            return projected.cpu().numpy().astype(np.float32)
+        features = np.stack([self._structured_features(o) for o in observations])
+        features_t = torch.from_numpy(features).to(projected.device)
+        return torch.cat([projected, features_t], dim=1).cpu().numpy().astype(np.float32)
+
+    def forward(self, observation: Dict[str, Any]) -> np.ndarray:  # pragma: no cover
+        return self.encode(observation)
