@@ -17,7 +17,7 @@ from seedmind.agent.planner import Planner
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
 from seedmind.agent.value_model import ValueModel
-from seedmind.agent.world_model import WorldModel
+from seedmind.agent.world_model import RecurrentWorldModel, WorldModel
 from seedmind.memory.persistent_memory import PersistentMemory
 
 
@@ -89,6 +89,37 @@ class Agent:
         ]
         self.last_planner_used = False
 
+        # Recurrent memory: when the world model is recurrent, the agent carries
+        # a hidden state h_t across steps (integrating egocentric observations)
+        # and feeds it to the Q-network so the policy has memory beyond its view.
+        self.recurrent = isinstance(world_model, RecurrentWorldModel)
+        self.h = None              # current recurrent state tensor, or None
+        self._prev_action_idx = 0  # action that led to the current observation
+
+    # ------------------------------------------------------------------
+    # Recurrent state lifecycle (no-op unless the world model is recurrent)
+    # ------------------------------------------------------------------
+    def reset_state(self) -> None:
+        """Reset the recurrent memory — call on episode start / death."""
+        self.h = None
+        self._prev_action_idx = 0
+
+    def advance(self, latent_state: np.ndarray):
+        """Integrate the current latent into the recurrent state h_t.
+
+        Call once per step *before* :meth:`choose_action`. No-op (returns None)
+        unless the world model is recurrent.
+        """
+        if not self.recurrent:
+            return None
+        self.h = self.world_model.recur_np(latent_state, self._prev_action_idx, self.h)
+        return self.h
+
+    def _h_vec(self) -> Optional[np.ndarray]:
+        if not self.recurrent or self.h is None:
+            return None
+        return self.h.squeeze(0).detach().cpu().numpy().astype(np.float32)
+
     # ------------------------------------------------------------------
     # Decision pieces (used by the main loop, SPEC section 17)
     # ------------------------------------------------------------------
@@ -111,6 +142,7 @@ class Agent:
     ) -> str:
         scorer = None
         self.last_planner_used = False
+        rec = self._h_vec()
 
         has_q = self.q_network is not None and observation is not None
         has_wm = self.use_planner and self.planning_weight > 0
@@ -118,6 +150,7 @@ class Agent:
         if has_q and has_wm:
             q_scorer = self.q_network.make_scorer(
                 observation, available_actions, action_index=self.action_index,
+                recurrent=rec,
             )
             current_features = (
                 self.causal_features_fn(observation)
@@ -147,6 +180,7 @@ class Agent:
         elif has_q:
             scorer = self.q_network.make_scorer(
                 observation, available_actions, action_index=self.action_index,
+                recurrent=rec,
             )
         elif self.use_planner:
             current_features = (
@@ -160,13 +194,16 @@ class Agent:
             self.last_planner_used = True
             scorer = lambda action: values.get(action, float("-inf"))
 
-        return self.policy.choose(
+        chosen = self.policy.choose(
             latent_state=latent_state,
             goal=goal,
             memories=memories,
             available_actions=available_actions,
             action_scorer=scorer,
         )
+        if self.recurrent:
+            self._prev_action_idx = self.action_index.get(chosen, 0)
+        return chosen
 
     @staticmethod
     def _normalise(arr: np.ndarray) -> np.ndarray:

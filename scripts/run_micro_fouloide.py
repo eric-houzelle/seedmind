@@ -29,7 +29,7 @@ from seedmind.agent.latent_q_network import LatentQNetwork
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
 from seedmind.agent.value_model import ValueModel
-from seedmind.agent.world_model import WorldModel
+from seedmind.agent.world_model import RecurrentWorldModel, WorldModel
 from seedmind.envs.entities import load_registry
 from seedmind.envs.micro_fouloide_world import MicroFouloideWorld, OBSTACLE
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
@@ -222,18 +222,36 @@ def build_agent(config: dict, seed: int) -> Agent:
             structured_features_fn=structured_features_fn,
             structured_feature_dim=structured_feature_dim,
         )
-    world_model = WorldModel(
-        latent_dim=latent_dim,
-        num_actions=len(actions),
-        hidden_dim=int(wmc.get("hidden_dim", 128)),
-        num_layers=int(wmc.get("num_layers", 2)),
-        causal_feature_dim=(
-            len(causal_feature_names(config)) if bool(cwm.get("enabled", False)) else 0
-        ),
-        num_events=(
-            len(causal_event_names(config)) if bool(cwm.get("predict_events", False)) else 0
-        ),
+    # Recurrent world model (RSSM trajectory): a GRU state h_t gives the agent
+    # memory beyond its egocentric view. deter_dim sizes h_t; the Q-network
+    # receives h_t (recurrent_dim) so the policy can act on memory.
+    recurrent_wm = bool(wmc.get("recurrent", False))
+    deter_dim = int(wmc.get("deter_dim", 128))
+    wm_causal_dim = (
+        len(causal_feature_names(config)) if bool(cwm.get("enabled", False)) else 0
     )
+    wm_num_events = (
+        len(causal_event_names(config)) if bool(cwm.get("predict_events", False)) else 0
+    )
+    if recurrent_wm:
+        world_model = RecurrentWorldModel(
+            latent_dim=latent_dim,
+            num_actions=len(actions),
+            hidden_dim=int(wmc.get("hidden_dim", 128)),
+            deter_dim=deter_dim,
+            num_layers=int(wmc.get("num_layers", 2)),
+            causal_feature_dim=wm_causal_dim,
+            num_events=wm_num_events,
+        )
+    else:
+        world_model = WorldModel(
+            latent_dim=latent_dim,
+            num_actions=len(actions),
+            hidden_dim=int(wmc.get("hidden_dim", 128)),
+            num_layers=int(wmc.get("num_layers", 2)),
+            causal_feature_dim=wm_causal_dim,
+            num_events=wm_num_events,
+        )
     from seedmind.agent.curiosity import CuriosityModule
     curiosity = CuriosityModule(
         weight=float(cc.get("weight", 0.5)),
@@ -248,6 +266,7 @@ def build_agent(config: dict, seed: int) -> Agent:
         num_grid_channels=num_channels,
         num_scalars=num_scalars,
         obs_batch_fn=obs_batch_fn,
+        recurrent_dim=deter_dim if recurrent_wm else 0,
     )
     plc = config.get("planning", {})
     planning_enabled = bool(plc.get("enabled", False))
