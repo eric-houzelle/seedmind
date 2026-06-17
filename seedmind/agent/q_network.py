@@ -70,12 +70,17 @@ class QNetwork(nn.Module):
         num_grid_channels: Optional[int] = None,
         num_scalars: Optional[int] = None,
         obs_batch_fn: Optional[ObsBatchFn] = None,
+        recurrent_dim: int = 0,
     ) -> None:
         super().__init__()
         self.grid_size = grid_size
         self.num_actions = num_actions
         self.num_channels = num_grid_channels if num_grid_channels is not None else QNET_NUM_CHANNELS
         self.num_scalars = num_scalars if num_scalars is not None else QNET_INVENTORY_DIM
+        # Optional recurrent memory state h_t, concatenated into the head. It is
+        # non-spatial global context (e.g. "where I remember water is"), so it
+        # joins the head rather than the conv. 0 keeps the memoryless behaviour.
+        self.recurrent_dim = int(recurrent_dim)
         self._obs_batch_fn = obs_batch_fn or obs_batch_to_tensors
 
         self.conv = nn.Sequential(
@@ -86,40 +91,61 @@ class QNetwork(nn.Module):
         )
         conv_out = conv_channels * grid_size * grid_size
         self.head = nn.Sequential(
-            nn.Linear(conv_out + self.num_scalars, hidden_dim),
+            nn.Linear(conv_out + self.num_scalars + self.recurrent_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, num_actions),
         )
 
-    def forward(self, channels: torch.Tensor, scalars: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        channels: torch.Tensor,
+        scalars: torch.Tensor,
+        recurrent: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         h, w = channels.shape[-2:]
         sc_map = scalars[:, :, None, None].expand(-1, -1, h, w)
         x = torch.cat([channels, sc_map], dim=1)
         x = self.conv(x)
         x = x.flatten(1)
         x = torch.cat([x, scalars], dim=1)
+        if self.recurrent_dim > 0:
+            if recurrent is None:
+                recurrent = x.new_zeros(x.shape[0], self.recurrent_dim)
+            x = torch.cat([x, recurrent], dim=1)
         return self.head(x)
 
+    def _recurrent_tensor(self, recurrent, device) -> Optional[torch.Tensor]:
+        if self.recurrent_dim == 0 or recurrent is None:
+            return None
+        t = recurrent if isinstance(recurrent, torch.Tensor) else torch.as_tensor(
+            np.asarray(recurrent, dtype=np.float32)
+        )
+        if t.dim() == 1:
+            t = t.unsqueeze(0)
+        return t.to(device).float()
+
     @torch.no_grad()
-    def q_values_tensor(self, observation: Dict[str, Any]) -> torch.Tensor:
+    def q_values_tensor(self, observation: Dict[str, Any], recurrent=None) -> torch.Tensor:
         """Q-values on the module device (one value per action index)."""
         self.eval()
         channels, scalars = self._obs_batch_fn([observation])
         device = next(self.parameters()).device
         channels = channels.to(device)
         scalars = scalars.to(device)
-        return self.forward(channels, scalars).squeeze(0)
+        rec = self._recurrent_tensor(recurrent, device)
+        return self.forward(channels, scalars, rec).squeeze(0)
 
     @torch.no_grad()
-    def q_values(self, observation: Dict[str, Any]) -> np.ndarray:
+    def q_values(self, observation: Dict[str, Any], recurrent=None) -> np.ndarray:
         """Q-values (one per action index) for a single observation."""
-        return self.q_values_tensor(observation).cpu().numpy().astype(np.float32)
+        return self.q_values_tensor(observation, recurrent).cpu().numpy().astype(np.float32)
 
     def make_scorer(
         self,
         observation: Dict[str, Any],
         actions: List[str],
         action_index: Optional[Dict[str, int]] = None,
+        recurrent=None,
     ) -> Callable[[str], float]:
         """Return a scorer ``action -> Q-value`` for the epsilon-greedy policy.
 
@@ -128,7 +154,7 @@ class QNetwork(nn.Module):
         enumerating ``actions`` — only correct when ``actions`` is the full,
         unfiltered list (a filtered subset would misalign Q-values).
         """
-        values = self.q_values_tensor(observation).detach().cpu().numpy().astype(np.float32)
+        values = self.q_values_tensor(observation, recurrent).detach().cpu().numpy().astype(np.float32)
         if action_index is None:
             action_index = {a: i for i, a in enumerate(actions)}
         return lambda action: float(values[action_index[action]])
