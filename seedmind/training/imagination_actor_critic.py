@@ -76,10 +76,21 @@ def train_imagination_actor_critic(
     lam: float = 0.95,
     entropy_coef: float = 0.01,
     grad_clip: float = 10.0,
+    target_critic=None,
+    target_tau: float = 0.02,
 ) -> Dict[str, float]:
-    """Run ``num_updates`` actor-critic updates over imagined rollouts."""
+    """Run ``num_updates`` actor-critic updates over imagined rollouts.
+
+    Stability (Dreamer-style): a slow **EMA target critic** computes the bootstrap
+    and baseline values for the λ-returns, decoupled from the learning critic, so
+    the returns don't chase the critic's own growth (the divergence seen without
+    it). Advantages are normalised per batch. Pass ``target_critic`` (a copy of
+    ``critic``); it is EMA-updated here. Without it, the online critic is used
+    (only safe for short/test runs).
+    """
     if len(buffer) == 0:
         return dict(_ZERO)
+    value_net = target_critic if target_critic is not None else critic
 
     device = next(actor.parameters()).device
     actor.train()
@@ -103,7 +114,7 @@ def train_imagination_actor_critic(
                 actions.append(a)
                 rewards.append(r)
                 h = h_next
-            bootstrap = critic(h)                                   # V(h_T)
+            bootstrap = value_net(h)                                # V_target(h_T)
 
         states_t = torch.stack(states, dim=0)                       # (T, B, deter)
         actions_t = torch.stack(actions, dim=0)                     # (T, B)
@@ -111,11 +122,13 @@ def train_imagination_actor_critic(
         T, B, D = states_t.shape
 
         with torch.no_grad():
-            values = critic(states_t.reshape(T * B, D)).reshape(T, B)
+            values = value_net(states_t.reshape(T * B, D)).reshape(T, B)
             returns = _lambda_returns(rewards_t, values, bootstrap, gamma, lam)
             advantage = returns - values
+            # Normalise advantages per batch (stabilises the actor gradient scale).
+            advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
 
-        # Critic: regress V(h_t) toward the imagined λ-returns.
+        # Critic: regress V(h_t) toward the imagined λ-returns (target-computed).
         v_pred = critic(states_t.reshape(T * B, D)).reshape(T, B)
         critic_loss = ((v_pred - returns) ** 2).mean()
         critic_optimizer.zero_grad()
@@ -123,6 +136,12 @@ def train_imagination_actor_critic(
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(critic.parameters(), grad_clip)
         critic_optimizer.step()
+
+        # Slowly track the learning critic with the EMA target.
+        if target_critic is not None:
+            with torch.no_grad():
+                for tp, p in zip(target_critic.parameters(), critic.parameters()):
+                    tp.mul_(1.0 - target_tau).add_(target_tau * p)
 
         # Actor: REINFORCE with the value baseline + entropy bonus.
         log_prob, entropy = actor.evaluate(states_t.reshape(T * B, D), actions_t.reshape(T * B))

@@ -99,6 +99,26 @@ class TestTrainImaginationActorCritic:
         assert not torch.allclose(a_before, actor.net[0].weight)
         assert not torch.allclose(c_before, critic.net[0].weight)
 
+    def test_target_critic_ema_updates_and_stays_finite(self):
+        import copy
+        torch.manual_seed(0)
+        wm = RecurrentWorldModel(latent_dim=LATENT, num_actions=NACT, deter_dim=DETER)
+        actor = Actor(DETER, NACT)
+        critic = ValueModel(DETER)
+        target = copy.deepcopy(critic)
+        buf = ExperienceBuffer(seed=0)
+        _fill(buf)
+        ao = torch.optim.Adam(actor.parameters(), lr=1e-3)
+        co = torch.optim.Adam(critic.parameters(), lr=1e-2)
+        t_before = target.net[0].weight.detach().clone()
+        out = train_imagination_actor_critic(
+            actor, critic, wm, buf, ao, co, batch_size=8, context_len=4, horizon=6,
+            num_updates=5, target_critic=target, target_tau=0.1,
+        )
+        assert np.isfinite(out["critic_loss"]) and np.isfinite(out["actor_loss"])
+        # the EMA target tracked the learning critic
+        assert not torch.allclose(t_before, target.net[0].weight)
+
     def test_learns_rewarded_action_in_imagination(self):
         """The decisive test: the actor learns to prefer the rewarded action."""
         torch.manual_seed(0)

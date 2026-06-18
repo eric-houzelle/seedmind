@@ -10,6 +10,7 @@ as the world model improves.
 """
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -121,12 +122,12 @@ class OnlineLearner:
             self.value_optimizer = make_value_optimizer(
                 agent.value_model, learning_rate=float(vc.get("learning_rate", 3e-4)),
             )
-            import copy
             self.target_value_model = copy.deepcopy(agent.value_model).to(device)
             self.target_value_model.eval()
 
         self.actor_optimizer = None
         self.critic_optimizer = None
+        self.target_critic = None
         if self.imagination_policy:
             self.actor_optimizer = torch.optim.Adam(
                 agent.actor.parameters(), lr=float(ic.get("actor_lr", 4e-4)),
@@ -134,6 +135,9 @@ class OnlineLearner:
             self.critic_optimizer = torch.optim.Adam(
                 agent.critic.parameters(), lr=float(ic.get("critic_lr", 4e-4)),
             )
+            self.imag_target_tau = float(ic.get("target_tau", 0.02))
+            self.target_critic = copy.deepcopy(agent.critic).to(device)
+            self.target_critic.eval()
 
         self.env_steps = 0
         self.total_q_updates = 0
@@ -192,6 +196,7 @@ class OnlineLearner:
                 batch_size=self.q_batch, context_len=self.imag_context,
                 horizon=self.imag_horizon, num_updates=self.updates_per_cycle,
                 gamma=self.imag_gamma, lam=self.imag_lam, entropy_coef=self.imag_entropy,
+                target_critic=self.target_critic, target_tau=self.imag_target_tau,
             )
             self.last_actor_loss = float(ac["actor_loss"])
             self.last_critic_loss = float(ac["critic_loss"])

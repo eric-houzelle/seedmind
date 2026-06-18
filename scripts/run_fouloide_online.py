@@ -126,6 +126,9 @@ class OnlineFouloideSession:
         self.agent.q_network.to(device)
         if self.agent.value_model is not None:
             self.agent.value_model.to(device)
+        if getattr(self.agent, "actor", None) is not None:
+            self.agent.actor.to(device)
+            self.agent.critic.to(device)
         self.learner = OnlineLearner(self.agent, config, device, seed=seed)
 
         self.env = build_env(config, seed=seed)
