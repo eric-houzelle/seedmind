@@ -13,6 +13,9 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
+import torch.nn.functional as F
+
+from seedmind.agent.q_network import QNetwork, obs_batch_to_tensors
 from seedmind.agent.world_model import RecurrentWorldModel
 from seedmind.memory.experience_buffer import ExperienceBuffer
 from seedmind.training.losses import world_model_aux_loss
@@ -171,3 +174,131 @@ def train_recurrent_world_model(
     result = {k: v / done for k, v in totals.items()}
     result["updates"] = float(done)
     return result
+
+
+def _transition_reward(e: dict, reward_key: str) -> float:
+    return float(e.get(reward_key, e.get("reward_external", 0.0)))
+
+
+@torch.no_grad()
+def _roll_recurrent_states(world_model, sequences, device):
+    """Detached h_t (current) and h_{t+1} (next) for every step, vectorised.
+
+    The recurrent state is a *feature* for the Q update — the world model is
+    trained separately (brick 4b), so h is computed under no_grad. Returns
+    ``(H, Hp)`` each shaped ``(B*L, deter)`` in (b outer, k inner) order, plus B.
+    """
+    B = len(sequences)
+    L = len(sequences[0])
+    z = np.asarray([[t["latent_state"] for t in s] for s in sequences], dtype=np.float32)
+    zp = np.asarray([[t["next_latent_state"] for t in s] for s in sequences], dtype=np.float32)
+    a = np.asarray([[int(t["action_index"]) for t in s] for s in sequences], dtype=np.int64)
+    z = torch.from_numpy(z).to(device)       # (B, L, D)
+    zp = torch.from_numpy(zp).to(device)
+    a = torch.from_numpy(a).to(device)       # (B, L)
+
+    h = world_model.initial_state(B, device=device)
+    H_steps, Hp_steps = [], []
+    for k in range(L):
+        prev_a = torch.zeros(B, dtype=torch.long, device=device) if k == 0 else a[:, k - 1]
+        h = world_model.observe_step(z[:, k], prev_a, h)            # h_t
+        hp = world_model.observe_step(zp[:, k], a[:, k], h)         # h_{t+1}
+        H_steps.append(h)
+        Hp_steps.append(hp)
+    H = torch.stack(H_steps, dim=1).reshape(B * L, -1)
+    Hp = torch.stack(Hp_steps, dim=1).reshape(B * L, -1)
+    return H, Hp
+
+
+def train_recurrent_dqn(
+    q_network: QNetwork,
+    target_network: QNetwork,
+    world_model: RecurrentWorldModel,
+    buffer: ExperienceBuffer,
+    optimizer: torch.optim.Optimizer,
+    batch_size: int = 16,
+    seq_len: int = 16,
+    gamma: float = 0.97,
+    curiosity_weight: float = 0.0,
+    double_dqn: bool = True,
+    num_updates: int = 1,
+    reward_key: str = "reward_external",
+    grad_clip: float = 10.0,
+) -> Dict[str, float]:
+    """DRQN-style TD updates over sequences; h_t supplied by the recurrent WM.
+
+    For each step the Q-network sees the observation *and* the (detached)
+    recurrent state h_t; the TD target uses h_{t+1}. 1-step TD over sampled
+    sequences (zero-start). The world model is not trained here.
+    """
+    if len(buffer) == 0:
+        return {"td_loss": 0.0, "updates": 0.0}
+
+    device = next(q_network.parameters()).device
+    batch_fn = getattr(q_network, "_obs_batch_fn", obs_batch_to_tensors)
+    q_network.train()
+    total_loss = 0.0
+    done = 0
+
+    for _ in range(num_updates):
+        sequences = buffer.sample_sequences(batch_size, seq_len)
+        # Need every step to carry obs + latents + action.
+        sequences = [
+            s for s in sequences
+            if all(
+                t.get("obs_state") is not None and t.get("next_obs_state") is not None
+                and t.get("action_index") is not None
+                and t.get("latent_state") is not None and t.get("next_latent_state") is not None
+                for t in s
+            )
+        ]
+        if not sequences:
+            continue
+
+        H, Hp = _roll_recurrent_states(world_model, sequences, device)
+
+        cur_obs, nxt_obs, actions, rewards, dones = [], [], [], [], []
+        for s in sequences:                       # b outer, k inner — matches H order
+            for t in s:
+                cur_obs.append(t["obs_state"])
+                nxt_obs.append(t["next_obs_state"])
+                actions.append(int(t["action_index"]))
+                rewards.append(
+                    _transition_reward(t, reward_key)
+                    + curiosity_weight * float(t.get("reward_intrinsic", 0.0))
+                )
+                dones.append(1.0 if t.get("done", False) else 0.0)
+
+        channels, scalars = batch_fn(cur_obs)
+        next_channels, next_scalars = batch_fn(nxt_obs)
+        channels, scalars = channels.to(device), scalars.to(device)
+        next_channels, next_scalars = next_channels.to(device), next_scalars.to(device)
+        actions = torch.tensor(actions, dtype=torch.long, device=device)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
+        dones = torch.tensor(dones, dtype=torch.float32, device=device)
+
+        q_values = q_network(channels, scalars, H)
+        q_taken = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        with torch.no_grad():
+            next_q_target = target_network(next_channels, next_scalars, Hp)
+            if double_dqn:
+                next_a = q_network(next_channels, next_scalars, Hp).argmax(dim=1, keepdim=True)
+                next_q = next_q_target.gather(1, next_a).squeeze(1)
+            else:
+                next_q = next_q_target.max(dim=1).values
+            td_target = rewards + gamma * next_q * (1.0 - dones)
+
+        loss = F.smooth_l1_loss(q_taken, td_target)
+        optimizer.zero_grad()
+        loss.backward()
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(q_network.parameters(), grad_clip)
+        optimizer.step()
+
+        total_loss += float(loss.item())
+        done += 1
+
+    if done == 0:
+        return {"td_loss": 0.0, "updates": 0.0}
+    return {"td_loss": total_loss / done, "updates": float(done)}
