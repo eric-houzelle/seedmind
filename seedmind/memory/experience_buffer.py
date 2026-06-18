@@ -244,6 +244,31 @@ class ExperienceBuffer:
             "steps": len(sequence),
         }
 
+    def sample_sequences(self, batch_size: int, seq_len: int) -> List[List[Dict[str, Any]]]:
+        """Sample contiguous transition sequences for recurrent (BPTT) training.
+
+        Each returned sequence is ``seq_len`` consecutive transitions from a
+        single life, in step order, never crossing an episode boundary nor a
+        ``done`` (a sequence may *end* on a terminal transition). Sequences
+        shorter than ``seq_len`` (cut by death / missing steps) are rejected.
+        Uses rejection sampling over random start transitions; may return fewer
+        than ``batch_size`` sequences when few full runs exist.
+        """
+        if not self._data or seq_len < 1:
+            return []
+        if seq_len == 1:
+            return [[e] for e in self.sample(batch_size)]
+        sequences: List[List[Dict[str, Any]]] = []
+        max_attempts = max(batch_size * 8, 32)
+        for _ in range(max_attempts):
+            if len(sequences) >= batch_size:
+                break
+            start = self._data[int(self.rng.integers(0, len(self._data)))]
+            seq = self.n_step_sequence(start, seq_len)
+            if len(seq) == seq_len:
+                sequences.append(seq)
+        return sequences
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
