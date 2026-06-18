@@ -139,6 +139,7 @@ class OnlineFouloideSession:
             self.map_memory.observe(self.observation)
             self.observation = self.map_memory.augment(self.observation)
         self.latent_state = self.agent.encoder.encode_tensor(self.observation)
+        self.agent.reset_state()  # fresh recurrent memory at birth
         self.lives = 1
         self.steps = 0
         self.life_steps = 0
@@ -174,6 +175,7 @@ class OnlineFouloideSession:
             self.recent_wellbeing,
             self.recent_events,
         )
+        agent.advance(latent_np)  # update recurrent state h_t (no-op if feed-forward)
         action = agent.choose_action(
             latent_np, goal, memories, available_actions,
             observation=self.observation,
@@ -188,7 +190,13 @@ class OnlineFouloideSession:
         next_latent = agent.encoder.encode_tensor(next_obs)
         event = str(info.get("event", "unknown"))
 
-        predicted, _, _ = agent.world_model.predict_tensor(self.latent_state, action_index)
+        if agent.recurrent:
+            # Curiosity from the recurrent WM: how well it predicted z_{t+1}
+            # from the current recurrent state h_t and the chosen action.
+            action_t = torch.as_tensor([action_index], dtype=torch.long, device=agent.h.device)
+            predicted = agent.world_model.forward(agent.h, action_t)[0].squeeze(0)
+        else:
+            predicted, _, _ = agent.world_model.predict_tensor(self.latent_state, action_index)
         pred_err = float(compute_prediction_error_tensor(predicted, next_latent).item())
         reward_int = agent.curiosity.compute(pred_err)
         reward_learning = _learning_reward(reward_ext, self.observation, info, self.config)
@@ -233,6 +241,7 @@ class OnlineFouloideSession:
             self.best_life_steps = max(self.best_life_steps, self.life_steps)
             self.life_steps = 0
             self.lives += 1
+            agent.reset_state()  # the recurrent memory dies with the individual
             self.observation = self.env.reset()
             if self.map_memory is not None:
                 # La carte meurt avec l'individu (nouveau layout).
@@ -304,6 +313,7 @@ class OnlineFouloideSession:
                 self.agent.planner_uncertainty_threshold = float(threshold)
         # Le latent courant doit venir de l'encodeur restauré.
         self.latent_state = self.agent.encoder.encode_tensor(self.observation)
+        self.agent.reset_state()  # recurrent memory restarts from the current obs
         return m
 
 

@@ -78,7 +78,7 @@ causal_world_model:
   event_sample_done_weight: 2.0
 
 value_model:
-  enabled: true
+  enabled: false            # inutilisé (planner off en récurrent) — pas entraîné
   hidden_dim: 128
   num_layers: 2
   learning_rate: 0.0003

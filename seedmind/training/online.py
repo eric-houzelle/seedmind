@@ -15,12 +15,17 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 
+from seedmind.agent.world_model import RecurrentWorldModel
 from seedmind.memory.experience_buffer import ExperienceBuffer
 from seedmind.training.dqn import (
     make_q_optimizer,
     make_target_network,
     sync_target,
     train_dqn,
+)
+from seedmind.training.recurrent import (
+    train_recurrent_dqn,
+    train_recurrent_world_model,
 )
 from seedmind.training.train import (
     make_optimizer,
@@ -55,6 +60,10 @@ class OnlineLearner:
         self._wmc = wmc
         dc = config.get("dqn", {})
         vc = config.get("value_model", {})
+
+        # Recurrent world model → sequence/BPTT training instead of per-transition.
+        self.recurrent = isinstance(agent.world_model, RecurrentWorldModel)
+        self.seq_len = int(oc.get("seq_len", 16))
 
         self.update_every = int(oc.get("update_every", 8))
         self.updates_per_cycle = int(oc.get("updates_per_cycle", 4))
@@ -136,7 +145,40 @@ class OnlineLearner:
             self._refresh_uncertainty_threshold()
 
     # ------------------------------------------------------------------
+    def _update_models_recurrent(self) -> None:
+        """BPTT world model + DRQN Q on sampled sequences (recurrent WM)."""
+        cwm = self._cwm
+        wmc = self._wmc
+        wm_losses = train_recurrent_world_model(
+            self.agent.world_model, self.buffer, self.wm_optimizer,
+            batch_size=self.wm_batch, seq_len=self.seq_len,
+            num_updates=self.updates_per_cycle,
+            causal_feature_weight=float(cwm.get("feature_loss_weight", 0.0)),
+            causal_event_weight=float(cwm.get("event_loss_weight", 0.0)),
+            event_class_balance=bool(cwm.get("event_class_balance", False)),
+            event_class_balance_power=float(cwm.get("event_class_balance_power", 0.5)),
+            uncertainty_weight=float(wmc.get("uncertainty_loss_weight", 0.0)),
+            uncertainty_detach=bool(wmc.get("uncertainty_detach", False)),
+        )
+        self.last_wm_loss = float(wm_losses["total"])
+        q_losses = train_recurrent_dqn(
+            self.agent.q_network, self.target_network, self.agent.world_model,
+            self.buffer, self.q_optimizer,
+            batch_size=self.q_batch, seq_len=self.seq_len, gamma=self.gamma,
+            curiosity_weight=self.curiosity_weight, double_dqn=self.double_dqn,
+            num_updates=self.updates_per_cycle, reward_key=self.dqn_reward_key,
+        )
+        self.last_td_loss = float(q_losses["td_loss"])
+        self.total_q_updates += int(q_losses["updates"])
+        if self.total_q_updates >= self.next_target_sync:
+            sync_target(self.agent.q_network, self.target_network)
+            self.next_target_sync += self.target_update
+
+    # ------------------------------------------------------------------
     def _update_models(self) -> None:
+        if self.recurrent:
+            self._update_models_recurrent()
+            return
         cwm = self._cwm
         wmc = self._wmc
         wm_losses = train_world_model(
@@ -207,6 +249,10 @@ class OnlineLearner:
 
     # ------------------------------------------------------------------
     def _refresh_uncertainty_threshold(self) -> None:
+        # The planner (sole consumer of this threshold) is disabled for the
+        # recurrent WM, which also has no predict_batch — skip entirely.
+        if self.recurrent:
+            return
         rows = [
             row for row in self.buffer.sample_recent(self.threshold_samples)
             if row.get("latent_state") is not None and row.get("action_index") is not None
