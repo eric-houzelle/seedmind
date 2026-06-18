@@ -4827,4 +4827,21 @@ L'architecture (registres, adapters, modules découplés) est conçue pour accue
 
 ---
 
-*Dernière mise à jour : 15 juin 2026*
+## Piste recherche — World-model récurrent (RSSM) + perception égocentrée (18 juin 2026)
+
+Exploration sur la branche **`rssm-egocentric`** (isolée ; `main`/prod intacts).
+Résultat clé prouvé : la **perception égocentrée sans mémoire s'effondre** alors
+que le full-grid fourrage (contrôle discriminant) → **la mémoire est nécessaire**.
+Machinerie RSSM construite et testée (encodeur conv gelé, WM récurrent GRU, DRQN
+récurrent, actor-critic en imagination façon Dreamer). Verrou restant : stabilité
+↔ exploration de l'actor-critic (le critic-cible EMA règle la divergence, mais
+l'exploration s'effondre — piste : entropie / DreamerV3 complet).
+
+**Décision** : la vitrine reste le **fouloïde full-grid en prod (qui vit déjà)** ;
+le générique est un pari de recherche parké. Bilan complet, verdicts chiffrés et
+pistes de reprise : **[BILAN_RSSM_2026-06-18.md](./BILAN_RSSM_2026-06-18.md)**
+(issues bd `seedmind-oc4` / `seedmind-oc4.1`).
+
+---
+
+*Dernière mise à jour : 18 juin 2026*
