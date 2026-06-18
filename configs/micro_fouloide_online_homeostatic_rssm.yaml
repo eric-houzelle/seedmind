@@ -154,6 +154,8 @@ dqn:
 online:
   update_every: 8
   updates_per_cycle: 4
+  seq_len: 16               # longueur de séquence pour le BPTT / DRQN
+  burn_in: 8                # R2D2 : pas de warm-up de h (sans loss) avant le TD
   warmup_steps: 2000
   threshold_refresh_steps: 500
   threshold_quantile: 0.60

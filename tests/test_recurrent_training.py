@@ -140,6 +140,21 @@ class TestTrainRecurrentDQN:
         assert out["updates"] == 3.0
         assert np.isfinite(out["td_loss"])
 
+    def test_burn_in_runs_and_finite(self):
+        wm = _wm()
+        q = _recurrent_qnet()
+        tgt = make_target_network(q)
+        buf = ExperienceBuffer(seed=2)
+        _fill_dqn(buf)
+        opt = torch.optim.Adam(q.parameters(), lr=1e-3)
+        # total sampled length = seq_len + burn_in = 12; only the 8 post-burn-in
+        # steps carry TD loss (shapes must stay consistent).
+        out = train_recurrent_dqn(
+            q, tgt, wm, buf, opt, batch_size=4, seq_len=8, num_updates=3, burn_in=4,
+        )
+        assert out["updates"] == 3.0
+        assert np.isfinite(out["td_loss"])
+
     def test_q_learns_wm_frozen(self):
         wm = _wm()
         q = _recurrent_qnet()

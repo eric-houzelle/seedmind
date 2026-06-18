@@ -64,6 +64,7 @@ class OnlineLearner:
         # Recurrent world model → sequence/BPTT training instead of per-transition.
         self.recurrent = isinstance(agent.world_model, RecurrentWorldModel)
         self.seq_len = int(oc.get("seq_len", 16))
+        self.burn_in = int(oc.get("burn_in", 0))  # R2D2 warm-up for the recurrent DQN
 
         self.update_every = int(oc.get("update_every", 8))
         self.updates_per_cycle = int(oc.get("updates_per_cycle", 4))
@@ -167,6 +168,7 @@ class OnlineLearner:
             batch_size=self.q_batch, seq_len=self.seq_len, gamma=self.gamma,
             curiosity_weight=self.curiosity_weight, double_dqn=self.double_dqn,
             num_updates=self.updates_per_cycle, reward_key=self.dqn_reward_key,
+            burn_in=self.burn_in,
         )
         self.last_td_loss = float(q_losses["td_loss"])
         self.total_q_updates += int(q_losses["updates"])

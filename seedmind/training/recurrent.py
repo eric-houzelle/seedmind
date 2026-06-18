@@ -181,12 +181,15 @@ def _transition_reward(e: dict, reward_key: str) -> float:
 
 
 @torch.no_grad()
-def _roll_recurrent_states(world_model, sequences, device):
-    """Detached h_t (current) and h_{t+1} (next) for every step, vectorised.
+def _roll_recurrent_states(world_model, sequences, device, burn_in: int = 0):
+    """Detached h_t (current) and h_{t+1} (next), vectorised, with R2D2 burn-in.
 
     The recurrent state is a *feature* for the Q update — the world model is
-    trained separately (brick 4b), so h is computed under no_grad. Returns
-    ``(H, Hp)`` each shaped ``(B*L, deter)`` in (b outer, k inner) order, plus B.
+    trained separately (brick 4b), so h is computed under no_grad. The first
+    ``burn_in`` steps only *warm* h (zero-start error decays) and are dropped;
+    h_t/h_{t+1} are returned only for the remaining steps, where h matches the
+    real acting state far better. Returns ``(H, Hp)`` each shaped
+    ``(B*(L-burn_in), deter)`` in (b outer, k inner) order.
     """
     B = len(sequences)
     L = len(sequences[0])
@@ -202,11 +205,16 @@ def _roll_recurrent_states(world_model, sequences, device):
     for k in range(L):
         prev_a = torch.zeros(B, dtype=torch.long, device=device) if k == 0 else a[:, k - 1]
         h = world_model.observe_step(z[:, k], prev_a, h)            # h_t
-        hp = world_model.observe_step(zp[:, k], a[:, k], h)         # h_{t+1}
+        if k < burn_in:
+            continue                                               # warm-up only
+        hp = world_model.observe_step(zp[:, k], a[:, k], h)        # h_{t+1}
         H_steps.append(h)
         Hp_steps.append(hp)
-    H = torch.stack(H_steps, dim=1).reshape(B * L, -1)
-    Hp = torch.stack(Hp_steps, dim=1).reshape(B * L, -1)
+    if not H_steps:
+        empty = torch.zeros(0, world_model.deter_dim, device=device)
+        return empty, empty
+    H = torch.stack(H_steps, dim=1).reshape(B * len(H_steps), -1)
+    Hp = torch.stack(Hp_steps, dim=1).reshape(B * len(Hp_steps), -1)
     return H, Hp
 
 
@@ -224,12 +232,15 @@ def train_recurrent_dqn(
     num_updates: int = 1,
     reward_key: str = "reward_external",
     grad_clip: float = 10.0,
+    burn_in: int = 0,
 ) -> Dict[str, float]:
     """DRQN-style TD updates over sequences; h_t supplied by the recurrent WM.
 
     For each step the Q-network sees the observation *and* the (detached)
-    recurrent state h_t; the TD target uses h_{t+1}. 1-step TD over sampled
-    sequences (zero-start). The world model is not trained here.
+    recurrent state h_t; the TD target uses h_{t+1}. With ``burn_in`` > 0 the
+    first ``burn_in`` steps of each sampled sequence only warm h (R2D2-style)
+    and carry no loss, so the replayed h matches the real acting state — this
+    stabilises the bootstrapped TD targets. The world model is not trained here.
     """
     if len(buffer) == 0:
         return {"td_loss": 0.0, "updates": 0.0}
@@ -239,9 +250,10 @@ def train_recurrent_dqn(
     q_network.train()
     total_loss = 0.0
     done = 0
+    total_len = seq_len + max(0, burn_in)
 
     for _ in range(num_updates):
-        sequences = buffer.sample_sequences(batch_size, seq_len)
+        sequences = buffer.sample_sequences(batch_size, total_len)
         # Need every step to carry obs + latents + action.
         sequences = [
             s for s in sequences
@@ -255,11 +267,11 @@ def train_recurrent_dqn(
         if not sequences:
             continue
 
-        H, Hp = _roll_recurrent_states(world_model, sequences, device)
+        H, Hp = _roll_recurrent_states(world_model, sequences, device, burn_in=burn_in)
 
         cur_obs, nxt_obs, actions, rewards, dones = [], [], [], [], []
         for s in sequences:                       # b outer, k inner — matches H order
-            for t in s:
+            for t in s[burn_in:]:                  # drop the burn-in prefix
                 cur_obs.append(t["obs_state"])
                 nxt_obs.append(t["next_obs_state"])
                 actions.append(int(t["action_index"]))
