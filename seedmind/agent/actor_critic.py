@@ -60,3 +60,18 @@ class Actor(nn.Module):
         if s.dim() == 1:
             s = s.unsqueeze(0)
         return int(self.act(s, greedy=greedy)[0].item())
+
+    @torch.no_grad()
+    def act_masked(self, state_vec: np.ndarray, available_indices, greedy: bool = False) -> int:
+        """Single action index restricted to ``available_indices`` (others -inf)."""
+        device = next(self.parameters()).device
+        s = torch.as_tensor(state_vec, dtype=torch.float32, device=device)
+        if s.dim() == 1:
+            s = s.unsqueeze(0)
+        logits = self.forward(s).squeeze(0)
+        mask = torch.full_like(logits, float("-inf"))
+        mask[torch.as_tensor(list(available_indices), dtype=torch.long, device=device)] = 0.0
+        masked = logits + mask
+        if greedy:
+            return int(masked.argmax().item())
+        return int(torch.distributions.Categorical(logits=masked).sample().item())

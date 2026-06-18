@@ -50,6 +50,18 @@ agent:
       radius: 5            # fenêtre 11×11
   encoder:
     conv_channels: 32
+  imagination_policy: true  # policy = actor-critic appris EN IMAGINATION (Dreamer)
+  actor:
+    hidden_dim: 128
+    num_layers: 2
+
+imagination:
+  horizon: 15               # longueur des rollouts imaginés
+  context_len: 8            # pas réels pour réchauffer h_0 avant d'imaginer
+  lambda: 0.95              # λ-returns
+  entropy_coef: 0.01        # bonus d'entropie (exploration)
+  actor_lr: 0.0004
+  critic_lr: 0.0004
 
 world_model:
   enabled: true

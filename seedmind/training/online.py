@@ -27,6 +27,7 @@ from seedmind.training.recurrent import (
     train_recurrent_dqn,
     train_recurrent_world_model,
 )
+from seedmind.training.imagination_actor_critic import train_imagination_actor_critic
 from seedmind.training.train import (
     make_optimizer,
     train_world_model,
@@ -65,6 +66,14 @@ class OnlineLearner:
         self.recurrent = isinstance(agent.world_model, RecurrentWorldModel)
         self.seq_len = int(oc.get("seq_len", 16))
         self.burn_in = int(oc.get("burn_in", 0))  # R2D2 warm-up for the recurrent DQN
+        # Imagination policy (Dreamer-style actor-critic) replaces the DRQN.
+        self.imagination_policy = getattr(agent, "actor", None) is not None
+        ic = config.get("imagination", {})
+        self.imag_horizon = int(ic.get("horizon", 15))
+        self.imag_context = int(ic.get("context_len", 8))
+        self.imag_lam = float(ic.get("lambda", 0.95))
+        self.imag_entropy = float(ic.get("entropy_coef", 0.01))
+        self.imag_gamma = float(ic.get("gamma", float(dc.get("gamma", 0.97))))
 
         self.update_every = int(oc.get("update_every", 8))
         self.updates_per_cycle = int(oc.get("updates_per_cycle", 4))
@@ -116,6 +125,16 @@ class OnlineLearner:
             self.target_value_model = copy.deepcopy(agent.value_model).to(device)
             self.target_value_model.eval()
 
+        self.actor_optimizer = None
+        self.critic_optimizer = None
+        if self.imagination_policy:
+            self.actor_optimizer = torch.optim.Adam(
+                agent.actor.parameters(), lr=float(ic.get("actor_lr", 4e-4)),
+            )
+            self.critic_optimizer = torch.optim.Adam(
+                agent.critic.parameters(), lr=float(ic.get("critic_lr", 4e-4)),
+            )
+
         self.env_steps = 0
         self.total_q_updates = 0
         self.total_value_updates = 0
@@ -125,6 +144,8 @@ class OnlineLearner:
         self.last_wm_uncertainty_loss = 0.0
         self.last_td_loss = 0.0
         self.last_value_loss = 0.0
+        self.last_actor_loss = 0.0
+        self.last_critic_loss = 0.0
         self.uncertainty_threshold: Optional[float] = None
 
         # Cold start: WM uncertainty is softplus (> 0), so a zero threshold
@@ -162,6 +183,20 @@ class OnlineLearner:
             uncertainty_detach=bool(wmc.get("uncertainty_detach", False)),
         )
         self.last_wm_loss = float(wm_losses["total"])
+
+        if self.imagination_policy:
+            # Policy learned in imagination (actor-critic), not model-free DRQN.
+            ac = train_imagination_actor_critic(
+                self.agent.actor, self.agent.critic, self.agent.world_model,
+                self.buffer, self.actor_optimizer, self.critic_optimizer,
+                batch_size=self.q_batch, context_len=self.imag_context,
+                horizon=self.imag_horizon, num_updates=self.updates_per_cycle,
+                gamma=self.imag_gamma, lam=self.imag_lam, entropy_coef=self.imag_entropy,
+            )
+            self.last_actor_loss = float(ac["actor_loss"])
+            self.last_critic_loss = float(ac["critic_loss"])
+            return
+
         q_losses = train_recurrent_dqn(
             self.agent.q_network, self.target_network, self.agent.world_model,
             self.buffer, self.q_optimizer,
@@ -286,6 +321,8 @@ class OnlineLearner:
             "wm_uncertainty_loss": self.last_wm_uncertainty_loss,
             "td_loss": self.last_td_loss,
             "value_loss": self.last_value_loss,
+            "actor_loss": self.last_actor_loss,
+            "critic_loss": self.last_critic_loss,
             "q_updates": self.total_q_updates,
             "uncertainty_threshold": self.uncertainty_threshold,
             "epsilon": float(self.agent.policy.epsilon),

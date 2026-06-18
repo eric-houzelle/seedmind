@@ -51,6 +51,8 @@ class Agent:
         planner_uncertainty_threshold: Optional[float] = None,
         planner_margin_threshold: float = 0.0,
         planner_q_advantage_threshold: float = 0.0,
+        actor: Optional[Any] = None,
+        critic: Optional[Any] = None,
     ) -> None:
         self.encoder = encoder
         self.world_model = world_model
@@ -95,6 +97,13 @@ class Agent:
         self.recurrent = isinstance(world_model, RecurrentWorldModel)
         self.h = None              # current recurrent state tensor, or None
         self._prev_action_idx = 0  # action that led to the current observation
+
+        # Imagination policy (Dreamer-style): when an actor is present, the agent
+        # acts by sampling it on the recurrent state h_t (the critic is used only
+        # during training). Replaces the Q-network / planner as the policy.
+        self.actor = actor
+        self.critic = critic
+        self.imagination_policy = actor is not None
 
     # ------------------------------------------------------------------
     # Recurrent state lifecycle (no-op unless the world model is recurrent)
@@ -143,6 +152,15 @@ class Agent:
         scorer = None
         self.last_planner_used = False
         rec = self._h_vec()
+
+        # Imagination policy: sample the actor on the recurrent state h_t.
+        if self.imagination_policy and rec is not None and available_actions:
+            avail = [self.action_index[a] for a in available_actions if a in self.action_index]
+            if avail:
+                idx = self.actor.act_masked(rec, avail, greedy=False)
+                chosen = self.actions[idx]
+                self._prev_action_idx = idx
+                return chosen
 
         has_q = self.q_network is not None and observation is not None
         has_wm = self.use_planner and self.planning_weight > 0

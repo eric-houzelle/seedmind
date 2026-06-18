@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from seedmind.agent.agent import Agent
 from seedmind.agent.curiosity import compute_prediction_error_tensor
+from seedmind.agent.actor_critic import Actor
 from seedmind.agent.encoder import ConvEncoder, Encoder
 from seedmind.agent.goal_generator import GoalGenerator
 from seedmind.agent.map_memory import MapMemory
@@ -277,6 +278,24 @@ def build_agent(config: dict, seed: int) -> Agent:
             hidden_dim=int(vc.get("hidden_dim", 128)),
             num_layers=int(vc.get("num_layers", 2)),
         )
+    # Imagination policy (Dreamer-style): actor + critic over the recurrent
+    # state h_t, trained on imagined rollouts. Requires the recurrent world model.
+    actor = None
+    critic = None
+    if bool(ac.get("imagination_policy", False)) and recurrent_wm:
+        acc = ac.get("actor", {})
+        actor = Actor(
+            input_dim=deter_dim,
+            num_actions=len(actions),
+            hidden_dim=int(acc.get("hidden_dim", 128)),
+            num_layers=int(acc.get("num_layers", 2)),
+        )
+        critic = ValueModel(
+            latent_dim=deter_dim,
+            hidden_dim=int(acc.get("critic_hidden_dim", 128)),
+            num_layers=int(acc.get("critic_num_layers", 2)),
+        )
+
     force_indices, force_thresholds = _planner_force_thresholds(config)
     return Agent(
         encoder=encoder,
@@ -318,6 +337,8 @@ def build_agent(config: dict, seed: int) -> Agent:
         ),
         planner_margin_threshold=float(plc.get("margin_threshold", 0.0)),
         planner_q_advantage_threshold=float(plc.get("q_advantage_threshold", 0.0)),
+        actor=actor,
+        critic=critic,
     )
 
 

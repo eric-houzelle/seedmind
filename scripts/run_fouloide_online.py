@@ -381,7 +381,7 @@ def main() -> None:
                 "interact_noop": int(event_counts.get("interact_noop", 0)),
                 "health_loss": int(event_counts.get("health_loss", 0)),
                 **{k: stats[k] for k in (
-                    "wm_loss", "td_loss", "value_loss",
+                    "wm_loss", "td_loss", "value_loss", "actor_loss", "critic_loss",
                     "uncertainty_threshold", "epsilon", "buffer_size",
                 )},
             }
