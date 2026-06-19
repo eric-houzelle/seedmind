@@ -340,6 +340,7 @@ def main() -> None:
     wellbeing_window: deque = deque(maxlen=window)
     planner_window: deque = deque(maxlen=window)
     event_counts: Counter[str] = Counter()
+    visited: set = set()   # unique cells this window — low = camping, high = roaming
     history: list[Dict[str, Any]] = []
 
     print(
@@ -352,6 +353,7 @@ def main() -> None:
         event_counts[str(info.get("event", "unknown"))] += 1
         wellbeing_window.append(session.last_wellbeing)
         planner_window.append(int(session.last_planner_used))
+        visited.add((int(session.env.agent_pos[0]), int(session.env.agent_pos[1])))
 
         if step % window == 0:
             stats = session.learner.stats()
@@ -370,6 +372,8 @@ def main() -> None:
                 ),
                 "interact_noop": int(event_counts.get("interact_noop", 0)),
                 "health_loss": int(event_counts.get("health_loss", 0)),
+                "coverage_cells": len(visited),
+                "coverage_frac": round(len(visited) / max(1, (session.env.size - 2) ** 2), 3),
                 **{k: stats[k] for k in (
                     "wm_loss", "td_loss", "value_loss",
                     "uncertainty_threshold", "epsilon", "buffer_size",
@@ -377,6 +381,7 @@ def main() -> None:
             }
             history.append(row)
             event_counts.clear()
+            visited.clear()
             threshold = row["uncertainty_threshold"]
             print(
                 f"step {step:>7} | wellbeing {row['wellbeing']:.3f} | "
@@ -384,7 +389,8 @@ def main() -> None:
                 f"planner {row['planner_used_rate']:.2f} | "
                 f"seuil {threshold if threshold is None else round(threshold, 4)} | "
                 f"eau {row['interact_water']} | bouffe {row['interact_food']} | "
-                f"morts {row['deaths']} | eps {row['epsilon']:.2f}"
+                f"morts {row['deaths']} | couv {row['coverage_cells']} "
+                f"({row['coverage_frac']:.0%}) | eps {row['epsilon']:.2f}"
             )
             metrics_path = out_dir / "metrics_online.json"
             tmp = metrics_path.with_suffix(".json.tmp")

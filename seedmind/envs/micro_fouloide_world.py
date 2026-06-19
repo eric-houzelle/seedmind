@@ -101,6 +101,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
         soft_death_grace_steps: int = 0,
         critical_kill_health_decay: Optional[float] = None,
         resource_regrow_steps: int = 0,
+        resource_regrow_elsewhere: bool = False,
         num_food: int = 10,
         num_water: int = 8,
         num_warm_zones: int = 6,
@@ -144,6 +145,10 @@ class MicroFouloideWorld(EnvironmentAdapter):
             else self.health_decay
         )
         self.resource_regrow_steps = int(resource_regrow_steps)
+        # When True, a depleted resource regrows at a NEW random empty cell
+        # instead of in place — defeats the "camp + oscillate to re-harvest the
+        # same spot" strategy and forces exploration + use of spatial memory.
+        self.resource_regrow_elsewhere = bool(resource_regrow_elsewhere)
         self.num_food = int(num_food)
         self.num_water = int(num_water)
         self.num_warm_zones = int(num_warm_zones)
@@ -544,16 +549,34 @@ class MicroFouloideWorld(EnvironmentAdapter):
         if self.resource_regrow_steps > 0:
             self._regrow_queue.append((r, c, entity, self.steps + self.resource_regrow_steps))
 
+    def _random_empty_cell(self) -> Optional[Tuple[int, int]]:
+        """A random EMPTY interior cell (not the agent's), or None if full."""
+        empties = [
+            (r, c)
+            for r in range(1, self.size - 1)
+            for c in range(1, self.size - 1)
+            if self.grid[r, c] == EMPTY and (r, c) != self.agent_pos
+        ]
+        if not empties:
+            return None
+        return empties[int(self.rng.integers(0, len(empties)))]
+
     def _tick_regrowth(self) -> None:
         if not self._regrow_queue:
             return
         remaining = []
         for r, c, entity, due_step in self._regrow_queue:
-            if (
-                self.steps >= due_step
-                and self.grid[r, c] == EMPTY
-                and (r, c) != self.agent_pos
-            ):
+            if self.steps < due_step:
+                remaining.append((r, c, entity, due_step))
+                continue
+            if self.resource_regrow_elsewhere:
+                # Reappear somewhere new — camping the old spot no longer works.
+                cell = self._random_empty_cell()
+                if cell is not None:
+                    self.grid[cell] = entity
+                else:
+                    remaining.append((r, c, entity, due_step))  # retry: no space yet
+            elif self.grid[r, c] == EMPTY and (r, c) != self.agent_pos:
                 self.grid[r, c] = entity
             else:
                 remaining.append((r, c, entity, due_step))
