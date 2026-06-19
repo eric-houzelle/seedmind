@@ -62,7 +62,9 @@ agent:
     mode: properties          # perçoit les propriétés, pas les identités
     spatial_memory:
       enabled: true           # carte égocentrique remplie par le vécu
-      horizon: 300            # steps avant oubli complet d'une case
+      horizon: 1500           # mémoire LONGUE : se souvenir de beaucoup de
+                              # ressources → y retourner au lieu de mourir
+                              # (avec 24 eau + 32 bouffe, il doit tjrs connaître un point)
 
 world_model:
   enabled: true
