@@ -33,6 +33,8 @@ env:
   resource_regrow_steps: 120
   resource_regrow_elsewhere: true  # repousse AILLEURS → camper ne paie plus,
                                    # l'agent doit explorer + se souvenir
+  resource_regrow_radius: 6        # mais À PROXIMITÉ (rayon 6) → reste trouvable,
+                                   # réduit les morts sans réautoriser le campement
   filter_blocked_moves: true
   filter_noop_interact: true
   filter_noop_inventory: true

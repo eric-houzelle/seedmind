@@ -102,6 +102,7 @@ class MicroFouloideWorld(EnvironmentAdapter):
         critical_kill_health_decay: Optional[float] = None,
         resource_regrow_steps: int = 0,
         resource_regrow_elsewhere: bool = False,
+        resource_regrow_radius: int = 0,
         num_food: int = 10,
         num_water: int = 8,
         num_warm_zones: int = 6,
@@ -145,10 +146,13 @@ class MicroFouloideWorld(EnvironmentAdapter):
             else self.health_decay
         )
         self.resource_regrow_steps = int(resource_regrow_steps)
-        # When True, a depleted resource regrows at a NEW random empty cell
-        # instead of in place — defeats the "camp + oscillate to re-harvest the
-        # same spot" strategy and forces exploration + use of spatial memory.
+        # When True, a depleted resource regrows at a NEW empty cell instead of
+        # in place — defeats the "camp + oscillate to re-harvest the same spot"
+        # strategy and forces exploration + use of spatial memory.
         self.resource_regrow_elsewhere = bool(resource_regrow_elsewhere)
+        # radius > 0: regrow within this Chebyshev radius of the old spot
+        # ("nearby" — still findable, kills camping); 0: anywhere on the map.
+        self.resource_regrow_radius = int(resource_regrow_radius)
         self.num_food = int(num_food)
         self.num_water = int(num_water)
         self.num_warm_zones = int(num_warm_zones)
@@ -549,13 +553,28 @@ class MicroFouloideWorld(EnvironmentAdapter):
         if self.resource_regrow_steps > 0:
             self._regrow_queue.append((r, c, entity, self.steps + self.resource_regrow_steps))
 
-    def _random_empty_cell(self) -> Optional[Tuple[int, int]]:
-        """A random EMPTY interior cell (not the agent's), or None if full."""
+    def _random_empty_cell(
+        self, center: Optional[Tuple[int, int]] = None, radius: int = 0,
+    ) -> Optional[Tuple[int, int]]:
+        """A random EMPTY interior cell (not the agent's), or None if none.
+
+        If ``center`` and ``radius > 0`` are given, restrict candidates to the
+        Chebyshev neighbourhood of ``center`` (regrow nearby, not anywhere).
+        """
+        if center is not None and radius > 0:
+            cr, cc = center
+            r_lo, r_hi = max(1, cr - radius), min(self.size - 2, cr + radius)
+            c_lo, c_hi = max(1, cc - radius), min(self.size - 2, cc + radius)
+            rows, cols = range(r_lo, r_hi + 1), range(c_lo, c_hi + 1)
+        else:
+            rows, cols = range(1, self.size - 1), range(1, self.size - 1)
         empties = [
             (r, c)
-            for r in range(1, self.size - 1)
-            for c in range(1, self.size - 1)
-            if self.grid[r, c] == EMPTY and (r, c) != self.agent_pos
+            for r in rows
+            for c in cols
+            if self.grid[r, c] == EMPTY
+            and (r, c) != self.agent_pos
+            and (center is None or (r, c) != tuple(center))  # never the old spot
         ]
         if not empties:
             return None
@@ -570,8 +589,11 @@ class MicroFouloideWorld(EnvironmentAdapter):
                 remaining.append((r, c, entity, due_step))
                 continue
             if self.resource_regrow_elsewhere:
-                # Reappear somewhere new — camping the old spot no longer works.
-                cell = self._random_empty_cell()
+                # Reappear elsewhere — camping the old spot no longer works.
+                # With a radius, stay nearby (findable) but not on the same cell.
+                cell = self._random_empty_cell(
+                    center=(r, c), radius=self.resource_regrow_radius,
+                )
                 if cell is not None:
                     self.grid[cell] = entity
                 else:

@@ -97,6 +97,7 @@ def build_env(config: dict, seed: int) -> MicroFouloideWorld:
         ),
         resource_regrow_steps=int(ec.get("resource_regrow_steps", 0)),
         resource_regrow_elsewhere=bool(ec.get("resource_regrow_elsewhere", False)),
+        resource_regrow_radius=int(ec.get("resource_regrow_radius", 0)),
         num_food=int(ec.get("num_food", 10)),
         num_water=int(ec.get("num_water", 8)),
         num_warm_zones=int(ec.get("num_warm_zones", 6)),

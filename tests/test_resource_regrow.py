@@ -5,6 +5,8 @@ reappear at a new random cell — defeating the camp-and-oscillate strategy.
 """
 from __future__ import annotations
 
+import numpy as np
+
 from seedmind.envs.micro_fouloide_world import EMPTY, WATER, MicroFouloideWorld
 
 
@@ -44,6 +46,28 @@ def test_regrow_elsewhere_when_enabled():
     env._tick_regrowth()
     assert env.grid[r, c] != WATER                    # NOT in place
     assert int((env.grid == WATER).sum()) == before + 1  # reappeared somewhere
+
+
+def test_regrow_within_radius_and_never_same_cell():
+    env = MicroFouloideWorld(
+        size=20, max_steps=0, resource_regrow_steps=5,
+        resource_regrow_elsewhere=True, resource_regrow_radius=3,
+        num_water=0, num_food=0, num_obstacles=0, num_dangers=0, seed=1,
+    )
+    env.reset()
+    env.grid[1:-1, 1:-1] = EMPTY  # clean slate, only the regrown water will show
+    center = (10, 10)
+    for _ in range(15):
+        env.grid[env.grid == WATER] = EMPTY
+        env._regrow_queue = []
+        env._queue_regrowth(*center, WATER)
+        env.steps += 6
+        env._tick_regrowth()
+        cells = list(zip(*np.where(env.grid == WATER)))
+        assert len(cells) == 1
+        rr, cc = cells[0]
+        assert (rr, cc) != center                          # never the old spot
+        assert max(abs(rr - 10), abs(cc - 10)) <= 3        # within Chebyshev radius
 
 
 def test_regrow_elsewhere_not_lost_when_no_space():

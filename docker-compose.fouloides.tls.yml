@@ -11,6 +11,9 @@ services:
       SIZE: ${SIZE:-96}
       FOULOIDES: ${FOULOIDES:-14}
       DEVICE: ${DEVICE:-cpu}
+      LIVE_CONFIG: ${LIVE_CONFIG:-configs/micro_fouloide_online_homeostatic.yaml}
+      LIVE_BIGMAP: ${LIVE_BIGMAP:-}
+      LIVE_FRESH: ${LIVE_FRESH:-}
       LIVE_CHECKPOINT: ${LIVE_CHECKPOINT:-runs/fouloide_live_homeostatic/checkpoint_live.pt}
       LIVE_CHECKPOINT_EVERY: ${LIVE_CHECKPOINT_EVERY:-5000}
     expose:
