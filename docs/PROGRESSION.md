@@ -4842,6 +4842,19 @@ le générique est un pari de recherche parké. Bilan complet, verdicts chiffré
 pistes de reprise : **[BILAN_RSSM_2026-06-18.md](./BILAN_RSSM_2026-06-18.md)**
 (issues bd `seedmind-oc4` / `seedmind-oc4.1`).
 
+### Reprise 22 juin 2026 — verrou de stabilité levé
+
+3 briques validées : normalisation d'avantage `return_range` (vs z-score → casse
+l'inertie), diagnostic du **bassin idle** (entropie bistable, horizon trop court
+pour rendre la famine visible), et **`symlog` sur la cible du critic** (DreamerV3)
++ **horizon 50**. Résultat : le **verrou historique « stabilité ↔ exploration »
+est levé** — actor-critic stable (`critic_loss` max 0.018 sur 60k vs 2.26),
+engagé (entropie ~1.4) et fourrageur à horizon long. **MAIS ne bat pas encore le
+full-grid** : wellbeing 0.045 (vs 0.026) mais **5× plus de morts** → critère de
+merge non atteint, **pas de merge dans `main`**. Verrou restant : **qualité de
+survie**. Détail complet : section « Reprise 2026-06-22 » du bilan ; mémoire bd
+`rssm-idle-basin-2026-06-22`.
+
 ---
 
-*Dernière mise à jour : 18 juin 2026*
+*Dernière mise à jour : 22 juin 2026*

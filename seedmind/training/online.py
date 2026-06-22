@@ -74,6 +74,8 @@ class OnlineLearner:
         self.imag_context = int(ic.get("context_len", 8))
         self.imag_lam = float(ic.get("lambda", 0.95))
         self.imag_entropy = float(ic.get("entropy_coef", 0.01))
+        self.imag_advantage_norm = str(ic.get("advantage_norm", "return_range"))
+        self.imag_critic_symlog = bool(ic.get("critic_symlog", True))
         self.imag_gamma = float(ic.get("gamma", float(dc.get("gamma", 0.97))))
 
         self.update_every = int(oc.get("update_every", 8))
@@ -150,6 +152,8 @@ class OnlineLearner:
         self.last_value_loss = 0.0
         self.last_actor_loss = 0.0
         self.last_critic_loss = 0.0
+        self.last_imag_entropy = 0.0
+        self.last_imag_return = 0.0
         self.uncertainty_threshold: Optional[float] = None
 
         # Cold start: WM uncertainty is softplus (> 0), so a zero threshold
@@ -197,9 +201,13 @@ class OnlineLearner:
                 horizon=self.imag_horizon, num_updates=self.updates_per_cycle,
                 gamma=self.imag_gamma, lam=self.imag_lam, entropy_coef=self.imag_entropy,
                 target_critic=self.target_critic, target_tau=self.imag_target_tau,
+                advantage_norm=self.imag_advantage_norm,
+                critic_symlog=self.imag_critic_symlog,
             )
             self.last_actor_loss = float(ac["actor_loss"])
             self.last_critic_loss = float(ac["critic_loss"])
+            self.last_imag_entropy = float(ac["entropy"])
+            self.last_imag_return = float(ac["imag_return"])
             return
 
         q_losses = train_recurrent_dqn(
@@ -328,6 +336,8 @@ class OnlineLearner:
             "value_loss": self.last_value_loss,
             "actor_loss": self.last_actor_loss,
             "critic_loss": self.last_critic_loss,
+            "imag_entropy": self.last_imag_entropy,
+            "imag_return": self.last_imag_return,
             "q_updates": self.total_q_updates,
             "uncertainty_threshold": self.uncertainty_threshold,
             "epsilon": float(self.agent.policy.epsilon),

@@ -49,6 +49,43 @@ def _sample_start_states(world_model, buffer, batch_size, context_len, device):
     return h  # (B, deter) — warmed final state per sequence
 
 
+def symlog(x):
+    """Bi-symmetric log: sign(x)·log(|x|+1). Compresses large magnitudes."""
+    return torch.sign(x) * torch.log1p(torch.abs(x))
+
+
+def symexp(x):
+    """Inverse of :func:`symlog`: sign(x)·(exp(|x|)−1)."""
+    return torch.sign(x) * torch.expm1(torch.abs(x))
+
+
+def _normalise_advantage(advantage, returns, mode):
+    """Scale the policy-gradient advantage before REINFORCE.
+
+    ``return_range`` (DreamerV3-style, default): divide by the 5–95 percentile
+    span of the imagined returns, floored at 1, and do **not** subtract the mean.
+    This only *shrinks* large advantages (the runaway case the EMA target critic
+    also guards against) — it never *inflates* a faint early signal up to unit
+    variance the way z-scoring does. The z-score (mean-subtract / std) forced a
+    zero mean → half the actions always got a positive advantage regardless of
+    quality, flattening the early foraging signal → the actor went inert
+    (run ``rssm_imag_fix_long``). Preserving sign+magnitude restores the foraging
+    that the un-normalised run (``rssm_imag_long``) showed before its critic blew up.
+
+    ``zscore`` = the previous behaviour. ``none`` = raw advantage.
+    """
+    if mode == "none":
+        return advantage
+    if mode == "zscore":
+        return (advantage - advantage.mean()) / (advantage.std() + 1e-8)
+    # default: return_range (DreamerV3-lite, per-batch percentile span)
+    flat = returns.reshape(-1)
+    lo = torch.quantile(flat, 0.05)
+    hi = torch.quantile(flat, 0.95)
+    scale = torch.clamp(hi - lo, min=1.0)
+    return advantage / scale
+
+
 def _lambda_returns(rewards, values, bootstrap, gamma, lam):
     """λ-returns. rewards/values: (T, B); bootstrap: (B,) = V(h_T). -> (T, B)."""
     T = rewards.shape[0]
@@ -78,6 +115,8 @@ def train_imagination_actor_critic(
     grad_clip: float = 10.0,
     target_critic=None,
     target_tau: float = 0.02,
+    advantage_norm: str = "return_range",
+    critic_symlog: bool = True,
 ) -> Dict[str, float]:
     """Run ``num_updates`` actor-critic updates over imagined rollouts.
 
@@ -87,6 +126,14 @@ def train_imagination_actor_critic(
     it). Advantages are normalised per batch. Pass ``target_critic`` (a copy of
     ``critic``); it is EMA-updated here. Without it, the online critic is used
     (only safe for short/test runs).
+
+    ``critic_symlog`` (DreamerV3): the critic predicts values in **symlog space**
+    and regresses toward ``symlog(returns)``; values are ``symexp``-decoded before
+    they enter the λ-returns / advantage (which live in reward space). This bounds
+    the critic's target scale regardless of horizon — without it, long rollouts
+    grow the raw returns (≈5+ at horizon 50) and the critic MSE diverges, while the
+    short-horizon idle basin keeps the policy from foraging. Symlog decouples the
+    two so a long horizon (needed to make starvation visible) stays stable.
     """
     if len(buffer) == 0:
         return dict(_ZERO)
@@ -115,6 +162,8 @@ def train_imagination_actor_critic(
                 rewards.append(r)
                 h = h_next
             bootstrap = value_net(h)                                # V_target(h_T)
+            if critic_symlog:
+                bootstrap = symexp(bootstrap)                       # → reward space
 
         states_t = torch.stack(states, dim=0)                       # (T, B, deter)
         actions_t = torch.stack(actions, dim=0)                     # (T, B)
@@ -123,14 +172,17 @@ def train_imagination_actor_critic(
 
         with torch.no_grad():
             values = value_net(states_t.reshape(T * B, D)).reshape(T, B)
+            if critic_symlog:
+                values = symexp(values)                             # → reward space
             returns = _lambda_returns(rewards_t, values, bootstrap, gamma, lam)
             advantage = returns - values
-            # Normalise advantages per batch (stabilises the actor gradient scale).
-            advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
+            advantage = _normalise_advantage(advantage, returns, advantage_norm)
 
         # Critic: regress V(h_t) toward the imagined λ-returns (target-computed).
+        # With symlog the critic learns in compressed space → bounded targets.
         v_pred = critic(states_t.reshape(T * B, D)).reshape(T, B)
-        critic_loss = ((v_pred - returns) ** 2).mean()
+        critic_target = symlog(returns) if critic_symlog else returns
+        critic_loss = ((v_pred - critic_target) ** 2).mean()
         critic_optimizer.zero_grad()
         critic_loss.backward()
         if grad_clip > 0:

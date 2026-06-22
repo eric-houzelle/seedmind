@@ -137,3 +137,63 @@ full-grid.
   `test_recurrent_training.py`, `test_agent_recurrent.py`, `test_qnet_recurrent.py`,
   `test_actor_critic.py`, `test_imagination_actor_critic.py`, `test_sequence_sampling.py`.
 - **Reprendre** : `git checkout rssm-egocentric` ; `bd show seedmind-oc4.1`.
+
+---
+
+## Reprise — 2026-06-22 : le verrou de stabilité est levé
+
+Session de reprise sur `seedmind-oc4.1`. Diagnostic **sans relancer** d'abord (on
+a relu les métriques disque), puis 6 runs ciblés. Tout reste opt-in derrière les
+flags d'imagination ; `main`/prod toujours intact.
+
+### Ce qui a été fait (3 briques validées)
+
+1. **Normalisation d'avantage `return_range`** (remplace le z-score). Diagnostic :
+   le z-score `(adv−mean)/std` forçait une moyenne nulle → la moitié des actions
+   gardait toujours un avantage positif → il **aplatissait le signal précoce** →
+   actor inerte (`rssm_imag_fix_long`). `return_range` (DreamerV3-lite : division
+   par l'amplitude de percentiles des returns, sans centrer) préserve signe+magnitude.
+   → casse l'inertie, **bat la baseline en wellbeing** (0.125 vs 0.026 full-grid).
+2. **Diagnostic du bassin idle** (bracket entropie {0.0, 0.05, 0.15}) :
+   `entropy_coef` est **bistable**, aucun réglage ne donne une policy *engagée ET
+   fourrageuse* (ent=0 → s'engage sur l'inertie ; ent haut → ne s'engage jamais,
+   fourrage de chance + 68 morts). Cause racine : à ent=0 le critic **valorise
+   l'idle** (`imag_ret`>0) → dans l'imagination *ne rien faire* est un bassin
+   stable. Le WM régresse `reward_external` (curiosité hors de cause) ; **l'horizon
+   15 était trop court** (drives −0.005/pas → la famine n'est pas visible).
+3. **`symlog` sur la cible du critic** (DreamerV3) + **horizon 50**. L'horizon long
+   rend la famine visible (entropie redevient intermédiaire ~1.4 = policy engagée,
+   morts ÷2.6) mais faisait **re-diverger** le critic (returns bruts ~5 → `critic_loss`
+   2.26) car le critic régressait sur les λ-returns bruts. Le symlog borne la cible
+   quelle que soit l'horizon → **`critic_loss` max 0.018 sur 60k** (vs 2.26).
+
+### Verdict (run `runs/rssm_imag_symlog_h50_60k`, moy ≥30k)
+
+| | RSSM symlog+h50 | Baseline full-grid |
+|---|---|---|
+| critic_loss max (60k) | **0.018** (stable) | — |
+| entropie | 1.41 (engagée) | — |
+| eau / bouffe | 4.5 / 5.8 | 1.0 / 0 |
+| wellbeing | 0.045 | 0.026 |
+| morts (60k) | **25** | ~5 |
+
+**Acquis durable** : le **verrou historique « stabilité ↔ exploration » est levé** —
+on a un actor-critic en imagination **stable, engagé et fourrageur à horizon long**,
+ce que cette piste n'avait jamais atteint. **MAIS ne bat pas encore proprement le
+full-grid** : wellbeing à peine au-dessus, et **5× plus de morts** → critère de merge
+**non atteint, on ne merge pas dans `main`**. Le verrou n'est plus la stabilité mais
+la **qualité de survie**.
+
+### Pistes de reprise (raffinées)
+
+1. **Survie** (verrou courant) : pénaliser plus fort la mort / les drives critiques
+   dans le reward ; l'agent fourrage mais ne priorise pas assez la survie.
+2. **Avantage de l'actor** : le symlog ne stabilise que le critic ; l'actor voit
+   encore des returns bruts ~1-2 → envisager symlog/normalisation côté avantage.
+3. Réglage fin horizon/lr une fois la survie saine.
+
+- **Nouveaux runs** : `rssm_imag_fix2_long` (return_range, 0.15), `rssm_imag_ent00`
+  (ent=0, inerte → preuve du bassin idle), `rssm_imag_h50` (horizon long, critic
+  diverge), `rssm_imag_symlog_h50_60k` (symlog, stable). Mémoire bd :
+  `rssm-idle-basin-2026-06-22`.
+- **Overrides CLI ajoutés** : `run_fouloide_online.py --entropy-coef --horizon`.

@@ -56,10 +56,12 @@ agent:
     num_layers: 2
 
 imagination:
-  horizon: 15               # longueur des rollouts imaginés
+  horizon: 50               # rollouts longs : rend la famine visible (l'idle n'est plus un bassin valorisé)
   context_len: 8            # pas réels pour réchauffer h_0 avant d'imaginer
   lambda: 0.95              # λ-returns
-  entropy_coef: 0.01        # bonus d'entropie (exploration)
+  entropy_coef: 0.03        # bonus d'entropie (exploration) ; bistable seul → l'horizon long est le vrai levier
+  advantage_norm: return_range  # DreamerV3-lite : préserve signe+magnitude (le z-score aplatissait le signal → actor inerte)
+  critic_symlog: true       # DreamerV3 : critic en espace symlog → cible bornée, stable même à horizon long
   actor_lr: 0.0004
   critic_lr: 0.0004
 

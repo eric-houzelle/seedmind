@@ -330,6 +330,10 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=500)
     parser.add_argument("--checkpoint-every", type=int, default=5000,
                         help="sauvegarde du cerveau tous les N steps (0 = off)")
+    parser.add_argument("--entropy-coef", type=float, default=None,
+                        help="Override imagination.entropy_coef (Dreamer exploration bonus).")
+    parser.add_argument("--horizon", type=int, default=None,
+                        help="Override imagination.horizon (imagined rollout length).")
     parser.add_argument("--resume", default=None,
                         help="checkpoint online à reprendre")
     args = parser.parse_args()
@@ -337,6 +341,12 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = resolve_device(args.device)
     config = load_config(args.config)
+    if args.entropy_coef is not None:
+        config.setdefault("imagination", {})["entropy_coef"] = float(args.entropy_coef)
+        print(f"[override] imagination.entropy_coef = {args.entropy_coef}")
+    if args.horizon is not None:
+        config.setdefault("imagination", {})["horizon"] = int(args.horizon)
+        print(f"[override] imagination.horizon = {args.horizon}")
     out_dir = Path(args.out_dir or f"runs/fouloide_online_seed{args.seed}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -385,6 +395,7 @@ def main() -> None:
                 "health_loss": int(event_counts.get("health_loss", 0)),
                 **{k: stats[k] for k in (
                     "wm_loss", "td_loss", "value_loss", "actor_loss", "critic_loss",
+                    "imag_entropy", "imag_return",
                     "uncertainty_threshold", "epsilon", "buffer_size",
                 )},
             }
