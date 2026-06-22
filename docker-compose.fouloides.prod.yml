@@ -7,6 +7,7 @@ services:
       PORT: 8787
       WS_PORT: 8788
       SOURCE: ${SOURCE:-stub}
+      LIVE_CONFIG: ${LIVE_CONFIG:-configs/micro_fouloide_online_homeostatic.yaml}
       TICK_MS: ${TICK_MS:-150}
       SIZE: ${SIZE:-96}
       FOULOIDES: ${FOULOIDES:-14}
