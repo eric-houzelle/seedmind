@@ -157,12 +157,12 @@ policy:
 
 planning:
   enabled: true
-  weight: 0.08
-  horizon: 5
-  num_samples: 8
+  weight: 0.4               # le WM pèse vraiment dans la décision (était 0.08)
+  horizon: 15               # imaginer assez loin pour rejoindre une ressource mémorisée
+  num_samples: 16           # plus de trajectoires imaginées (horizon plus long)
   terminal_value_weight: 1.0
-  margin_threshold: 0.05
-  q_advantage_threshold: 0.15
+  margin_threshold: 0.0     # gates ouvertes : le planner s'engage (était 0.05)
+  q_advantage_threshold: 0.0  # (était 0.15)
   # uncertainty_threshold piloté en ligne par OnlineLearner (quantile glissant)
 
 dqn:
@@ -183,7 +183,8 @@ online:
   updates_per_cycle: 4      # minibatchs WM/DQN/Value par cycle
   warmup_steps: 12000       # planner fermé longtemps : Q apprend d'abord du réel
   threshold_refresh_steps: 500
-  threshold_quantile: 0.35
+  threshold_quantile: 0.70    # ouvre le gate d'incertitude : planner utilisé bien
+                              # plus souvent (sur les 70% d'états où le WM est sûr)
   threshold_samples: 2000
 
 action_curriculum:
