@@ -49,6 +49,16 @@ def _sample_start_states(world_model, buffer, batch_size, context_len, device):
     return h  # (B, deter) — warmed final state per sequence
 
 
+# Clamp the critic's symlog-space value before decoding with symexp. symexp grows
+# exponentially, so an over-shooting critic feeds huge values into the returns,
+# which the critic then chases — a runaway loop (seen with reward_learning's larger
+# scale: imag_return blew to -1e12, then NaN logits killed the actor). symexp(8)≈2980
+# sits far above any legitimate return (~100) so the clamp never binds in normal
+# operation; it only caps the pathological runaway. (A full DreamerV3 twohot critic
+# would remove the need for this guard.)
+_SYMLOG_CLAMP = 8.0
+
+
 def symlog(x):
     """Bi-symmetric log: sign(x)·log(|x|+1). Compresses large magnitudes."""
     return torch.sign(x) * torch.log1p(torch.abs(x))
@@ -163,7 +173,7 @@ def train_imagination_actor_critic(
                 h = h_next
             bootstrap = value_net(h)                                # V_target(h_T)
             if critic_symlog:
-                bootstrap = symexp(bootstrap)                       # → reward space
+                bootstrap = symexp(bootstrap.clamp(-_SYMLOG_CLAMP, _SYMLOG_CLAMP))
 
         states_t = torch.stack(states, dim=0)                       # (T, B, deter)
         actions_t = torch.stack(actions, dim=0)                     # (T, B)
@@ -173,7 +183,7 @@ def train_imagination_actor_critic(
         with torch.no_grad():
             values = value_net(states_t.reshape(T * B, D)).reshape(T, B)
             if critic_symlog:
-                values = symexp(values)                             # → reward space
+                values = symexp(values.clamp(-_SYMLOG_CLAMP, _SYMLOG_CLAMP))
             returns = _lambda_returns(rewards_t, values, bootstrap, gamma, lam)
             advantage = returns - values
             advantage = _normalise_advantage(advantage, returns, advantage_norm)

@@ -24,8 +24,17 @@ _ZERO = {"total": 0.0, "state": 0.0, "reward": 0.0,
          "feature": 0.0, "event": 0.0, "uncertainty": 0.0, "updates": 0.0}
 
 
-def _assemble_sequences(sequences: List[List[dict]], device) -> Optional[dict]:
-    """Stack a batch of equal-length sequences into (B, L, ...) tensors."""
+def _assemble_sequences(
+    sequences: List[List[dict]], device, reward_key: str = "reward_external",
+) -> Optional[dict]:
+    """Stack a batch of equal-length sequences into (B, L, ...) tensors.
+
+    ``reward_key`` selects which stored reward the WM regresses on. The default
+    ``reward_external`` is the raw env reward (≈ flat alive-bonus, −1 on death) →
+    a WM trained on it imagines no reason to forage, so the imagination policy
+    just hunkers down to avoid death. Pass ``reward_learning`` (drive wellbeing +
+    foraging shaping) so the imagined returns actually reward keeping drives up.
+    """
     B = len(sequences)
     L = len(sequences[0])
     if B == 0 or L == 0:
@@ -37,7 +46,11 @@ def _assemble_sequences(sequences: List[List[dict]], device) -> Optional[dict]:
     latents = np.asarray(col("latent_state"), dtype=np.float32)        # (B, L, D)
     next_latents = np.asarray(col("next_latent_state"), dtype=np.float32)
     actions = np.asarray(col("action_index"), dtype=np.int64)          # (B, L)
-    rewards = np.asarray(col("reward_external"), dtype=np.float32)      # (B, L)
+    rewards = np.asarray(
+        [[float(t.get(reward_key, t.get("reward_external", 0.0))) for t in seq]
+         for seq in sequences],
+        dtype=np.float32,
+    )                                                                  # (B, L)
 
     out = {
         "latents": torch.from_numpy(latents).to(device),
@@ -80,6 +93,7 @@ def train_recurrent_world_model(
     uncertainty_weight: float = 0.0,
     uncertainty_detach: bool = False,
     grad_clip: float = 10.0,
+    reward_key: str = "reward_external",
 ) -> Dict[str, float]:
     """Run ``num_updates`` BPTT steps over sampled sequences; mean loss parts."""
     if len(buffer) == 0:
@@ -95,7 +109,7 @@ def train_recurrent_world_model(
         sequences = buffer.sample_sequences(batch_size, seq_len)
         if not sequences:
             continue
-        batch = _assemble_sequences(sequences, device)
+        batch = _assemble_sequences(sequences, device, reward_key=reward_key)
         if batch is None:
             continue
         B, L = batch["B"], batch["L"]

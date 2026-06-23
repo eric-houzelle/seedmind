@@ -87,6 +87,7 @@ class OnlineLearner:
 
         self.wm_batch = int(wmc.get("batch_size", 64))
         self.wm_sampler = str(wmc.get("sampler", "uniform"))
+        self.wm_reward_key = str(wmc.get("reward_key", "reward_external"))
         self.wm_uncertainty_head_updates = int(wmc.get("uncertainty_head_updates_per_train", 0))
         self.q_batch = int(dc.get("batch_size", 64))
         self.gamma = float(dc.get("gamma", 0.97))
@@ -189,6 +190,7 @@ class OnlineLearner:
             event_class_balance_power=float(cwm.get("event_class_balance_power", 0.5)),
             uncertainty_weight=float(wmc.get("uncertainty_loss_weight", 0.0)),
             uncertainty_detach=bool(wmc.get("uncertainty_detach", False)),
+            reward_key=self.wm_reward_key,
         )
         self.last_wm_loss = float(wm_losses["total"])
 
@@ -247,6 +249,7 @@ class OnlineLearner:
             event_sample_reward_abs_weight=float(cwm.get("event_sample_reward_abs_weight", 0.0)),
             uncertainty_weight=float(wmc.get("uncertainty_loss_weight", 0.0)),
             uncertainty_detach=bool(wmc.get("uncertainty_detach", False)),
+            reward_key=self.wm_reward_key,
         )
         self.last_wm_loss = float(wm_losses["total"])
         if self.wm_uncertainty_head_updates > 0:
