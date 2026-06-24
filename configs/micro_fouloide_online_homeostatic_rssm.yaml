@@ -132,13 +132,13 @@ resource_reward:
     interact_food: 0.06
     interact_noop: -0.08
     move_blocked: -0.03
-    damage: -0.25         # danger fortement pénalisé (les morts sont danger-déclenchées)
+    damage: -0.12         # danger pénalisé modérément (le sur-boost augmentait la volatilité)
     health_loss: -0.12
-  low_hydration_water_bonus: 0.70       # tire le fourrage plus tôt (avant le critique)
-  critical_hydration_water_bonus: 1.20  # sortir du plancher critique = très payant
-  low_energy_food_bonus: 0.50
-  critical_energy_food_bonus: 0.90
-  low_drive_passive_penalty: 0.16       # se terrer (rest/wait) quand les drives sont bas coûte plus cher
+  low_hydration_water_bonus: 0.45       # valeurs d'origine : le terme wellbeing de reward_learning
+  critical_hydration_water_bonus: 0.70  # tire déjà le fourrage ; les bonus spiky destabilisaient
+  low_energy_food_bonus: 0.25
+  critical_energy_food_bonus: 0.40
+  low_drive_passive_penalty: 0.08
 
 policy:
   type: epsilon_greedy
