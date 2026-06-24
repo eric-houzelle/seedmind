@@ -1,10 +1,6 @@
 project:
   name: SeedMind
 
-# Trajectoire RSSM — VARIANTE GRANDE CARTE (96×96) pour la démo live.
-# Même cerveau RSSM que micro_fouloide_online_homeostatic_rssm.yaml ; seul l'env
-# grossit. La perception égocentrée 11×11 étant fixe, le checkpoint entraîné en
-# 32×32 tourne tel quel ici — c'est tout l'intérêt (size-invariance).
 # Trajectoire RSSM — Étape 2 : perception égocentrée conv + WORLD-MODEL RÉCURRENT.
 # Dérivé de la config égocentrée. La mémoire émerge dans l'état latent récurrent
 # h_t (GRU) que le Q-net reçoit → l'agent peut agir sur ce qu'il a vu hors de sa
@@ -17,7 +13,7 @@ project:
 
 env:
   type: micro_fouloide
-  size: 96                # GRANDE CARTE — teste la size-invariance (cerveau entraîné en 32×32)
+  size: 96                # GRANDE CARTE — teste la size-invariance + apprentissage from-scratch
   max_steps: 0              # monde infini, pas de timeout
   visibility_radius: 4
   energy_start: 0.75
@@ -38,7 +34,7 @@ env:
   health_floor: 0.20
   health_regen: 0.015
   resource_regrow_steps: 120
-  num_food: 288           # ×9 (densité conservée vs 32×32)
+  num_food: 288           # x9 (densite conservee vs 32x32)
   num_water: 216
   num_warm_zones: 252
   num_cold_zones: 252
@@ -79,6 +75,8 @@ world_model:
   batch_size: 64
   sampler: causal
   uncertainty_head_updates_per_train: 2
+  reward_key: reward_learning   # CLÉ : le WM prédit le reward FAÇONNÉ (wellbeing + fourrage),
+                                # pas reward_external (plat) → l'imagination a enfin une raison de fourrager
 
 causal_world_model:
   enabled: true
@@ -92,6 +90,7 @@ causal_world_model:
     - interact_noop
     - health_loss
     - death
+    - damage              # le WM doit prévoir les hits de danger pour les éviter en imagination
   event_sample_name_weight: 2.0
   event_sample_done_weight: 2.0
 
@@ -133,10 +132,10 @@ resource_reward:
     interact_food: 0.06
     interact_noop: -0.08
     move_blocked: -0.03
-    damage: -0.08
+    damage: -0.12         # danger pénalisé modérément (le sur-boost augmentait la volatilité)
     health_loss: -0.12
-  low_hydration_water_bonus: 0.45
-  critical_hydration_water_bonus: 0.70
+  low_hydration_water_bonus: 0.45       # valeurs d'origine : le terme wellbeing de reward_learning
+  critical_hydration_water_bonus: 0.70  # tire déjà le fourrage ; les bonus spiky destabilisaient
   low_energy_food_bonus: 0.25
   critical_energy_food_bonus: 0.40
   low_drive_passive_penalty: 0.08
