@@ -197,3 +197,64 @@ la **qualité de survie**.
   diverge), `rssm_imag_symlog_h50_60k` (symlog, stable). Mémoire bd :
   `rssm-idle-basin-2026-06-22`.
 - **Overrides CLI ajoutés** : `run_fouloide_online.py --entropy-coef --horizon`.
+
+---
+
+## Reprise — 2026-06-24 : survie, cause racine, et consolidation
+
+Suite de `seedmind-oc4.1`. Diagnostic mécaniste de la mortalité, **vraie cause
+racine trouvée**, puis décision stratégique de parker.
+
+### Le bug de fond (trouvé par diagnostic, pas par tuning)
+
+Eval du checkpoint (8000 steps) : l'agent vivait **85% du temps en drive critique**,
+santé scotchée au plancher `health_floor=0.20`, mourant par contact `damage`
+(la famine ne peut pas tuer : `soft_death` plancher-né). **Vraie cause** : le WM
+récurrent régressait `reward_external` (hardcodé) = `+0.01/pas, −1 mort`, **plat**.
+Comme la policy d'imagination optimise le reward *prédit par le WM*, elle n'avait
+**aucune raison de fourrager** → se terrer au plancher était optimal. (Preuve : un
+run avec bonus de fourrage boostés donnait un résultat **identique au bit près** —
+les bonus vivent dans `reward_learning`, jamais vu par l'imagination.)
+
+### Fix + verrous successifs
+
+- **`reward_key` configurable** (`recurrent.py` + `online.py`), config RSSM
+  `world_model.reward_key: reward_learning` (wellbeing + fourrage). → l'agent
+  **fourrage enfin** : wellbeing bondit à ~0.14.
+- **Effet de bord** : `reward_learning` a une échelle plus grande → `symexp(critic)`
+  s'emballe (`imag_return → −1e12`, NaN, crash actor). **Garde-fou** : clamp avant
+  `symexp` (`_SYMLOG_CLAMP=8`).
+- **Fourrage transitoire** : avec des bonus sur-boostés, `imag_return` spikait à
+  528 → la policy s'effondrait et rechutait dans le bassin « se terrer » (~25k).
+  **Revert des bonus** aux valeurs d'origine → `imag_return` borné (146) → fourrage
+  **soutenu sur 60k**, wellbeing 0.067.
+
+### Verdict final (run `rssm_rlearn_stable_60k`, moy ≥30k)
+
+| | RSSM (final) | full-grid (barre) |
+|---|---|---|
+| wellbeing | **0.067** | 0.026 |
+| eau / bouffe | 3.6 / 6.6 | 1.0 / 0 |
+| stabilité | OK (critic max 0.60) | — |
+| **morts (60k)** | **54 (1/1111)** | ~5 (1/12000) |
+
+Le RSSM **bat le full-grid sur le wellbeing et le fourrage**, mais **meurt ~11×
+plus**. C'est **structurel** sur petite carte : la fenêtre égocentrée 11×11 ne peut
+pas égaler la vue globale du full-grid pour éviter les dangers distants.
+
+### Décision (2026-06-24) : CONSOLIDER / PARKER
+
+« Battre le full-grid en 32×32 » est le **mauvais critère** : l'intérêt du RSSM est
+le **passage à l'échelle**, déjà **démontré** (tourne sur 96×96 — le full-grid en
+est structurellement incapable, déployé en démo live). Sur petite carte, le full-grid
+reste le champion (sa vue globale est un vrai avantage). On parke l'optimisation
+survie petite-carte (faible valeur). **Acquis durables de cette piste** : perception
+égocentrée + WM récurrent + actor-critic en imagination **stable** (return_range,
+symlog+clamp, reward_learning), size-invariant, qui fourrage et tient un wellbeing
+positif. Verrou restant si reprise = **survie / évitement du danger** (issue
+`seedmind-oc4.2`) ; remède propre = critic **twohot DreamerV3**.
+
+- **Nouveaux runs** : `rssm_wm_rlearn_60k` (crash NaN, sans clamp), `rssm_wm_rlearn_clamp_60k`
+  (fourrage transitoire puis rechute), `rssm_rlearn_stable_60k` (fourrage stable, verdict ci-dessus).
+- **Mémoires bd** : `rssm-survie-famine-chronique-2026-06-22`, `rssm-fourrage-transitoire-2026-06-24`.
+- **Note ops** : lancer les runs longs avec `caffeinate -i` (la veille machine stalle les runs).
