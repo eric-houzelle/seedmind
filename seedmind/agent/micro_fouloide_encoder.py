@@ -174,18 +174,20 @@ def make_micro_fouloide_property_obs_fns(
 # ---------------------------------------------------------------------------
 
 def egocentric_grid(
-    grid: Any, agent_pos: Tuple[int, int], radius: int, oob_fill: int = OBSTACLE,
+    grid: Any, agent_pos: Tuple[int, int], radius: int, oob_fill: float = OBSTACLE,
+    dtype=np.int64,
 ) -> np.ndarray:
     """Crop ``grid`` to a ``(2*radius+1, 2*radius+1)`` window centred on the agent.
 
     Out-of-world cells are filled with ``oob_fill``. The agent sits at the
-    centre ``(radius, radius)`` of the returned window.
+    centre ``(radius, radius)`` of the returned window. ``dtype`` lets the same
+    crop serve the int entity grid and the float memory-freshness grid.
     """
-    grid = np.asarray(grid, dtype=np.int64)
+    grid = np.asarray(grid, dtype=dtype)
     k = int(radius)
     win = 2 * k + 1
     ar, ac = int(agent_pos[0]), int(agent_pos[1])
-    out = np.full((win, win), int(oob_fill), dtype=np.int64)
+    out = np.full((win, win), oob_fill, dtype=dtype)
     # Source rectangle in world coords, then clipped to the world bounds.
     r0, c0 = ar - k, ac - k
     sr0, sr1 = max(r0, 0), min(ar + k + 1, grid.shape[0])
@@ -206,9 +208,19 @@ def egocentric_observation(
     drives, ``standing_entity``, inventory — are preserved untouched.
     """
     obs = dict(observation)
-    obs["grid"] = egocentric_grid(
-        observation["grid"], observation.get("agent_pos", (-1, -1)), radius, oob_fill,
-    )
+    pos = observation.get("agent_pos", (-1, -1))
+    obs["grid"] = egocentric_grid(observation["grid"], pos, radius, oob_fill)
+    # MapMemory channels must be cropped to the same window, else they stay at
+    # world size and break the channel concat. Unknown cells: -1 (memory_grid),
+    # 0.0 freshness (memory_fresh).
+    if observation.get("memory_grid") is not None:
+        obs["memory_grid"] = egocentric_grid(
+            observation["memory_grid"], pos, radius, -1, dtype=np.int64,
+        )
+    if observation.get("memory_fresh") is not None:
+        obs["memory_fresh"] = egocentric_grid(
+            observation["memory_fresh"], pos, radius, 0.0, dtype=np.float32,
+        )
     obs["agent_pos"] = (int(radius), int(radius))
     return obs
 
