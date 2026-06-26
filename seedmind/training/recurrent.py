@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 from seedmind.agent.q_network import QNetwork, obs_batch_to_tensors
-from seedmind.agent.world_model import RecurrentWorldModel
+from seedmind.agent.world_model import RecurrentWorldModel, RSSMWorldModel
 from seedmind.memory.experience_buffer import ExperienceBuffer
 from seedmind.training.losses import world_model_aux_loss
 
@@ -328,3 +328,98 @@ def train_recurrent_dqn(
     if done == 0:
         return {"td_loss": 0.0, "updates": 0.0}
     return {"td_loss": total_loss / done, "updates": float(done)}
+
+
+_RSSM_ZERO = {"total": 0.0, "recon": 0.0, "reward": 0.0, "kl": 0.0,
+              "feature": 0.0, "event": 0.0, "updates": 0.0}
+
+
+def train_rssm_world_model(
+    world_model: RSSMWorldModel,
+    buffer: ExperienceBuffer,
+    optimizer: torch.optim.Optimizer,
+    batch_size: int = 16,
+    seq_len: int = 16,
+    num_updates: int = 1,
+    recon_weight: float = 1.0,
+    reward_weight: float = 1.0,
+    kl_free: float = 1.0,
+    kl_dyn_scale: float = 0.5,
+    kl_rep_scale: float = 0.1,
+    causal_feature_weight: float = 0.0,
+    causal_event_weight: float = 0.0,
+    reward_key: str = "reward_external",
+    grad_clip: float = 100.0,
+) -> Dict[str, float]:
+    """BPTT training of the stochastic RSSM world model (DreamerV3, phase 1 brick 3).
+
+    Rolls the RSSM over each sequence with the **posterior** (which sees the encoder
+    embedding ``z_t = latent_state``), and at every step minimises:
+      - **recon**  : ``decoder(feat_t)`` vs the embedding ``z_t`` (grounding signal,
+        replacing the old "predict next latent");
+      - **reward** : ``reward_head(feat_t)`` vs the stored reward;
+      - **KL**     : balanced KL(post‖prior) with free bits — trains the prior to
+        imagine the posterior, which is what makes imagination usable;
+      - optional causal-feature (MSE) / event (CE) heads.
+    """
+    if len(buffer) == 0:
+        return dict(_RSSM_ZERO)
+    world_model.train()
+    device = next(world_model.parameters()).device
+    totals = {"total": 0.0, "recon": 0.0, "reward": 0.0, "kl": 0.0, "feature": 0.0, "event": 0.0}
+    done = 0
+
+    for _ in range(num_updates):
+        sequences = buffer.sample_sequences(batch_size, seq_len)
+        if not sequences:
+            continue
+        batch = _assemble_sequences(sequences, device, reward_key=reward_key)
+        if batch is None:
+            continue
+        B, L = batch["B"], batch["L"]
+        z, a, rewards = batch["latents"], batch["actions"], batch["rewards"]
+        feature_deltas, events = batch["feature_deltas"], batch["events"]
+
+        recon_t, reward_t, kl_t, feat_t, event_t = [], [], [], [], []
+        state = world_model.initial_state(B, device=device)
+        for k in range(L):
+            prev_a = torch.zeros(B, dtype=torch.long, device=device) if k == 0 else a[:, k - 1]
+            post, prior = world_model.observe_step(z[:, k], prev_a, state)
+            heads = world_model.heads(world_model.get_feat(post))
+            recon_t.append(((heads["recon"] - z[:, k]) ** 2).mean())
+            reward_t.append(((heads["reward"] - rewards[:, k]) ** 2).mean())
+            kl, _, _ = world_model.rssm.kl_loss(post, prior, kl_free, kl_dyn_scale, kl_rep_scale)
+            kl_t.append(kl)
+            if feature_deltas is not None and "causal_feature_delta" in heads:
+                feat_t.append(((heads["causal_feature_delta"] - feature_deltas[:, k]) ** 2).mean())
+            if events is not None and "event_logits" in heads:
+                event_t.append(F.cross_entropy(heads["event_logits"], events[:, k]))
+            state = post
+
+        recon = torch.stack(recon_t).mean()
+        reward = torch.stack(reward_t).mean()
+        kl = torch.stack(kl_t).mean()
+        feat_loss = torch.stack(feat_t).mean() if feat_t else torch.zeros((), device=device)
+        event_loss = torch.stack(event_t).mean() if event_t else torch.zeros((), device=device)
+        loss = (recon_weight * recon + reward_weight * reward + kl
+                + causal_feature_weight * feat_loss + causal_event_weight * event_loss)
+
+        optimizer.zero_grad()
+        loss.backward()
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(world_model.parameters(), grad_clip)
+        optimizer.step()
+
+        totals["total"] += float(loss.item())
+        totals["recon"] += float(recon.item())
+        totals["reward"] += float(reward.item())
+        totals["kl"] += float(kl.item())
+        totals["feature"] += float(feat_loss.item())
+        totals["event"] += float(event_loss.item())
+        done += 1
+
+    if done == 0:
+        return dict(_RSSM_ZERO)
+    result = {k: v / done for k, v in totals.items()}
+    result["updates"] = float(done)
+    return result
