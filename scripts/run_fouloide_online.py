@@ -193,7 +193,14 @@ class OnlineFouloideSession:
         next_latent = agent.encoder.encode_tensor(next_obs)
         event = str(info.get("event", "unknown"))
 
-        if agent.recurrent:
+        if getattr(agent, "_rssm", False) and agent.rssm_state is not None:
+            # Curiosity from the RSSM: prior-predicted next embedding vs the real one.
+            with torch.no_grad():
+                device = next(agent.world_model.parameters()).device
+                action_t = torch.as_tensor([action_index], dtype=torch.long, device=device)
+                prior = agent.world_model.img_step(agent.rssm_state, action_t)
+                predicted = agent.world_model.heads(agent.world_model.get_feat(prior))["recon"].squeeze(0)
+        elif agent.recurrent and agent.h is not None:
             # Curiosity from the recurrent WM: how well it predicted z_{t+1}
             # from the current recurrent state h_t and the chosen action.
             action_t = torch.as_tensor([action_index], dtype=torch.long, device=agent.h.device)

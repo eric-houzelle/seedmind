@@ -42,11 +42,15 @@ def _sample_start_states(world_model, buffer, batch_size, context_len, device):
     a = torch.from_numpy(
         np.asarray([[int(t["action_index"]) for t in s] for s in sequences], dtype=np.int64)
     ).to(device)
-    h = world_model.initial_state(B, device=device)
+    rssm = hasattr(world_model, "get_feat")  # stochastic RSSM has the (h,z) feature
+    state = world_model.initial_state(B, device=device)
     for k in range(L):
         prev_a = torch.zeros(B, dtype=torch.long, device=device) if k == 0 else a[:, k - 1]
-        h = world_model.observe_step(z[:, k], prev_a, h)
-    return h  # (B, deter) — warmed final state per sequence
+        if rssm:
+            state, _prior = world_model.observe_step(z[:, k], prev_a, state)
+        else:
+            state = world_model.observe_step(z[:, k], prev_a, state)
+    return state  # warmed final state: h (deterministic) or (h,z) dict (RSSM)
 
 
 # Clamp the critic's symlog-space value before decoding with symexp. symexp grows
@@ -165,24 +169,28 @@ def train_imagination_actor_critic(
             continue
 
         # Imagine a trajectory under the current policy (WM dynamics fixed).
+        # ``states`` stores the policy feature at each step: the (h,z) feature for
+        # the stochastic RSSM (via get_feat), or just h for the deterministic model.
+        rssm = hasattr(world_model, "get_feat")
         states, actions, rewards = [], [], []
-        h = start_h
+        state = start_h
         with torch.no_grad():
             for _t in range(horizon):
-                a = actor.act(h)
-                h_next, _z, r, _unc = world_model.imagine_batch(h, a)
-                states.append(h)
+                feat = world_model.get_feat(state) if rssm else state
+                a = actor.act(feat)
+                state, _b, r, _unc = world_model.imagine_batch(state, a)
+                states.append(feat)
                 actions.append(a)
                 rewards.append(r)
-                h = h_next
+            final_feat = world_model.get_feat(state) if rssm else state
             if twohot:
-                bootstrap = value_net.value(h)                      # reward-space V_target(h_T)
+                bootstrap = value_net.value(final_feat)             # reward-space V_target(s_T)
             else:
-                bootstrap = value_net(h)
+                bootstrap = value_net(final_feat)
                 if critic_symlog:
                     bootstrap = symexp(bootstrap.clamp(-_SYMLOG_CLAMP, _SYMLOG_CLAMP))
 
-        states_t = torch.stack(states, dim=0)                       # (T, B, deter)
+        states_t = torch.stack(states, dim=0)                       # (T, B, feat_dim)
         actions_t = torch.stack(actions, dim=0)                     # (T, B)
         rewards_t = torch.stack(rewards, dim=0)                     # (T, B)
         T, B, D = states_t.shape

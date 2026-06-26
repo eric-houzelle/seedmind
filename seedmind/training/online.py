@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 
-from seedmind.agent.world_model import RecurrentWorldModel
+from seedmind.agent.world_model import RecurrentWorldModel, RSSMWorldModel
 from seedmind.memory.experience_buffer import ExperienceBuffer
 from seedmind.training.dqn import (
     make_q_optimizer,
@@ -27,6 +27,7 @@ from seedmind.training.dqn import (
 from seedmind.training.recurrent import (
     train_recurrent_dqn,
     train_recurrent_world_model,
+    train_rssm_world_model,
 )
 from seedmind.training.imagination_actor_critic import train_imagination_actor_critic
 from seedmind.training.train import (
@@ -64,7 +65,8 @@ class OnlineLearner:
         vc = config.get("value_model", {})
 
         # Recurrent world model → sequence/BPTT training instead of per-transition.
-        self.recurrent = isinstance(agent.world_model, RecurrentWorldModel)
+        self.recurrent = isinstance(agent.world_model, (RecurrentWorldModel, RSSMWorldModel))
+        self._rssm_wm = isinstance(agent.world_model, RSSMWorldModel)
         self.seq_len = int(oc.get("seq_len", 16))
         self.burn_in = int(oc.get("burn_in", 0))  # R2D2 warm-up for the recurrent DQN
         # Imagination policy (Dreamer-style actor-critic) replaces the DRQN.
@@ -180,18 +182,34 @@ class OnlineLearner:
         """BPTT world model + DRQN Q on sampled sequences (recurrent WM)."""
         cwm = self._cwm
         wmc = self._wmc
-        wm_losses = train_recurrent_world_model(
-            self.agent.world_model, self.buffer, self.wm_optimizer,
-            batch_size=self.wm_batch, seq_len=self.seq_len,
-            num_updates=self.updates_per_cycle,
-            causal_feature_weight=float(cwm.get("feature_loss_weight", 0.0)),
-            causal_event_weight=float(cwm.get("event_loss_weight", 0.0)),
-            event_class_balance=bool(cwm.get("event_class_balance", False)),
-            event_class_balance_power=float(cwm.get("event_class_balance_power", 0.5)),
-            uncertainty_weight=float(wmc.get("uncertainty_loss_weight", 0.0)),
-            uncertainty_detach=bool(wmc.get("uncertainty_detach", False)),
-            reward_key=self.wm_reward_key,
-        )
+        if self._rssm_wm:
+            # DreamerV3 stochastic RSSM: recon + balanced-KL + reward (BPTT).
+            wm_losses = train_rssm_world_model(
+                self.agent.world_model, self.buffer, self.wm_optimizer,
+                batch_size=self.wm_batch, seq_len=self.seq_len,
+                num_updates=self.updates_per_cycle,
+                recon_weight=float(wmc.get("recon_weight", 1.0)),
+                reward_weight=float(wmc.get("reward_weight", 1.0)),
+                kl_free=float(wmc.get("kl_free", 1.0)),
+                kl_dyn_scale=float(wmc.get("kl_dyn_scale", 0.5)),
+                kl_rep_scale=float(wmc.get("kl_rep_scale", 0.1)),
+                causal_feature_weight=float(cwm.get("feature_loss_weight", 0.0)),
+                causal_event_weight=float(cwm.get("event_loss_weight", 0.0)),
+                reward_key=self.wm_reward_key,
+            )
+        else:
+            wm_losses = train_recurrent_world_model(
+                self.agent.world_model, self.buffer, self.wm_optimizer,
+                batch_size=self.wm_batch, seq_len=self.seq_len,
+                num_updates=self.updates_per_cycle,
+                causal_feature_weight=float(cwm.get("feature_loss_weight", 0.0)),
+                causal_event_weight=float(cwm.get("event_loss_weight", 0.0)),
+                event_class_balance=bool(cwm.get("event_class_balance", False)),
+                event_class_balance_power=float(cwm.get("event_class_balance_power", 0.5)),
+                uncertainty_weight=float(wmc.get("uncertainty_loss_weight", 0.0)),
+                uncertainty_detach=bool(wmc.get("uncertainty_detach", False)),
+                reward_key=self.wm_reward_key,
+            )
         self.last_wm_loss = float(wm_losses["total"])
 
         if self.imagination_policy:
