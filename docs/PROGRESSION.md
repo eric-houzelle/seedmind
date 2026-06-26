@@ -4871,6 +4871,19 @@ survie = issue `seedmind-oc4.2` (remède propre : critic twohot DreamerV3). Dét
 section « Reprise 2026-06-24 » du bilan ; mémoires bd `rssm-survie-famine-chronique-2026-06-22`,
 `rssm-fourrage-transitoire-2026-06-24`.
 
+### Reprise 25 juin 2026 — verdict survie : limite d'approche (budget écarté)
+
+Attaque de la survie via comfort élargi (gradient sous 0.5) + MapMemory (fix encodeur
+pour croper la mémoire en égocentré). Aucun ne fait chuter le **% critique** (~85-93%).
+Test budget décisif : run long jusqu'à **env_steps 130k** (2× le budget, au-delà du
+palier prod 80k) → **% critique 82.9%**, à peine mieux que l'original. **Conclusion :
+ni budget ni capacité (mêmes réseaux → 0.96 en full-grid), c'est une LIMITE D'APPROCHE**
+— l'égocentré 11×11 + imagination ne fourrage pas assez efficacement pour maintenir ses
+drives. Le RSSM reste un **forager autonome modeste** (apprend seul, stable,
+size-invariant) mais ne survit pas comme le prod. Survie **parkée** (`seedmind-ans`).
+Détail : section « Reprise 2026-06-25 » du bilan ; mémoire bd
+`rssm-survie-verdict-budget-2026-06-25`.
+
 ---
 
-*Dernière mise à jour : 24 juin 2026*
+*Dernière mise à jour : 25 juin 2026*

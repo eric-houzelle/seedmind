@@ -258,3 +258,47 @@ positif. Verrou restant si reprise = **survie / évitement du danger** (issue
   (fourrage transitoire puis rechute), `rssm_rlearn_stable_60k` (fourrage stable, verdict ci-dessus).
 - **Mémoires bd** : `rssm-survie-famine-chronique-2026-06-22`, `rssm-fourrage-transitoire-2026-06-24`.
 - **Note ops** : lancer les runs longs avec `caffeinate -i` (la veille machine stalle les runs).
+
+---
+
+## Reprise — 2026-06-25 : verdict survie = limite d'approche (budget écarté)
+
+On a attaqué la survie (« A qui reste dans sa zone de bien-être »). Trois leviers,
+puis un test budget décisif.
+
+### Leviers testés
+- **`comfort` élargi** (band `low` 0.5→0.15) : donne un gradient de reward sous 0.5
+  (avant : plat → l'agent ne défendait pas sa zone). → fourrage **×2** (eau 3.6→8.2),
+  passif ↓ — mais **% critique inchangé (92.6%)**. *Attention : élargir la bande
+  change AUSSI la métrique wellbeing → chiffre non comparable ; juger au % critique.*
+- **MapMemory** (mémoire spatiale égocentrique, comme le prod) : a nécessité un fix
+  d'encodeur (croper les canaux mémoire dans la fenêtre égocentrée — combinaison
+  jamais testée car le RSSM l'avait retirée). horizon 300 puis 1500. → **aucun gain
+  de % critique (93%)**, +24% de `move_blocked` (l'agent flaille).
+- **Diagnostic mécanique de la mort** (eval `eval_death_cause`) : avec `soft_death` +
+  `health_floor 0.20`, la **famine ne peut pas tuer** (santé plancher-née) ; toutes
+  les morts viennent du **danger** (non plancher-né). Mais la cause racine est le
+  **sous-fourrage chronique** : l'agent vit ~85-93% du temps en drive critique,
+  santé au plancher → fragile à tout contact. Il fourrage **~4× trop peu** pour
+  compenser la décroissance des drives (8 gorgées/2500 steps, il en faudrait ~36).
+
+### Test budget décisif (run long, repris jusqu'à env_steps 130k)
+À **130k (2× le budget de 60k, au-delà du palier prod 80k)** : **% critique 82.9%** —
+à peine mieux que l'original égocentré (85.7%), pas le décollage prédit. Santé un
+peu meilleure (18% du temps >0.6 vs 7%) mais reste chroniquement critique.
+
+### Verdict (2026-06-25)
+**Ce n'est NI le budget NI la capacité** (mêmes réseaux → 0.96 en full-grid ; 2× le
+budget ne change quasi rien). **C'est une limite de l'approche** : l'agent égocentré
+11×11 + actor-critic en imagination, même avec mémoire explicite, ne fourrage pas
+assez efficacement pour maintenir ses drives. Désavantage structurel vs la vue
+globale du full-grid sur petite/moyenne carte.
+
+**Le RSSM reste un forager autonome MODESTE** (apprend seul de zéro, stable,
+size-invariant — tourne sur 96×96) mais **ne survit pas** au niveau du prod. Piste
+survie **parkée** (issue `seedmind-ans`) ; reprise éventuelle = repenser
+perception/navigation, ou critic twohot DreamerV3.
+
+- **Runs** : `rssm_comfort_wide_60k`, `rssm_mapmem_60k`, `rssm_mapmem_long_150k` (stoppé à ~130k, verdict obtenu).
+- **Mémoires bd** : `rssm-survie-famine-chronique-2026-06-22`, `rssm-fourrage-transitoire-2026-06-24`, `rssm-survie-verdict-budget-2026-06-25`.
+- **Acquis code réutilisable** : `reward_key` du WM configurable (`reward_learning` >> `reward_external`) ; symlog+clamp du critic ; crop des canaux MapMemory en égocentré ; eval `eval_death_cause` (diagnostic % critique / cause de mort).
