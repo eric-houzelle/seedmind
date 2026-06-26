@@ -30,7 +30,7 @@ from seedmind.agent.latent_q_network import LatentQNetwork
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
 from seedmind.agent.value_model import TwoHotCritic, ValueModel
-from seedmind.agent.world_model import RecurrentWorldModel, WorldModel
+from seedmind.agent.world_model import RecurrentWorldModel, RSSMWorldModel, WorldModel
 from seedmind.envs.entities import load_registry
 from seedmind.envs.micro_fouloide_world import MicroFouloideWorld, OBSTACLE
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
@@ -227,6 +227,7 @@ def build_agent(config: dict, seed: int) -> Agent:
     # memory beyond its egocentric view. deter_dim sizes h_t; the Q-network
     # receives h_t (recurrent_dim) so the policy can act on memory.
     recurrent_wm = bool(wmc.get("recurrent", False))
+    rssm_stochastic = recurrent_wm and bool(wmc.get("rssm_stochastic", False))
     deter_dim = int(wmc.get("deter_dim", 128))
     wm_causal_dim = (
         len(causal_feature_names(config)) if bool(cwm.get("enabled", False)) else 0
@@ -234,7 +235,20 @@ def build_agent(config: dict, seed: int) -> Agent:
     wm_num_events = (
         len(causal_event_names(config)) if bool(cwm.get("predict_events", False)) else 0
     )
-    if recurrent_wm:
+    if rssm_stochastic:
+        # DreamerV3 stochastic RSSM: state (h, z); embed = the (frozen) encoder latent.
+        world_model = RSSMWorldModel(
+            embed_dim=latent_dim,
+            num_actions=len(actions),
+            stoch=int(wmc.get("rssm_stoch", 32)),
+            discrete=int(wmc.get("rssm_discrete", 32)),
+            deter=deter_dim,
+            hidden=int(wmc.get("hidden_dim", 128)),
+            unimix=float(wmc.get("rssm_unimix", 0.01)),
+            causal_feature_dim=wm_causal_dim,
+            num_events=wm_num_events,
+        )
+    elif recurrent_wm:
         world_model = RecurrentWorldModel(
             latent_dim=latent_dim,
             num_actions=len(actions),
@@ -259,6 +273,9 @@ def build_agent(config: dict, seed: int) -> Agent:
         max_reward=float(cc.get("max_reward", 1.0)),
         enabled=bool(cc.get("enabled", True)),
     )
+    # Feature the policy (actor/critic, and the Q-net's recurrent input) reads:
+    # the model feature feat=[z,h] for the stochastic RSSM, else just h.
+    policy_feat_dim = world_model.feat_dim if rssm_stochastic else deter_dim
     q_network = QNetwork(
         grid_size=net_grid_size,
         num_actions=len(actions),
@@ -267,7 +284,7 @@ def build_agent(config: dict, seed: int) -> Agent:
         num_grid_channels=num_channels,
         num_scalars=num_scalars,
         obs_batch_fn=obs_batch_fn,
-        recurrent_dim=deter_dim if recurrent_wm else 0,
+        recurrent_dim=policy_feat_dim if recurrent_wm else 0,
     )
     plc = config.get("planning", {})
     planning_enabled = bool(plc.get("enabled", False))
@@ -285,7 +302,7 @@ def build_agent(config: dict, seed: int) -> Agent:
     if bool(ac.get("imagination_policy", False)) and recurrent_wm:
         acc = ac.get("actor", {})
         actor = Actor(
-            input_dim=deter_dim,
+            input_dim=policy_feat_dim,
             num_actions=len(actions),
             hidden_dim=int(acc.get("hidden_dim", 128)),
             num_layers=int(acc.get("num_layers", 2)),
@@ -293,7 +310,7 @@ def build_agent(config: dict, seed: int) -> Agent:
         imc = config.get("imagination", {})
         if bool(imc.get("critic_twohot", False)):
             critic = TwoHotCritic(
-                latent_dim=deter_dim,
+                latent_dim=policy_feat_dim,
                 hidden_dim=int(acc.get("critic_hidden_dim", 128)),
                 num_layers=int(acc.get("critic_num_layers", 2)),
                 num_bins=int(imc.get("critic_num_bins", 255)),
@@ -301,7 +318,7 @@ def build_agent(config: dict, seed: int) -> Agent:
             )
         else:
             critic = ValueModel(
-                latent_dim=deter_dim,
+                latent_dim=policy_feat_dim,
                 hidden_dim=int(acc.get("critic_hidden_dim", 128)),
                 num_layers=int(acc.get("critic_num_layers", 2)),
             )

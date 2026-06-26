@@ -17,7 +17,7 @@ from seedmind.agent.planner import Planner
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
 from seedmind.agent.value_model import ValueModel
-from seedmind.agent.world_model import RecurrentWorldModel, WorldModel
+from seedmind.agent.world_model import RecurrentWorldModel, RSSMWorldModel, WorldModel
 from seedmind.memory.persistent_memory import PersistentMemory
 
 
@@ -94,8 +94,10 @@ class Agent:
         # Recurrent memory: when the world model is recurrent, the agent carries
         # a hidden state h_t across steps (integrating egocentric observations)
         # and feeds it to the Q-network so the policy has memory beyond its view.
-        self.recurrent = isinstance(world_model, RecurrentWorldModel)
-        self.h = None              # current recurrent state tensor, or None
+        self.recurrent = isinstance(world_model, (RecurrentWorldModel, RSSMWorldModel))
+        self._rssm = isinstance(world_model, RSSMWorldModel)  # stochastic (h, z) state
+        self.h = None              # deterministic recurrent state tensor, or None
+        self.rssm_state = None     # stochastic RSSM state dict {deter, stoch, logits}, or None
         self._prev_action_idx = 0  # action that led to the current observation
 
         # Imagination policy (Dreamer-style): when an actor is present, the agent
@@ -111,21 +113,45 @@ class Agent:
     def reset_state(self) -> None:
         """Reset the recurrent memory — call on episode start / death."""
         self.h = None
+        self.rssm_state = None
         self._prev_action_idx = 0
 
     def advance(self, latent_state: np.ndarray):
-        """Integrate the current latent into the recurrent state h_t.
+        """Integrate the current latent into the recurrent state.
 
         Call once per step *before* :meth:`choose_action`. No-op (returns None)
-        unless the world model is recurrent.
+        unless the world model is recurrent. For the stochastic RSSM this runs the
+        **posterior** filtering step (the latent is the encoder embedding) and
+        carries the ``(h, z)`` state; for the deterministic model it advances ``h``.
         """
         if not self.recurrent:
             return None
+        if self._rssm:
+            import torch
+            device = next(self.world_model.parameters()).device
+            embed = torch.as_tensor(latent_state, dtype=torch.float32, device=device)
+            if embed.dim() == 1:
+                embed = embed.unsqueeze(0)
+            if self.rssm_state is None:
+                self.rssm_state = self.world_model.initial_state(embed.shape[0], device=device)
+            prev_a = torch.as_tensor([int(self._prev_action_idx)], dtype=torch.long, device=device)
+            post, _ = self.world_model.observe_step(embed, prev_a, self.rssm_state)
+            self.rssm_state = post
+            return self.rssm_state
         self.h = self.world_model.recur_np(latent_state, self._prev_action_idx, self.h)
         return self.h
 
     def _h_vec(self) -> Optional[np.ndarray]:
-        if not self.recurrent or self.h is None:
+        """The recurrent feature fed to the actor/Q-net: ``h`` (deterministic) or
+        ``feat = [flatten(z), h]`` (stochastic RSSM)."""
+        if not self.recurrent:
+            return None
+        if self._rssm:
+            if self.rssm_state is None:
+                return None
+            feat = self.world_model.get_feat(self.rssm_state)
+            return feat.squeeze(0).detach().cpu().numpy().astype(np.float32)
+        if self.h is None:
             return None
         return self.h.squeeze(0).detach().cpu().numpy().astype(np.float32)
 
