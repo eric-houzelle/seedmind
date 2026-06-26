@@ -17,6 +17,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from seedmind.agent.rssm import RSSM, State
+
 
 class WorldModel(nn.Module):
     def __init__(
@@ -292,3 +294,106 @@ class RecurrentWorldModel(nn.Module):
             h_prev = self.initial_state(z.shape[0], device=device)
         a = torch.as_tensor([int(prev_action_index)], dtype=torch.long, device=device)
         return self.observe_step(z, a, h_prev)
+
+
+class RSSMWorldModel(nn.Module):
+    """Stochastic RSSM world model (DreamerV3) — phase 1 brick 2.
+
+    Wraps the :class:`RSSM` core with the prediction heads, all on the model
+    feature ``feat = [flatten(z), h]``:
+      - ``decoder``     : reconstruct the (frozen) encoder embedding from feat —
+        this is the world-model's grounding signal (replaces "predict next latent").
+      - ``reward_head`` : scalar reward (→ two-hot in phase 2).
+      - ``uncertainty`` / ``causal_feature_delta`` / ``event`` heads: as before.
+
+    Filtering uses the posterior (sees the embedding); imagination uses the prior
+    (``z`` sampled from ``h`` alone). The KL between them — trained in phase 3 — is
+    what lets the prior imagine plausible rollouts.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int,
+        num_actions: int,
+        stoch: int = 32,
+        discrete: int = 32,
+        deter: int = 256,
+        hidden: int = 256,
+        unimix: float = 0.01,
+        causal_feature_dim: int = 0,
+        num_events: int = 0,
+    ) -> None:
+        super().__init__()
+        self.embed_dim = int(embed_dim)
+        self.num_actions = int(num_actions)
+        self.causal_feature_dim = int(causal_feature_dim)
+        self.num_events = int(num_events)
+        self.rssm = RSSM(self.embed_dim, self.num_actions, stoch, discrete, deter, hidden, unimix)
+        feat = self.rssm.feat_dim
+
+        self.decoder = nn.Sequential(
+            nn.Linear(feat, hidden), nn.SiLU(), nn.Linear(hidden, self.embed_dim),
+        )
+        self.reward_head = nn.Sequential(
+            nn.Linear(feat, hidden), nn.SiLU(), nn.Linear(hidden, 1),
+        )
+        self.uncertainty_head = nn.Linear(feat, 1)
+        self.continue_head = nn.Linear(feat, 1)  # done predictor (trained in phase 2)
+        self.causal_feature_delta_head = (
+            nn.Linear(feat, self.causal_feature_dim) if self.causal_feature_dim > 0 else None
+        )
+        self.event_head = nn.Linear(feat, self.num_events) if self.num_events > 0 else None
+
+    # -- state -----------------------------------------------------------
+    @property
+    def deter_dim(self) -> int:
+        return self.rssm.deter
+
+    @property
+    def feat_dim(self) -> int:
+        return self.rssm.feat_dim
+
+    def initial_state(self, batch_size: int = 1, device=None) -> State:
+        return self.rssm.initial_state(batch_size, device=device)
+
+    def get_feat(self, state: State) -> torch.Tensor:
+        return self.rssm.get_feat(state)
+
+    # -- recurrence ------------------------------------------------------
+    def observe_step(
+        self, embed: torch.Tensor, prev_action: torch.Tensor, prev_state: State, sample: bool = True,
+    ) -> Tuple[State, State]:
+        """Posterior filtering step. Returns ``(post, prior)`` (prior kept for KL)."""
+        return self.rssm.obs_step(prev_state, prev_action, embed, sample=sample)
+
+    def img_step(self, prev_state: State, action: torch.Tensor, sample: bool = True) -> State:
+        """Prior imagination step (``z`` sampled from ``h`` alone)."""
+        return self.rssm.img_step(prev_state, action, sample=sample)
+
+    # -- heads -----------------------------------------------------------
+    def heads(self, feat: torch.Tensor, detach_uncertainty: bool = False) -> Dict[str, torch.Tensor]:
+        unc_feat = feat.detach() if detach_uncertainty else feat
+        out: Dict[str, torch.Tensor] = {
+            "recon": self.decoder(feat),
+            "reward": self.reward_head(feat).squeeze(-1),
+            "continue": self.continue_head(feat).squeeze(-1),
+            "uncertainty": F.softplus(self.uncertainty_head(unc_feat)).squeeze(-1),
+        }
+        if self.causal_feature_delta_head is not None:
+            out["causal_feature_delta"] = self.causal_feature_delta_head(feat)
+        if self.event_head is not None:
+            out["event_logits"] = self.event_head(feat)
+        return out
+
+    # -- imagination -----------------------------------------------------
+    @torch.no_grad()
+    def imagine_batch(
+        self, state: State, action: torch.Tensor,
+    ) -> Tuple[State, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """One imagined step under the prior. Returns ``(next_state, feat, reward, uncertainty)``."""
+        self.eval()
+        prior = self.img_step(state, action)
+        feat = self.get_feat(prior)
+        reward = self.reward_head(feat).squeeze(-1)
+        uncertainty = F.softplus(self.uncertainty_head(feat)).squeeze(-1)
+        return prior, feat, reward, uncertainty
