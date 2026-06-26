@@ -148,6 +148,10 @@ def train_imagination_actor_critic(
     if len(buffer) == 0:
         return dict(_ZERO)
     value_net = target_critic if target_critic is not None else critic
+    # DreamerV3 twohot critic: a categorical head decoded to a reward-space value
+    # (calibrated, scale-robust). Detected by duck-typing so the legacy scalar
+    # symlog-MSE critic still works unchanged (and the tests keep passing).
+    twohot = hasattr(critic, "twohot_loss")
 
     device = next(actor.parameters()).device
     actor.train()
@@ -171,9 +175,12 @@ def train_imagination_actor_critic(
                 actions.append(a)
                 rewards.append(r)
                 h = h_next
-            bootstrap = value_net(h)                                # V_target(h_T)
-            if critic_symlog:
-                bootstrap = symexp(bootstrap.clamp(-_SYMLOG_CLAMP, _SYMLOG_CLAMP))
+            if twohot:
+                bootstrap = value_net.value(h)                      # reward-space V_target(h_T)
+            else:
+                bootstrap = value_net(h)
+                if critic_symlog:
+                    bootstrap = symexp(bootstrap.clamp(-_SYMLOG_CLAMP, _SYMLOG_CLAMP))
 
         states_t = torch.stack(states, dim=0)                       # (T, B, deter)
         actions_t = torch.stack(actions, dim=0)                     # (T, B)
@@ -181,18 +188,25 @@ def train_imagination_actor_critic(
         T, B, D = states_t.shape
 
         with torch.no_grad():
-            values = value_net(states_t.reshape(T * B, D)).reshape(T, B)
-            if critic_symlog:
-                values = symexp(values.clamp(-_SYMLOG_CLAMP, _SYMLOG_CLAMP))
+            if twohot:
+                values = value_net.value(states_t.reshape(T * B, D)).reshape(T, B)
+            else:
+                values = value_net(states_t.reshape(T * B, D)).reshape(T, B)
+                if critic_symlog:
+                    values = symexp(values.clamp(-_SYMLOG_CLAMP, _SYMLOG_CLAMP))
             returns = _lambda_returns(rewards_t, values, bootstrap, gamma, lam)
             advantage = returns - values
             advantage = _normalise_advantage(advantage, returns, advantage_norm)
 
-        # Critic: regress V(h_t) toward the imagined λ-returns (target-computed).
-        # With symlog the critic learns in compressed space → bounded targets.
-        v_pred = critic(states_t.reshape(T * B, D)).reshape(T, B)
-        critic_target = symlog(returns) if critic_symlog else returns
-        critic_loss = ((v_pred - critic_target) ** 2).mean()
+        # Critic: regress toward the imagined λ-returns (target-computed).
+        # twohot → cross-entropy on two-hot(symlog(returns)) (calibrated);
+        # else → scalar MSE in symlog space (legacy).
+        if twohot:
+            critic_loss = critic.twohot_loss(states_t.reshape(T * B, D), returns.reshape(T * B))
+        else:
+            v_pred = critic(states_t.reshape(T * B, D)).reshape(T, B)
+            critic_target = symlog(returns) if critic_symlog else returns
+            critic_loss = ((v_pred - critic_target) ** 2).mean()
         critic_optimizer.zero_grad()
         critic_loss.backward()
         if grad_clip > 0:

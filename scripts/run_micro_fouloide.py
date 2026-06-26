@@ -29,7 +29,7 @@ from seedmind.agent.micro_fouloide_encoder import (
 from seedmind.agent.latent_q_network import LatentQNetwork
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
-from seedmind.agent.value_model import ValueModel
+from seedmind.agent.value_model import TwoHotCritic, ValueModel
 from seedmind.agent.world_model import RecurrentWorldModel, WorldModel
 from seedmind.envs.entities import load_registry
 from seedmind.envs.micro_fouloide_world import MicroFouloideWorld, OBSTACLE
@@ -290,11 +290,21 @@ def build_agent(config: dict, seed: int) -> Agent:
             hidden_dim=int(acc.get("hidden_dim", 128)),
             num_layers=int(acc.get("num_layers", 2)),
         )
-        critic = ValueModel(
-            latent_dim=deter_dim,
-            hidden_dim=int(acc.get("critic_hidden_dim", 128)),
-            num_layers=int(acc.get("critic_num_layers", 2)),
-        )
+        imc = config.get("imagination", {})
+        if bool(imc.get("critic_twohot", False)):
+            critic = TwoHotCritic(
+                latent_dim=deter_dim,
+                hidden_dim=int(acc.get("critic_hidden_dim", 128)),
+                num_layers=int(acc.get("critic_num_layers", 2)),
+                num_bins=int(imc.get("critic_num_bins", 255)),
+                vmax=float(imc.get("critic_vmax", 20.0)),
+            )
+        else:
+            critic = ValueModel(
+                latent_dim=deter_dim,
+                hidden_dim=int(acc.get("critic_hidden_dim", 128)),
+                num_layers=int(acc.get("critic_num_layers", 2)),
+            )
 
     force_indices, force_thresholds = _planner_force_thresholds(config)
     return Agent(
