@@ -130,6 +130,7 @@ def train_imagination_actor_critic(
     target_critic=None,
     target_tau: float = 0.02,
     advantage_norm: str = "return_range",
+    ret_decay: float = 0.99,
     critic_symlog: bool = True,
 ) -> Dict[str, float]:
     """Run ``num_updates`` actor-critic updates over imagined rollouts.
@@ -204,7 +205,16 @@ def train_imagination_actor_critic(
                     values = symexp(values.clamp(-_SYMLOG_CLAMP, _SYMLOG_CLAMP))
             returns = _lambda_returns(rewards_t, values, bootstrap, gamma, lam)
             advantage = returns - values
-            advantage = _normalise_advantage(advantage, returns, advantage_norm)
+            if advantage_norm == "percentile":
+                # DreamerV3: divide by an EMA of the 5–95 percentile return range,
+                # floored at 1. EMA (not per-batch) keeps the advantage scale stable
+                # across updates so the policy gradient ranks actions consistently.
+                flat = returns.reshape(-1)
+                scale = torch.quantile(flat, 0.95) - torch.quantile(flat, 0.05)
+                actor.ret_norm.mul_(ret_decay).add_((1.0 - ret_decay) * scale)
+                advantage = advantage / actor.ret_norm.clamp(min=1.0)
+            else:
+                advantage = _normalise_advantage(advantage, returns, advantage_norm)
 
         # Critic: regress toward the imagined λ-returns (target-computed).
         # twohot → cross-entropy on two-hot(symlog(returns)) (calibrated);

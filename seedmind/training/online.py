@@ -77,6 +77,7 @@ class OnlineLearner:
         self.imag_lam = float(ic.get("lambda", 0.95))
         self.imag_entropy = float(ic.get("entropy_coef", 0.01))
         self.imag_advantage_norm = str(ic.get("advantage_norm", "return_range"))
+        self.imag_ret_decay = float(ic.get("ret_decay", 0.99))
         self.imag_critic_symlog = bool(ic.get("critic_symlog", True))
         self.imag_gamma = float(ic.get("gamma", float(dc.get("gamma", 0.97))))
 
@@ -222,6 +223,7 @@ class OnlineLearner:
                 gamma=self.imag_gamma, lam=self.imag_lam, entropy_coef=self.imag_entropy,
                 target_critic=self.target_critic, target_tau=self.imag_target_tau,
                 advantage_norm=self.imag_advantage_norm,
+                ret_decay=self.imag_ret_decay,
                 critic_symlog=self.imag_critic_symlog,
             )
             self.last_actor_loss = float(ac["actor_loss"])

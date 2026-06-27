@@ -27,6 +27,10 @@ class Actor(nn.Module):
             layers += [nn.Linear(hidden_dim, hidden_dim), nn.ReLU()]
         layers.append(nn.Linear(hidden_dim, self.num_actions))
         self.net = nn.Sequential(*layers)
+        # EMA of the imagined-return scale (Per95−Per5), for DreamerV3 percentile
+        # return normalisation. Persisted so the advantage scale is stable across
+        # updates (and survives checkpoints). 1.0 = identity until it warms up.
+        self.register_buffer("ret_norm", torch.ones(()))
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         """Action logits for a batch of states ``(B, input_dim) -> (B, num_actions)``."""

@@ -141,3 +141,28 @@ class TestTrainImaginationActorCritic:
             p0_after = float(actor.distribution(zeros).probs[0, 0])
         assert p0_after > p0_before + 0.2  # policy shifted toward the rewarded action
         assert p0_after > 0.5
+
+    def test_percentile_return_normalisation(self):
+        """advantage_norm='percentile' (DreamerV3): learns the rewarded action and
+        the actor's EMA return scale (ret_norm) warms up away from 1.0."""
+        torch.manual_seed(0)
+        wm = _MockWM(rewarded=0)
+        actor = Actor(DETER, NACT)
+        critic = ValueModel(DETER)
+        buf = ExperienceBuffer(seed=0)
+        _fill(buf)
+        ao = torch.optim.Adam(actor.parameters(), lr=3e-3)
+        co = torch.optim.Adam(critic.parameters(), lr=3e-3)
+        assert float(actor.ret_norm) == 1.0
+        zeros = torch.zeros(1, DETER)
+        with torch.no_grad():
+            p0_before = float(actor.distribution(zeros).probs[0, 0])
+        for _ in range(150):
+            train_imagination_actor_critic(actor, critic, wm, buf, ao, co,
+                                           batch_size=16, context_len=4, horizon=8,
+                                           num_updates=1, entropy_coef=0.0,
+                                           advantage_norm="percentile")
+        with torch.no_grad():
+            p0_after = float(actor.distribution(zeros).probs[0, 0])
+        assert p0_after > p0_before + 0.2 and p0_after > 0.5  # still learns the rewarded action
+        assert float(actor.ret_norm) != 1.0  # EMA return scale updated

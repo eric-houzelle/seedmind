@@ -60,7 +60,7 @@ imagination:
   context_len: 8            # pas réels pour réchauffer h_0 avant d'imaginer
   lambda: 0.95              # λ-returns
   entropy_coef: 0.03        # bonus d'entropie (exploration)
-  advantage_norm: return_range  # DreamerV3-lite : préserve signe+magnitude
+  advantage_norm: percentile    # DreamerV3 : normalisation des returns par percentile EMA (5-95)
   critic_twohot: true       # DreamerV3 : critic catégoriel (bins symlog + cross-entropy) → valeurs CALIBRÉES
   critic_num_bins: 255
   critic_vmax: 20.0
