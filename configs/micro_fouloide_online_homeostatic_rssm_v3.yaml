@@ -73,6 +73,7 @@ world_model:
   rssm_stochastic: true     # DreamerV3 : latent z catégoriel + KL (vrai RSSM)
   rssm_stoch: 32
   rssm_discrete: 32
+  reward_twohot: true       # DreamerV3 : reward predictor catégoriel (capte les pics de fourrage)
   kl_free: 1.0
   kl_dyn_scale: 0.5
   kl_rep_scale: 0.1

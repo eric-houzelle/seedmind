@@ -247,6 +247,9 @@ def build_agent(config: dict, seed: int) -> Agent:
             unimix=float(wmc.get("rssm_unimix", 0.01)),
             causal_feature_dim=wm_causal_dim,
             num_events=wm_num_events,
+            reward_twohot=bool(wmc.get("reward_twohot", True)),
+            reward_bins=int(wmc.get("reward_bins", 255)),
+            reward_vmax=float(wmc.get("reward_vmax", 20.0)),
         )
     elif recurrent_wm:
         world_model = RecurrentWorldModel(

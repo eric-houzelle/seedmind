@@ -385,9 +385,10 @@ def train_rssm_world_model(
         for k in range(L):
             prev_a = torch.zeros(B, dtype=torch.long, device=device) if k == 0 else a[:, k - 1]
             post, prior = world_model.observe_step(z[:, k], prev_a, state)
-            heads = world_model.heads(world_model.get_feat(post))
+            feat = world_model.get_feat(post)
+            heads = world_model.heads(feat)
             recon_t.append(((heads["recon"] - z[:, k]) ** 2).mean())
-            reward_t.append(((heads["reward"] - rewards[:, k]) ** 2).mean())
+            reward_t.append(world_model.reward_loss(feat, rewards[:, k]))
             kl, _, _ = world_model.rssm.kl_loss(post, prior, kl_free, kl_dyn_scale, kl_rep_scale)
             kl_t.append(kl)
             if feature_deltas is not None and "causal_feature_delta" in heads:

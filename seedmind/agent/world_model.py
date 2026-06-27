@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from seedmind.agent.rssm import RSSM, State
+from seedmind.agent.value_model import TwoHotCritic
 
 
 class WorldModel(nn.Module):
@@ -322,21 +323,32 @@ class RSSMWorldModel(nn.Module):
         unimix: float = 0.01,
         causal_feature_dim: int = 0,
         num_events: int = 0,
+        reward_twohot: bool = True,
+        reward_bins: int = 255,
+        reward_vmax: float = 20.0,
     ) -> None:
         super().__init__()
         self.embed_dim = int(embed_dim)
         self.num_actions = int(num_actions)
         self.causal_feature_dim = int(causal_feature_dim)
         self.num_events = int(num_events)
+        self._reward_twohot = bool(reward_twohot)
         self.rssm = RSSM(self.embed_dim, self.num_actions, stoch, discrete, deter, hidden, unimix)
         feat = self.rssm.feat_dim
 
         self.decoder = nn.Sequential(
             nn.Linear(feat, hidden), nn.SiLU(), nn.Linear(hidden, self.embed_dim),
         )
-        self.reward_head = nn.Sequential(
-            nn.Linear(feat, hidden), nn.SiLU(), nn.Linear(hidden, 1),
-        )
+        # Reward predictor: a two-hot categorical head (DreamerV3) captures the rare
+        # foraging-reward spikes that a scalar MSE head regresses to the mean (the
+        # probe showed the scalar head predicting ~0 for INTERACT-on-water).
+        if self._reward_twohot:
+            self.reward_head = TwoHotCritic(feat, hidden_dim=hidden, num_layers=2,
+                                            num_bins=int(reward_bins), vmax=float(reward_vmax))
+        else:
+            self.reward_head = nn.Sequential(
+                nn.Linear(feat, hidden), nn.SiLU(), nn.Linear(hidden, 1),
+            )
         self.uncertainty_head = nn.Linear(feat, 1)
         self.continue_head = nn.Linear(feat, 1)  # done predictor (trained in phase 2)
         self.causal_feature_delta_head = (
@@ -370,12 +382,24 @@ class RSSMWorldModel(nn.Module):
         """Prior imagination step (``z`` sampled from ``h`` alone)."""
         return self.rssm.img_step(prev_state, action, sample=sample)
 
+    # -- reward predictor (two-hot or scalar) ----------------------------
+    def reward_value(self, feat: torch.Tensor) -> torch.Tensor:
+        """Predicted reward in reward space."""
+        if self._reward_twohot:
+            return self.reward_head.value(feat)
+        return self.reward_head(feat).squeeze(-1)
+
+    def reward_loss(self, feat: torch.Tensor, target_reward: torch.Tensor) -> torch.Tensor:
+        if self._reward_twohot:
+            return self.reward_head.twohot_loss(feat, target_reward)
+        return ((self.reward_head(feat).squeeze(-1) - target_reward) ** 2).mean()
+
     # -- heads -----------------------------------------------------------
     def heads(self, feat: torch.Tensor, detach_uncertainty: bool = False) -> Dict[str, torch.Tensor]:
         unc_feat = feat.detach() if detach_uncertainty else feat
         out: Dict[str, torch.Tensor] = {
             "recon": self.decoder(feat),
-            "reward": self.reward_head(feat).squeeze(-1),
+            "reward": self.reward_value(feat),
             "continue": self.continue_head(feat).squeeze(-1),
             "uncertainty": F.softplus(self.uncertainty_head(unc_feat)).squeeze(-1),
         }
@@ -394,6 +418,6 @@ class RSSMWorldModel(nn.Module):
         self.eval()
         prior = self.img_step(state, action)
         feat = self.get_feat(prior)
-        reward = self.reward_head(feat).squeeze(-1)
+        reward = self.reward_value(feat)
         uncertainty = F.softplus(self.uncertainty_head(feat)).squeeze(-1)
         return prior, feat, reward, uncertainty
