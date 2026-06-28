@@ -158,6 +158,11 @@ class OnlineLearner:
         self.last_critic_loss = 0.0
         self.last_imag_entropy = 0.0
         self.last_imag_return = 0.0
+        # RSSM world-model loss breakdown (populated when training the stochastic RSSM)
+        self.last_wm_recon = 0.0
+        self.last_wm_kl = 0.0
+        self.last_wm_reward = 0.0
+        self.last_wm_continue = 0.0
         self.uncertainty_threshold: Optional[float] = None
 
         # Cold start: WM uncertainty is softplus (> 0), so a zero threshold
@@ -199,6 +204,11 @@ class OnlineLearner:
                 causal_event_weight=float(cwm.get("event_loss_weight", 0.0)),
                 reward_key=self.wm_reward_key,
             )
+            # Keep the DreamerV3 RSSM loss breakdown for live monitoring.
+            self.last_wm_recon = float(wm_losses.get("recon", 0.0))
+            self.last_wm_kl = float(wm_losses.get("kl", 0.0))
+            self.last_wm_reward = float(wm_losses.get("reward", 0.0))
+            self.last_wm_continue = float(wm_losses.get("continue", 0.0))
         else:
             wm_losses = train_recurrent_world_model(
                 self.agent.world_model, self.buffer, self.wm_optimizer,
@@ -356,6 +366,10 @@ class OnlineLearner:
             "buffer_size": len(self.buffer),
             "wm_loss": self.last_wm_loss,
             "wm_uncertainty_loss": self.last_wm_uncertainty_loss,
+            "wm_recon": self.last_wm_recon,
+            "wm_kl": self.last_wm_kl,
+            "wm_reward": self.last_wm_reward,
+            "wm_continue": self.last_wm_continue,
             "td_loss": self.last_td_loss,
             "value_loss": self.last_value_loss,
             "actor_loss": self.last_actor_loss,

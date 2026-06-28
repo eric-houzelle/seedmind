@@ -595,6 +595,10 @@ class LiveFouloideWorldSource:
         self.wellbeing_window: deque = deque(maxlen=500)
         self.action_window: deque = deque(maxlen=500)
         self.event_window: deque = deque(maxlen=500)
+        # Rolling snapshots for the /stats API (one every ~250 steps, cap 2000).
+        self.history: deque = deque(maxlen=2000)
+        self.history_every = 250
+        self.latest_stats: dict | None = None
         self.checkpoint_path = checkpoint_path
         self.checkpoint_every = int(checkpoint_every)
         self.resumed_steps = 0
@@ -666,6 +670,12 @@ class LiveFouloideWorldSource:
             "temperature": round(float(info.get("temperature", 0.5)), 3),
             "health": round(float(info.get("health", 0.0)), 3),
             "wm_loss": round(float(learn["wm_loss"]), 4),
+            "wm_recon": round(float(learn.get("wm_recon", 0.0)), 4),
+            "wm_kl": round(float(learn.get("wm_kl", 0.0)), 4),
+            "wm_reward": round(float(learn.get("wm_reward", 0.0)), 4),
+            "wm_continue": round(float(learn.get("wm_continue", 0.0)), 4),
+            "imag_entropy": round(float(learn.get("imag_entropy", 0.0)), 4),
+            "imag_return": round(float(learn.get("imag_return", 0.0)), 4),
             "td_loss": round(float(learn["td_loss"]), 4),
             "planner_used": round(float(np.mean(self.planner_window)), 3),
             "uncertainty_threshold": (
@@ -716,6 +726,10 @@ class LiveFouloideWorldSource:
             stats["inventory"] = (
                 f"{len(self.session.env.inventory)}/{self.session.env.inventory_capacity}"
             )
+        # Expose the current snapshot + a rolling history for the /stats API.
+        self.latest_stats = stats
+        if self.session.steps % self.history_every == 0:
+            self.history.append(stats)
         thirst_label = (
             f"{stats['thirst_to_water_avg']:.0f}" if stats["thirst_to_water_avg"] is not None
             else "—"
@@ -777,6 +791,27 @@ class LiveFouloideWorldSource:
 
 CLIENTS: Set = set()
 
+# Active world source, set in main(); lets ViewerHandler serve /stats.
+ACTIVE_SOURCE: Any = None
+
+
+def _source_stats_payload() -> dict:
+    """Build the /stats JSON payload from the active source.
+
+    Returns {} gracefully when no source is set or it exposes no stats yet.
+    """
+    source = ACTIVE_SOURCE
+    if source is None:
+        return {}
+    latest = getattr(source, "latest_stats", None)
+    history = getattr(source, "history", None)
+    if latest is None and not history:
+        return {}
+    return {
+        "latest": latest or {},
+        "history": list(history) if history is not None else [],
+    }
+
 
 async def ws_handler(websocket, source: WorldSource):
     CLIENTS.add(websocket)
@@ -813,6 +848,14 @@ class ViewerHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"ok\n")
+            return
+        if self.path == "/stats" or self.path.startswith("/stats?"):
+            payload = json.dumps(_source_stats_payload()).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -945,6 +988,9 @@ def main():
         )
         mode = "monde stub"
         world_label = f"{args.size}x{args.size}, {args.fouloides} fouloïdes"
+
+    global ACTIVE_SOURCE
+    ACTIVE_SOURCE = source
 
     if not args.no_http:
         threading.Thread(
