@@ -191,6 +191,7 @@ class OnlineLearner:
                 num_updates=self.updates_per_cycle,
                 recon_weight=float(wmc.get("recon_weight", 1.0)),
                 reward_weight=float(wmc.get("reward_weight", 1.0)),
+                continue_weight=float(wmc.get("continue_weight", 1.0)),
                 kl_free=float(wmc.get("kl_free", 1.0)),
                 kl_dyn_scale=float(wmc.get("kl_dyn_scale", 0.5)),
                 kl_rep_scale=float(wmc.get("kl_rep_scale", 0.1)),

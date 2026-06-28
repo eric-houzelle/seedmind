@@ -100,14 +100,21 @@ def _normalise_advantage(advantage, returns, mode):
     return advantage / scale
 
 
-def _lambda_returns(rewards, values, bootstrap, gamma, lam):
-    """λ-returns. rewards/values: (T, B); bootstrap: (B,) = V(h_T). -> (T, B)."""
+def _lambda_returns(rewards, values, bootstrap, gamma, lam, discount=None):
+    """λ-returns. rewards/values: (T, B); bootstrap: (B,) = V(h_T). -> (T, B).
+
+    ``discount`` (T, B), optional: per-step discount applied to the future (the
+    DreamerV3 continue predictor sets it to ``gamma * P(continue)`` so imagined
+    trajectories that the world model expects to end in death are discounted →
+    the policy learns to avoid death). Falls back to the scalar ``gamma``.
+    """
     T = rewards.shape[0]
     out = [None] * T
     next_return = bootstrap
     for t in reversed(range(T)):
         next_value = bootstrap if t == T - 1 else values[t + 1]
-        out[t] = rewards[t] + gamma * ((1.0 - lam) * next_value + lam * next_return)
+        g = gamma if discount is None else discount[t]
+        out[t] = rewards[t] + g * ((1.0 - lam) * next_value + lam * next_return)
         next_return = out[t]
     return torch.stack(out, dim=0)
 
@@ -173,7 +180,8 @@ def train_imagination_actor_critic(
         # ``states`` stores the policy feature at each step: the (h,z) feature for
         # the stochastic RSSM (via get_feat), or just h for the deterministic model.
         rssm = hasattr(world_model, "get_feat")
-        states, actions, rewards = [], [], []
+        use_continue = rssm and hasattr(world_model, "continue_prob")
+        states, actions, rewards, conts = [], [], [], []
         state = start_h
         with torch.no_grad():
             for _t in range(horizon):
@@ -183,6 +191,9 @@ def train_imagination_actor_critic(
                 states.append(feat)
                 actions.append(a)
                 rewards.append(r)
+                if use_continue:
+                    # P(continue) into the just-reached state → discounts the future
+                    conts.append(world_model.continue_prob(world_model.get_feat(state)))
             final_feat = world_model.get_feat(state) if rssm else state
             if twohot:
                 bootstrap = value_net.value(final_feat)             # reward-space V_target(s_T)
@@ -203,7 +214,8 @@ def train_imagination_actor_critic(
                 values = value_net(states_t.reshape(T * B, D)).reshape(T, B)
                 if critic_symlog:
                     values = symexp(values.clamp(-_SYMLOG_CLAMP, _SYMLOG_CLAMP))
-            returns = _lambda_returns(rewards_t, values, bootstrap, gamma, lam)
+            discount = (gamma * torch.stack(conts, dim=0)) if conts else None
+            returns = _lambda_returns(rewards_t, values, bootstrap, gamma, lam, discount=discount)
             advantage = returns - values
             if advantage_norm == "percentile":
                 # DreamerV3: divide by an EMA of the 5–95 percentile return range,

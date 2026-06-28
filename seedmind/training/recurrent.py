@@ -52,11 +52,17 @@ def _assemble_sequences(
         dtype=np.float32,
     )                                                                  # (B, L)
 
+    dones = np.asarray(
+        [[float(bool(t.get("done", False))) for t in seq] for seq in sequences],
+        dtype=np.float32,
+    )                                                                  # (B, L)
+
     out = {
         "latents": torch.from_numpy(latents).to(device),
         "next_latents": torch.from_numpy(next_latents).to(device),
         "actions": torch.from_numpy(actions).to(device),
         "rewards": torch.from_numpy(rewards).to(device),
+        "dones": torch.from_numpy(dones).to(device),
         "feature_deltas": None,
         "events": None,
         "B": B, "L": L,
@@ -330,7 +336,7 @@ def train_recurrent_dqn(
     return {"td_loss": total_loss / done, "updates": float(done)}
 
 
-_RSSM_ZERO = {"total": 0.0, "recon": 0.0, "reward": 0.0, "kl": 0.0,
+_RSSM_ZERO = {"total": 0.0, "recon": 0.0, "reward": 0.0, "continue": 0.0, "kl": 0.0,
               "feature": 0.0, "event": 0.0, "updates": 0.0}
 
 
@@ -343,6 +349,7 @@ def train_rssm_world_model(
     num_updates: int = 1,
     recon_weight: float = 1.0,
     reward_weight: float = 1.0,
+    continue_weight: float = 1.0,
     kl_free: float = 1.0,
     kl_dyn_scale: float = 0.5,
     kl_rep_scale: float = 0.1,
@@ -366,7 +373,8 @@ def train_rssm_world_model(
         return dict(_RSSM_ZERO)
     world_model.train()
     device = next(world_model.parameters()).device
-    totals = {"total": 0.0, "recon": 0.0, "reward": 0.0, "kl": 0.0, "feature": 0.0, "event": 0.0}
+    totals = {"total": 0.0, "recon": 0.0, "reward": 0.0, "continue": 0.0,
+              "kl": 0.0, "feature": 0.0, "event": 0.0}
     done = 0
 
     for _ in range(num_updates):
@@ -377,10 +385,10 @@ def train_rssm_world_model(
         if batch is None:
             continue
         B, L = batch["B"], batch["L"]
-        z, a, rewards = batch["latents"], batch["actions"], batch["rewards"]
+        z, a, rewards, dones = batch["latents"], batch["actions"], batch["rewards"], batch["dones"]
         feature_deltas, events = batch["feature_deltas"], batch["events"]
 
-        recon_t, reward_t, kl_t, feat_t, event_t = [], [], [], [], []
+        recon_t, reward_t, cont_t, kl_t, feat_t, event_t = [], [], [], [], [], []
         state = world_model.initial_state(B, device=device)
         for k in range(L):
             prev_a = torch.zeros(B, dtype=torch.long, device=device) if k == 0 else a[:, k - 1]
@@ -389,6 +397,8 @@ def train_rssm_world_model(
             heads = world_model.heads(feat)
             recon_t.append(((heads["recon"] - z[:, k]) ** 2).mean())
             reward_t.append(world_model.reward_loss(feat, rewards[:, k]))
+            # continue predictor: target = 1 − done (probability the episode goes on)
+            cont_t.append(F.binary_cross_entropy_with_logits(heads["continue"], 1.0 - dones[:, k]))
             kl, _, _ = world_model.rssm.kl_loss(post, prior, kl_free, kl_dyn_scale, kl_rep_scale)
             kl_t.append(kl)
             if feature_deltas is not None and "causal_feature_delta" in heads:
@@ -399,10 +409,11 @@ def train_rssm_world_model(
 
         recon = torch.stack(recon_t).mean()
         reward = torch.stack(reward_t).mean()
+        cont = torch.stack(cont_t).mean()
         kl = torch.stack(kl_t).mean()
         feat_loss = torch.stack(feat_t).mean() if feat_t else torch.zeros((), device=device)
         event_loss = torch.stack(event_t).mean() if event_t else torch.zeros((), device=device)
-        loss = (recon_weight * recon + reward_weight * reward + kl
+        loss = (recon_weight * recon + reward_weight * reward + continue_weight * cont + kl
                 + causal_feature_weight * feat_loss + causal_event_weight * event_loss)
 
         optimizer.zero_grad()
@@ -414,6 +425,7 @@ def train_rssm_world_model(
         totals["total"] += float(loss.item())
         totals["recon"] += float(recon.item())
         totals["reward"] += float(reward.item())
+        totals["continue"] += float(cont.item())
         totals["kl"] += float(kl.item())
         totals["feature"] += float(feat_loss.item())
         totals["event"] += float(event_loss.item())

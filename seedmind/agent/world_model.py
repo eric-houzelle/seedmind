@@ -390,6 +390,10 @@ class RSSMWorldModel(nn.Module):
             return self.reward_head.value(feat)
         return self.reward_head(feat).squeeze(-1)
 
+    def continue_prob(self, feat: torch.Tensor) -> torch.Tensor:
+        """Predicted probability the episode continues (1 − P(done)) from this state."""
+        return torch.sigmoid(self.continue_head(feat).squeeze(-1))
+
     def reward_loss(self, feat: torch.Tensor, target_reward: torch.Tensor) -> torch.Tensor:
         if self._reward_twohot:
             return self.reward_head.twohot_loss(feat, target_reward)
