@@ -163,18 +163,24 @@
   .metric .v { font-size: 20px; color: #f2e6b8; font-weight: 700; margin-top: 3px; }
   .metric .v small { font-size: 11px; color: #9fd28a; font-weight: 400; }
 
-  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; }
+  .charts h2 {
+    grid-column: 1 / -1; font-size: 12px; color: #9fd28a; letter-spacing: 1px;
+    text-transform: uppercase; margin: 8px 0 -4px; opacity: 0.85;
+  }
   .chart-card {
     background: rgba(10, 20, 8, 0.5); border: 2px solid #16323a;
-    border-radius: 6px; padding: 10px 12px 12px;
+    border-radius: 6px; padding: 12px 14px 14px;
   }
   .chart-card .title {
-    font-size: 11px; color: #9fd28a; letter-spacing: 1px; text-transform: uppercase;
+    font-size: 12px; color: #9fd28a; letter-spacing: 1px; text-transform: uppercase;
     margin-bottom: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   }
   .chart-card .legend-dot { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: #cfe8c0; }
   .chart-card .legend-dot i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
-  .chart-card canvas { width: 100%; height: 130px; display: block; }
+  .chart-card canvas { width: 100%; height: 220px; display: block; }
+  /* Les mini-cartes de pertes (small-multiples) sont plus compactes. */
+  .chart-card.mini canvas { height: 170px; }
   #dashboard .waiting { color: #7fae6f; font-size: 12px; padding: 20px 0; }
 
   /* ---- Adaptation mobile / téléphone ---- */
@@ -195,7 +201,8 @@
     #dashboard h1 { font-size: 14px; }
     .metric .v { font-size: 17px; }
     .charts { grid-template-columns: 1fr; }   /* empilé verticalement */
-    .chart-card canvas { height: 120px; }
+    .chart-card canvas { height: 190px; }
+    .chart-card.mini canvas { height: 150px; }
   }
 </style>
 </head>
@@ -877,19 +884,25 @@ function showEvent(event) {
 // ===========================================================================
 // Tableau de bord d'apprentissage
 //
-// Collecte les stats du flux WS côté client (tableaux roulants, max 2000 pts)
-// et trace des séries temporelles légères en canvas pur (aucune lib externe :
-// la CSP du déploiement bloque tout CDN).
+// Collecte TOUTE l'historique du run côté client (depuis le step 0, aucun
+// plafond) et trace des séries temporelles en canvas pur (aucune lib externe :
+// la CSP du déploiement bloque tout CDN). Au rendu, chaque courbe est
+// sous-échantillonnée à la largeur du canvas — donc le run entier reste
+// visible quelle que soit sa longueur, sans coût de tracé prohibitif.
+//
+// Pertes : chaque métrique a sa propre carte auto-échelonnée (small-multiples).
+// Des magnitudes très différentes (wm_loss ~2 vs recon ~1e-4) seraient
+// invisibles sur un axe linéaire partagé ; séparées, chaque descente se voit.
 // ===========================================================================
 
 const dashboard = (() => {
-  const CAP = 2000;
+  // Historique COMPLET du run (pas de plafond ; on garde tout depuis step 0).
   const steps = [];
-  // Séries collectées tick par tick (valeurs ou null si absentes ce tick).
   const series = {
     wellbeing: [], wellbeing_avg: [],
-    wm_loss: [], wm_recon: [], wm_kl: [], wm_reward: [], wm_continue: [],
-    td_loss: [], imag_return: [], imag_entropy: [],
+    best_life_steps: [], life_steps: [],
+    wm_loss: [], wm_recon: [], wm_kl: [], wm_reward: [], wm_continue: [], td_loss: [],
+    imag_return: [], imag_entropy: [],
     deaths: [],   // nb cumulé de morts (dérivé de "life")
   };
   let lastLife = null;
@@ -913,6 +926,8 @@ const dashboard = (() => {
     steps.push(lastStep);
     series.wellbeing.push(num(stats.wellbeing));
     series.wellbeing_avg.push(num(stats.wellbeing_avg));
+    series.best_life_steps.push(num(stats.best_life_steps));
+    series.life_steps.push(num(stats.life_steps));
     series.wm_loss.push(num(stats.wm_loss));
     series.wm_recon.push(num(stats.wm_recon));
     series.wm_kl.push(num(stats.wm_kl));
@@ -922,10 +937,6 @@ const dashboard = (() => {
     series.imag_return.push(num(stats.imag_return));
     series.imag_entropy.push(num(stats.imag_entropy));
     series.deaths.push(totalDeaths);
-    if (steps.length > CAP) {
-      steps.shift();
-      for (const k in series) series[k].shift();
-    }
     latest = stats;
     dirty = true;
   }
@@ -962,67 +973,114 @@ const dashboard = (() => {
   const deathsEl = deathCard.querySelector('.v');
 
   // -- Graphiques (canvas) ----------------------------------------------------
-  // Chaque graphe = une carte avec un canvas + une ou plusieurs séries.
-  const CHART_DEFS = [
-    {
-      title: 'Bien-être',
-      lines: [
-        { key: 'wellbeing', color: '#b777e8', label: 'brut' },
-        { key: 'wellbeing_avg', color: '#f2e6b8', label: 'moyenne' },
-      ],
-    },
-    {
-      title: 'Morts cumulées',
-      lines: [{ key: 'deaths', color: '#e0705a', label: 'morts' }],
-    },
-    {
-      title: 'Modèle du monde (RSSM)',
-      lines: [
-        { key: 'wm_loss', color: '#9fd28a', label: 'wm_loss' },
-        { key: 'wm_recon', color: '#5aa7e0', label: 'recon' },
-        { key: 'wm_kl', color: '#e9b84d', label: 'kl' },
-        { key: 'wm_reward', color: '#e25b51', label: 'reward' },
-        { key: 'wm_continue', color: '#82c4ef', label: 'continue' },
-      ],
-    },
-    {
-      title: 'Imagination (acteur-critique)',
-      lines: [
-        { key: 'imag_return', color: '#6fbf6a', label: 'return' },
-        { key: 'imag_entropy', color: '#f08a3c', label: 'entropie' },
-      ],
-    },
+  // Chaque carte trace une ou plusieurs séries, avec axes X (step) et Y (valeur).
+  // Les pertes ont chacune leur carte (auto-échelle propre) pour rendre la
+  // descente visible malgré des magnitudes très différentes.
+  const SECTIONS = [
+    { heading: null, charts: [
+      {
+        title: 'Bien-être',
+        lines: [
+          { key: 'wellbeing', color: '#b777e8', label: 'brut' },
+          { key: 'wellbeing_avg', color: '#f2e6b8', label: 'moyenne' },
+        ],
+      },
+      {
+        title: 'Steps max par vie (record de survie)',
+        lines: [
+          { key: 'best_life_steps', color: '#6fbf6a', label: 'record' },
+          { key: 'life_steps', color: '#9fd28a', label: 'vie en cours' },
+        ],
+      },
+      {
+        title: 'Morts cumulées',
+        lines: [{ key: 'deaths', color: '#e0705a', label: 'morts' }],
+      },
+    ]},
+    { heading: 'Pertes du modèle du monde (RSSM) — chaque axe est propre à sa métrique', charts: [
+      { title: 'wm_loss (total)', mini: true, lines: [{ key: 'wm_loss', color: '#9fd28a', label: 'wm_loss' }] },
+      { title: 'recon', mini: true, lines: [{ key: 'wm_recon', color: '#5aa7e0', label: 'recon' }] },
+      { title: 'kl', mini: true, lines: [{ key: 'wm_kl', color: '#e9b84d', label: 'kl' }] },
+      { title: 'reward', mini: true, lines: [{ key: 'wm_reward', color: '#e25b51', label: 'reward' }] },
+      { title: 'continue', mini: true, lines: [{ key: 'wm_continue', color: '#82c4ef', label: 'continue' }] },
+      { title: 'td_loss', mini: true, lines: [{ key: 'td_loss', color: '#caa53b', label: 'td_loss' }] },
+    ]},
+    { heading: 'Imagination (acteur-critique)', charts: [
+      { title: 'imag_return', mini: true, lines: [{ key: 'imag_return', color: '#6fbf6a', label: 'return' }] },
+      { title: 'imag_entropy', mini: true, lines: [{ key: 'imag_entropy', color: '#f08a3c', label: 'entropie' }] },
+    ]},
   ];
   const chartsEl = document.getElementById('charts');
   const charts = [];
-  for (const def of CHART_DEFS) {
-    const card = document.createElement('div');
-    card.className = 'chart-card';
-    const title = document.createElement('div');
-    title.className = 'title';
-    const tspan = document.createElement('span');
-    tspan.textContent = def.title;
-    title.appendChild(tspan);
-    for (const line of def.lines) {
-      const dot = document.createElement('span');
-      dot.className = 'legend-dot';
-      const i = document.createElement('i'); i.style.background = line.color;
-      dot.appendChild(i);
-      dot.appendChild(document.createTextNode(line.label));
-      title.appendChild(dot);
+  for (const section of SECTIONS) {
+    if (section.heading) {
+      const h = document.createElement('h2');
+      h.textContent = section.heading;
+      chartsEl.appendChild(h);
     }
-    const cv = document.createElement('canvas');
-    card.appendChild(title);
-    card.appendChild(cv);
-    chartsEl.appendChild(card);
-    charts.push({ def, canvas: cv, ctx: cv.getContext('2d') });
+    for (const def of section.charts) {
+      const card = document.createElement('div');
+      card.className = 'chart-card' + (def.mini ? ' mini' : '');
+      const title = document.createElement('div');
+      title.className = 'title';
+      const tspan = document.createElement('span');
+      tspan.textContent = def.title;
+      title.appendChild(tspan);
+      if (def.lines.length > 1) {
+        for (const line of def.lines) {
+          const dot = document.createElement('span');
+          dot.className = 'legend-dot';
+          const i = document.createElement('i'); i.style.background = line.color;
+          dot.appendChild(i);
+          dot.appendChild(document.createTextNode(line.label));
+          title.appendChild(dot);
+        }
+      }
+      const cv = document.createElement('canvas');
+      card.appendChild(title);
+      card.appendChild(cv);
+      chartsEl.appendChild(card);
+      charts.push({ def, canvas: cv, ctx: cv.getContext('2d') });
+    }
+  }
+
+  // Formatage compact d'une valeur d'axe (gère grands et petits nombres).
+  function fmtAxis(v) {
+    if (v === 0) return '0';
+    const a = Math.abs(v);
+    if (a >= 100000) return (v / 1000).toFixed(0) + 'k';
+    if (a >= 1000) return (v / 1000).toFixed(1) + 'k';
+    if (a >= 10) return v.toFixed(0);
+    if (a >= 1) return v.toFixed(2);
+    if (a >= 0.01) return v.toFixed(3);
+    return v.toExponential(1);
+  }
+
+  // Sous-échantillonne une série (toute l'historique) à au plus `cols` buckets
+  // et projette chaque bucket en X-pixel. On garde la dernière valeur du bucket
+  // (suffisant pour une courbe lissée ; le pas est < 1 px de toute façon).
+  // -> le run ENTIER reste visible quel que soit sa longueur, sans tracé lourd.
+  function buildPoints(arr, n, cols, x0, plotW) {
+    const pts = [];
+    if (n < 1) return pts;
+    const bucket = Math.max(1, Math.ceil(n / cols));
+    for (let start = 0; start < n; start += bucket) {
+      const end = Math.min(n, start + bucket);
+      let last = null;
+      for (let i = start; i < end; i++) {
+        if (arr[i] !== null) last = arr[i];
+      }
+      const sx = x0 + plotW * ((n > 1) ? (start / (n - 1)) : 0);
+      pts.push(last === null ? { sx, gap: true } : { sx, last });
+    }
+    return pts;
   }
 
   function drawChart(chart) {
     const { canvas: cv, ctx: c, def } = chart;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const cssW = cv.clientWidth || 280;
-    const cssH = cv.clientHeight || 130;
+    const cssW = cv.clientWidth || 400;
+    const cssH = cv.clientHeight || 200;
     if (cv.width !== Math.round(cssW * dpr) || cv.height !== Math.round(cssH * dpr)) {
       cv.width = Math.round(cssW * dpr);
       cv.height = Math.round(cssH * dpr);
@@ -1032,11 +1090,23 @@ const dashboard = (() => {
     c.fillStyle = 'rgba(10,20,8,0.35)';
     c.fillRect(0, 0, cssW, cssH);
 
-    const pad = 4;
+    // Marges réservées aux étiquettes d'axes.
+    const ml = 44, mr = 8, mt = 8, mb = 18;
+    const plotW = cssW - ml - mr;
+    const plotH = cssH - mt - mb;
     const n = steps.length;
-    if (n < 2) return;
 
-    // Échelle Y commune à toutes les lignes de la carte.
+    c.font = '9px "Courier New", monospace';
+
+    if (n < 2) {
+      c.fillStyle = 'rgba(207,232,192,0.5)';
+      c.textBaseline = 'middle'; c.textAlign = 'center';
+      c.fillText('en attente…', cssW / 2, cssH / 2);
+      c.textAlign = 'left';
+      return;
+    }
+
+    // Échelle Y commune aux lignes de CETTE carte (auto-échelle par carte).
     let lo = Infinity, hi = -Infinity;
     for (const line of def.lines) {
       const arr = series[line.key];
@@ -1047,44 +1117,71 @@ const dashboard = (() => {
         if (v > hi) hi = v;
       }
     }
-    if (!isFinite(lo) || !isFinite(hi)) return;
-    if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+    if (!isFinite(lo) || !isFinite(hi)) {
+      c.fillStyle = 'rgba(207,232,192,0.5)';
+      c.textBaseline = 'middle'; c.textAlign = 'center';
+      c.fillText('pas de données', cssW / 2, cssH / 2);
+      c.textAlign = 'left';
+      return;
+    }
+    if (hi - lo < 1e-12) { const pad = Math.abs(hi) > 1 ? Math.abs(hi) * 0.05 : 0.5; hi += pad; lo -= pad; }
     const range = hi - lo;
 
-    const x = (i) => pad + (cssW - 2 * pad) * (i / (n - 1));
-    const y = (v) => cssH - pad - (cssH - 2 * pad) * ((v - lo) / range);
+    const x0 = ml;
+    const yPix = (v) => mt + plotH * (1 - (v - lo) / range);
 
-    // Grille horizontale (3 lignes).
+    // -- Grille + étiquettes Y (3 niveaux : haut, milieu, bas) ---------------
     c.strokeStyle = 'rgba(159,210,138,0.12)';
+    c.fillStyle = 'rgba(207,232,192,0.75)';
     c.lineWidth = 1;
+    c.textBaseline = 'middle'; c.textAlign = 'right';
     for (let g = 0; g <= 2; g++) {
-      const gy = pad + (cssH - 2 * pad) * (g / 2);
-      c.beginPath(); c.moveTo(pad, gy); c.lineTo(cssW - pad, gy); c.stroke();
+      const frac = g / 2;
+      const gy = mt + plotH * frac;
+      c.beginPath(); c.moveTo(ml, gy); c.lineTo(cssW - mr, gy); c.stroke();
+      const val = hi - range * frac;
+      c.fillText(fmtAxis(val), ml - 4, gy);
     }
 
+    // -- Axe X : step au début et à la fin -----------------------------------
+    c.textBaseline = 'bottom'; c.textAlign = 'left';
+    c.fillText('step ' + fmtAxis(steps[0]), ml, cssH - 5);
+    c.textAlign = 'right';
+    c.fillText(fmtAxis(steps[n - 1]), cssW - mr, cssH - 5);
+    // Repère X médian.
+    c.textAlign = 'center';
+    c.fillText(fmtAxis(steps[Math.floor((n - 1) / 2)]), ml + plotW / 2, cssH - 5);
+    c.textAlign = 'left';
+
+    // -- Tracé des séries (sous-échantillonnées à la largeur du plot) --------
+    const cols = Math.max(2, Math.floor(plotW));
     for (const line of def.lines) {
       const arr = series[line.key];
+      const pts = buildPoints(arr, n, cols, x0, plotW);
       c.strokeStyle = line.color;
-      c.lineWidth = 1.5;
+      c.lineWidth = 1.6;
       c.beginPath();
       let started = false;
-      for (let i = 0; i < arr.length; i++) {
-        const v = arr[i];
-        if (v === null) { started = false; continue; }
-        const px = x(i), py = y(v);
+      for (const p of pts) {
+        if (p.gap) { started = false; continue; }
+        const px = p.sx, py = yPix(p.last);
         if (!started) { c.moveTo(px, py); started = true; }
         else c.lineTo(px, py);
       }
       c.stroke();
     }
 
-    // Étiquettes min/max.
-    c.fillStyle = 'rgba(207,232,192,0.7)';
-    c.font = '9px "Courier New", monospace';
-    c.textBaseline = 'top';
-    c.fillText(hi.toFixed(2), pad + 2, pad + 1);
-    c.textBaseline = 'bottom';
-    c.fillText(lo.toFixed(2), pad + 2, cssH - pad - 1);
+    // -- Étiquette de la dernière valeur (lisibilité de la tendance) ---------
+    const main = def.lines[0];
+    const arr = series[main.key];
+    let lastV = null;
+    for (let i = arr.length - 1; i >= 0; i--) { if (arr[i] !== null) { lastV = arr[i]; break; } }
+    if (lastV !== null) {
+      c.fillStyle = main.color;
+      c.textBaseline = 'top'; c.textAlign = 'right';
+      c.fillText(fmtAxis(lastV), cssW - mr, mt + 1);
+      c.textAlign = 'left';
+    }
   }
 
   function renderMetrics() {
