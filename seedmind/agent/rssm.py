@@ -49,13 +49,18 @@ class RSSM(nn.Module):
         self.unimix = float(unimix)
         zdim = self.stoch * self.discrete
 
-        # prior path: [z_{t-1}, a_{t-1}] -> img_in -> GRU -> img_out -> logits
-        self.img_in = nn.Sequential(nn.Linear(zdim + self.num_actions, hidden), nn.SiLU())
+        # prior path: [z_{t-1}, a_{t-1}] -> img_in -> GRU -> img_out -> logits.
+        # LayerNorm after each Linear (DreamerV3) stabilises training and lets the
+        # model learn from far less data — directly the bottleneck we hit.
+        self.img_in = nn.Sequential(
+            nn.Linear(zdim + self.num_actions, hidden), nn.LayerNorm(hidden), nn.SiLU())
         self.gru = nn.GRUCell(hidden, self.deter)
-        self.img_out = nn.Sequential(nn.Linear(self.deter, hidden), nn.SiLU())
+        self.img_out = nn.Sequential(
+            nn.Linear(self.deter, hidden), nn.LayerNorm(hidden), nn.SiLU())
         self.img_logits = nn.Linear(hidden, zdim)
         # posterior path: [h_t, embed_t] -> obs_out -> logits
-        self.obs_out = nn.Sequential(nn.Linear(self.deter + int(embed_dim), hidden), nn.SiLU())
+        self.obs_out = nn.Sequential(
+            nn.Linear(self.deter + int(embed_dim), hidden), nn.LayerNorm(hidden), nn.SiLU())
         self.obs_logits = nn.Linear(hidden, zdim)
 
     # -- state -----------------------------------------------------------

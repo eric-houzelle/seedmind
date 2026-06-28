@@ -337,7 +337,8 @@ class RSSMWorldModel(nn.Module):
         feat = self.rssm.feat_dim
 
         self.decoder = nn.Sequential(
-            nn.Linear(feat, hidden), nn.SiLU(), nn.Linear(hidden, self.embed_dim),
+            nn.Linear(feat, hidden), nn.LayerNorm(hidden), nn.SiLU(),
+            nn.Linear(hidden, self.embed_dim),
         )
         # Reward predictor: a two-hot categorical head (DreamerV3) captures the rare
         # foraging-reward spikes that a scalar MSE head regresses to the mean (the

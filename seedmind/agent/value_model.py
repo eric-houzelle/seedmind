@@ -56,9 +56,10 @@ class TwoHotCritic(nn.Module):
         num_bins: int = 255, vmax: float = 20.0,
     ) -> None:
         super().__init__()
-        layers: list[nn.Module] = [nn.Linear(latent_dim, hidden_dim), nn.ReLU()]
+        # LayerNorm + SiLU blocks (DreamerV3) — better-conditioned value learning.
+        layers: list[nn.Module] = [nn.Linear(latent_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU()]
         for _ in range(max(0, num_layers - 1)):
-            layers += [nn.Linear(hidden_dim, hidden_dim), nn.ReLU()]
+            layers += [nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU()]
         layers.append(nn.Linear(hidden_dim, int(num_bins)))
         self.net = nn.Sequential(*layers)
         self.register_buffer("bins", torch.linspace(-float(vmax), float(vmax), int(num_bins)))
