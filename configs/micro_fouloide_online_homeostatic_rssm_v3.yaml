@@ -59,7 +59,10 @@ imagination:
   horizon: 15               # défaut DreamerV3 ; avec un critic calibré le bootstrap V(h_T) capte le long-terme
   context_len: 8            # pas réels pour réchauffer h_0 avant d'imaginer
   lambda: 0.95              # λ-returns
-  entropy_coef: 0.03        # bonus d'entropie (exploration)
+  entropy_coef: 0.001           # fallback si pas de schedule
+  entropy_coef_start: 0.03      # SCHEDULE explore→commit : forte au début (explorer, découvrir le fourrage)
+  entropy_coef_end: 0.0003      # → faible à la fin (commiter sur la politique de fourrage découverte)
+  entropy_decay_steps: 40000    # anneal linéaire sur 40k steps
   advantage_norm: percentile    # DreamerV3 : normalisation des returns par percentile EMA (5-95)
   critic_twohot: true       # DreamerV3 : critic catégoriel (bins symlog + cross-entropy) → valeurs CALIBRÉES
   critic_num_bins: 255

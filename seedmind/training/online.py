@@ -76,6 +76,14 @@ class OnlineLearner:
         self.imag_context = int(ic.get("context_len", 8))
         self.imag_lam = float(ic.get("lambda", 0.95))
         self.imag_entropy = float(ic.get("entropy_coef", 0.01))
+        # Entropy schedule (explore→commit): anneal the entropy bonus from a high
+        # start (broad exploration → discover that foraging pays, so its imagined
+        # advantage grows) down to a low end (commit to the discovered policy). A
+        # fixed value can't do both — too high stays uniform, too low commits early
+        # to a non-foraging attractor. No anneal if decay_steps==0.
+        self.imag_entropy_start = float(ic.get("entropy_coef_start", self.imag_entropy))
+        self.imag_entropy_end = float(ic.get("entropy_coef_end", self.imag_entropy_start))
+        self.imag_entropy_decay = int(ic.get("entropy_decay_steps", 0))
         self.imag_advantage_norm = str(ic.get("advantage_norm", "return_range"))
         self.imag_ret_decay = float(ic.get("ret_decay", 0.99))
         self.imag_critic_symlog = bool(ic.get("critic_symlog", True))
@@ -158,6 +166,7 @@ class OnlineLearner:
         self.last_critic_loss = 0.0
         self.last_imag_entropy = 0.0
         self.last_imag_return = 0.0
+        self.last_entropy_coef = self.imag_entropy
         # RSSM world-model loss breakdown (populated when training the stochastic RSSM)
         self.last_wm_recon = 0.0
         self.last_wm_kl = 0.0
@@ -226,12 +235,18 @@ class OnlineLearner:
 
         if self.imagination_policy:
             # Policy learned in imagination (actor-critic), not model-free DRQN.
+            if self.imag_entropy_decay > 0:
+                frac = min(1.0, self.env_steps / self.imag_entropy_decay)
+                ent_coef = self.imag_entropy_start + frac * (self.imag_entropy_end - self.imag_entropy_start)
+            else:
+                ent_coef = self.imag_entropy
+            self.last_entropy_coef = ent_coef
             ac = train_imagination_actor_critic(
                 self.agent.actor, self.agent.critic, self.agent.world_model,
                 self.buffer, self.actor_optimizer, self.critic_optimizer,
                 batch_size=self.q_batch, context_len=self.imag_context,
                 horizon=self.imag_horizon, num_updates=self.updates_per_cycle,
-                gamma=self.imag_gamma, lam=self.imag_lam, entropy_coef=self.imag_entropy,
+                gamma=self.imag_gamma, lam=self.imag_lam, entropy_coef=ent_coef,
                 target_critic=self.target_critic, target_tau=self.imag_target_tau,
                 advantage_norm=self.imag_advantage_norm,
                 ret_decay=self.imag_ret_decay,
