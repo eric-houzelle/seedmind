@@ -7,6 +7,7 @@ services:
       PORT: 8787
       WS_PORT: 8788
       SOURCE: ${SOURCE:-stub}
+      LIVE_CONFIG: ${LIVE_CONFIG:-configs/micro_fouloide_online_homeostatic.yaml}
       TICK_MS: ${TICK_MS:-150}
       SIZE: ${SIZE:-96}
       FOULOIDES: ${FOULOIDES:-14}
@@ -16,6 +17,7 @@ services:
       LIVE_FRESH: ${LIVE_FRESH:-}
       LIVE_CHECKPOINT: ${LIVE_CHECKPOINT:-runs/fouloide_live_homeostatic/checkpoint_live.pt}
       LIVE_CHECKPOINT_EVERY: ${LIVE_CHECKPOINT_EVERY:-5000}
+      LIVE_FRESH: ${LIVE_FRESH:-0}
     expose:
       - "8787"
       - "8788"

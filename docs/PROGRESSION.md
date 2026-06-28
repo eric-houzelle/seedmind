@@ -4827,4 +4827,63 @@ L'architecture (registres, adapters, modules découplés) est conçue pour accue
 
 ---
 
-*Dernière mise à jour : 15 juin 2026*
+## Piste recherche — World-model récurrent (RSSM) + perception égocentrée (18 juin 2026)
+
+Exploration sur la branche **`rssm-egocentric`** (isolée ; `main`/prod intacts).
+Résultat clé prouvé : la **perception égocentrée sans mémoire s'effondre** alors
+que le full-grid fourrage (contrôle discriminant) → **la mémoire est nécessaire**.
+Machinerie RSSM construite et testée (encodeur conv gelé, WM récurrent GRU, DRQN
+récurrent, actor-critic en imagination façon Dreamer). Verrou restant : stabilité
+↔ exploration de l'actor-critic (le critic-cible EMA règle la divergence, mais
+l'exploration s'effondre — piste : entropie / DreamerV3 complet).
+
+**Décision** : la vitrine reste le **fouloïde full-grid en prod (qui vit déjà)** ;
+le générique est un pari de recherche parké. Bilan complet, verdicts chiffrés et
+pistes de reprise : **[BILAN_RSSM_2026-06-18.md](./BILAN_RSSM_2026-06-18.md)**
+(issues bd `seedmind-oc4` / `seedmind-oc4.1`).
+
+### Reprise 22 juin 2026 — verrou de stabilité levé
+
+3 briques validées : normalisation d'avantage `return_range` (vs z-score → casse
+l'inertie), diagnostic du **bassin idle** (entropie bistable, horizon trop court
+pour rendre la famine visible), et **`symlog` sur la cible du critic** (DreamerV3)
++ **horizon 50**. Résultat : le **verrou historique « stabilité ↔ exploration »
+est levé** — actor-critic stable (`critic_loss` max 0.018 sur 60k vs 2.26),
+engagé (entropie ~1.4) et fourrageur à horizon long. **MAIS ne bat pas encore le
+full-grid** : wellbeing 0.045 (vs 0.026) mais **5× plus de morts** → critère de
+merge non atteint, **pas de merge dans `main`**. Verrou restant : **qualité de
+survie**. Détail complet : section « Reprise 2026-06-22 » du bilan ; mémoire bd
+`rssm-idle-basin-2026-06-22`.
+
+### Reprise 24 juin 2026 — cause racine survie + consolidation/parking
+
+Cause racine de la survie trouvée par diagnostic : le WM régressait `reward_external`
+(plat, +0.01/pas) → l'imagination n'avait aucune raison de fourrager (se terrer au
+plancher de santé était optimal, 85% du temps en drive critique). **Fix** : WM régresse
+`reward_learning` (wellbeing + fourrage, `reward_key` rendu configurable) → l'agent
+fourrage, wellbeing soutenu **0.067** (> 0.045 baseline, > 0.026 full-grid). Stabilité
+gérée (clamp anti-emballement symexp + revert des bonus volatils). **MAIS morts ~11×
+le full-grid** (1/1111 vs 1/12000) — structurel : la fenêtre égocentrée 11×11 ne peut
+égaler la vue globale pour éviter les dangers distants. **Décision : CONSOLIDER/PARKER**
+— le RSSM est validé pour sa raison d'être (l'échelle, déjà démontrée sur 96×96 où le
+full-grid est incapable de tourner). Le full-grid reste champion petite-carte. Reprise
+survie = issue `seedmind-oc4.2` (remède propre : critic twohot DreamerV3). Détail :
+section « Reprise 2026-06-24 » du bilan ; mémoires bd `rssm-survie-famine-chronique-2026-06-22`,
+`rssm-fourrage-transitoire-2026-06-24`.
+
+### Reprise 25 juin 2026 — verdict survie : limite d'approche (budget écarté)
+
+Attaque de la survie via comfort élargi (gradient sous 0.5) + MapMemory (fix encodeur
+pour croper la mémoire en égocentré). Aucun ne fait chuter le **% critique** (~85-93%).
+Test budget décisif : run long jusqu'à **env_steps 130k** (2× le budget, au-delà du
+palier prod 80k) → **% critique 82.9%**, à peine mieux que l'original. **Conclusion :
+ni budget ni capacité (mêmes réseaux → 0.96 en full-grid), c'est une LIMITE D'APPROCHE**
+— l'égocentré 11×11 + imagination ne fourrage pas assez efficacement pour maintenir ses
+drives. Le RSSM reste un **forager autonome modeste** (apprend seul, stable,
+size-invariant) mais ne survit pas comme le prod. Survie **parkée** (`seedmind-ans`).
+Détail : section « Reprise 2026-06-25 » du bilan ; mémoire bd
+`rssm-survie-verdict-budget-2026-06-25`.
+
+---
+
+*Dernière mise à jour : 25 juin 2026*

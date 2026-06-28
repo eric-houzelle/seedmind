@@ -17,7 +17,7 @@ from seedmind.agent.planner import Planner
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
 from seedmind.agent.value_model import ValueModel
-from seedmind.agent.world_model import WorldModel
+from seedmind.agent.world_model import RecurrentWorldModel, RSSMWorldModel, WorldModel
 from seedmind.memory.persistent_memory import PersistentMemory
 
 
@@ -51,6 +51,8 @@ class Agent:
         planner_uncertainty_threshold: Optional[float] = None,
         planner_margin_threshold: float = 0.0,
         planner_q_advantage_threshold: float = 0.0,
+        actor: Optional[Any] = None,
+        critic: Optional[Any] = None,
     ) -> None:
         self.encoder = encoder
         self.world_model = world_model
@@ -89,6 +91,70 @@ class Agent:
         ]
         self.last_planner_used = False
 
+        # Recurrent memory: when the world model is recurrent, the agent carries
+        # a hidden state h_t across steps (integrating egocentric observations)
+        # and feeds it to the Q-network so the policy has memory beyond its view.
+        self.recurrent = isinstance(world_model, (RecurrentWorldModel, RSSMWorldModel))
+        self._rssm = isinstance(world_model, RSSMWorldModel)  # stochastic (h, z) state
+        self.h = None              # deterministic recurrent state tensor, or None
+        self.rssm_state = None     # stochastic RSSM state dict {deter, stoch, logits}, or None
+        self._prev_action_idx = 0  # action that led to the current observation
+
+        # Imagination policy (Dreamer-style): when an actor is present, the agent
+        # acts by sampling it on the recurrent state h_t (the critic is used only
+        # during training). Replaces the Q-network / planner as the policy.
+        self.actor = actor
+        self.critic = critic
+        self.imagination_policy = actor is not None
+
+    # ------------------------------------------------------------------
+    # Recurrent state lifecycle (no-op unless the world model is recurrent)
+    # ------------------------------------------------------------------
+    def reset_state(self) -> None:
+        """Reset the recurrent memory — call on episode start / death."""
+        self.h = None
+        self.rssm_state = None
+        self._prev_action_idx = 0
+
+    def advance(self, latent_state: np.ndarray):
+        """Integrate the current latent into the recurrent state.
+
+        Call once per step *before* :meth:`choose_action`. No-op (returns None)
+        unless the world model is recurrent. For the stochastic RSSM this runs the
+        **posterior** filtering step (the latent is the encoder embedding) and
+        carries the ``(h, z)`` state; for the deterministic model it advances ``h``.
+        """
+        if not self.recurrent:
+            return None
+        if self._rssm:
+            import torch
+            device = next(self.world_model.parameters()).device
+            embed = torch.as_tensor(latent_state, dtype=torch.float32, device=device)
+            if embed.dim() == 1:
+                embed = embed.unsqueeze(0)
+            if self.rssm_state is None:
+                self.rssm_state = self.world_model.initial_state(embed.shape[0], device=device)
+            prev_a = torch.as_tensor([int(self._prev_action_idx)], dtype=torch.long, device=device)
+            post, _ = self.world_model.observe_step(embed, prev_a, self.rssm_state)
+            self.rssm_state = post
+            return self.rssm_state
+        self.h = self.world_model.recur_np(latent_state, self._prev_action_idx, self.h)
+        return self.h
+
+    def _h_vec(self) -> Optional[np.ndarray]:
+        """The recurrent feature fed to the actor/Q-net: ``h`` (deterministic) or
+        ``feat = [flatten(z), h]`` (stochastic RSSM)."""
+        if not self.recurrent:
+            return None
+        if self._rssm:
+            if self.rssm_state is None:
+                return None
+            feat = self.world_model.get_feat(self.rssm_state)
+            return feat.squeeze(0).detach().cpu().numpy().astype(np.float32)
+        if self.h is None:
+            return None
+        return self.h.squeeze(0).detach().cpu().numpy().astype(np.float32)
+
     # ------------------------------------------------------------------
     # Decision pieces (used by the main loop, SPEC section 17)
     # ------------------------------------------------------------------
@@ -111,6 +177,16 @@ class Agent:
     ) -> str:
         scorer = None
         self.last_planner_used = False
+        rec = self._h_vec()
+
+        # Imagination policy: sample the actor on the recurrent state h_t.
+        if self.imagination_policy and rec is not None and available_actions:
+            avail = [self.action_index[a] for a in available_actions if a in self.action_index]
+            if avail:
+                idx = self.actor.act_masked(rec, avail, greedy=False)
+                chosen = self.actions[idx]
+                self._prev_action_idx = idx
+                return chosen
 
         has_q = self.q_network is not None and observation is not None
         has_wm = self.use_planner and self.planning_weight > 0
@@ -118,6 +194,7 @@ class Agent:
         if has_q and has_wm:
             q_scorer = self.q_network.make_scorer(
                 observation, available_actions, action_index=self.action_index,
+                recurrent=rec,
             )
             current_features = (
                 self.causal_features_fn(observation)
@@ -147,6 +224,7 @@ class Agent:
         elif has_q:
             scorer = self.q_network.make_scorer(
                 observation, available_actions, action_index=self.action_index,
+                recurrent=rec,
             )
         elif self.use_planner:
             current_features = (
@@ -160,13 +238,16 @@ class Agent:
             self.last_planner_used = True
             scorer = lambda action: values.get(action, float("-inf"))
 
-        return self.policy.choose(
+        chosen = self.policy.choose(
             latent_state=latent_state,
             goal=goal,
             memories=memories,
             available_actions=available_actions,
             action_scorer=scorer,
         )
+        if self.recurrent:
+            self._prev_action_idx = self.action_index.get(chosen, 0)
+        return chosen
 
     @staticmethod
     def _normalise(arr: np.ndarray) -> np.ndarray:

@@ -126,6 +126,9 @@ class OnlineFouloideSession:
         self.agent.q_network.to(device)
         if self.agent.value_model is not None:
             self.agent.value_model.to(device)
+        if getattr(self.agent, "actor", None) is not None:
+            self.agent.actor.to(device)
+            self.agent.critic.to(device)
         self.learner = OnlineLearner(self.agent, config, device, seed=seed)
 
         self.env = build_env(config, seed=seed)
@@ -139,6 +142,7 @@ class OnlineFouloideSession:
             self.map_memory.observe(self.observation)
             self.observation = self.map_memory.augment(self.observation)
         self.latent_state = self.agent.encoder.encode_tensor(self.observation)
+        self.agent.reset_state()  # fresh recurrent memory at birth
         self.lives = 1
         self.steps = 0
         self.life_steps = 0
@@ -174,6 +178,7 @@ class OnlineFouloideSession:
             self.recent_wellbeing,
             self.recent_events,
         )
+        agent.advance(latent_np)  # update recurrent state h_t (no-op if feed-forward)
         action = agent.choose_action(
             latent_np, goal, memories, available_actions,
             observation=self.observation,
@@ -188,7 +193,20 @@ class OnlineFouloideSession:
         next_latent = agent.encoder.encode_tensor(next_obs)
         event = str(info.get("event", "unknown"))
 
-        predicted, _, _ = agent.world_model.predict_tensor(self.latent_state, action_index)
+        if getattr(agent, "_rssm", False) and agent.rssm_state is not None:
+            # Curiosity from the RSSM: prior-predicted next embedding vs the real one.
+            with torch.no_grad():
+                device = next(agent.world_model.parameters()).device
+                action_t = torch.as_tensor([action_index], dtype=torch.long, device=device)
+                prior = agent.world_model.img_step(agent.rssm_state, action_t)
+                predicted = agent.world_model.heads(agent.world_model.get_feat(prior))["recon"].squeeze(0)
+        elif agent.recurrent and agent.h is not None:
+            # Curiosity from the recurrent WM: how well it predicted z_{t+1}
+            # from the current recurrent state h_t and the chosen action.
+            action_t = torch.as_tensor([action_index], dtype=torch.long, device=agent.h.device)
+            predicted = agent.world_model.forward(agent.h, action_t)[0].squeeze(0)
+        else:
+            predicted, _, _ = agent.world_model.predict_tensor(self.latent_state, action_index)
         pred_err = float(compute_prediction_error_tensor(predicted, next_latent).item())
         reward_int = agent.curiosity.compute(pred_err)
         reward_learning = _learning_reward(reward_ext, self.observation, info, self.config)
@@ -233,6 +251,7 @@ class OnlineFouloideSession:
             self.best_life_steps = max(self.best_life_steps, self.life_steps)
             self.life_steps = 0
             self.lives += 1
+            agent.reset_state()  # the recurrent memory dies with the individual
             self.observation = self.env.reset()
             if self.map_memory is not None:
                 # La carte meurt avec l'individu (nouveau layout).
@@ -304,6 +323,7 @@ class OnlineFouloideSession:
                 self.agent.planner_uncertainty_threshold = float(threshold)
         # Le latent courant doit venir de l'encodeur restauré.
         self.latent_state = self.agent.encoder.encode_tensor(self.observation)
+        self.agent.reset_state()  # recurrent memory restarts from the current obs
         return m
 
 
@@ -317,6 +337,10 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=500)
     parser.add_argument("--checkpoint-every", type=int, default=5000,
                         help="sauvegarde du cerveau tous les N steps (0 = off)")
+    parser.add_argument("--entropy-coef", type=float, default=None,
+                        help="Override imagination.entropy_coef (Dreamer exploration bonus).")
+    parser.add_argument("--horizon", type=int, default=None,
+                        help="Override imagination.horizon (imagined rollout length).")
     parser.add_argument("--resume", default=None,
                         help="checkpoint online à reprendre")
     args = parser.parse_args()
@@ -324,6 +348,12 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = resolve_device(args.device)
     config = load_config(args.config)
+    if args.entropy_coef is not None:
+        config.setdefault("imagination", {})["entropy_coef"] = float(args.entropy_coef)
+        print(f"[override] imagination.entropy_coef = {args.entropy_coef}")
+    if args.horizon is not None:
+        config.setdefault("imagination", {})["horizon"] = int(args.horizon)
+        print(f"[override] imagination.horizon = {args.horizon}")
     out_dir = Path(args.out_dir or f"runs/fouloide_online_seed{args.seed}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -375,7 +405,8 @@ def main() -> None:
                 "coverage_cells": len(visited),
                 "coverage_frac": round(len(visited) / max(1, (session.env.size - 2) ** 2), 3),
                 **{k: stats[k] for k in (
-                    "wm_loss", "td_loss", "value_loss",
+                    "wm_loss", "td_loss", "value_loss", "actor_loss", "critic_loss",
+                    "imag_entropy", "imag_return",
                     "uncertainty_threshold", "epsilon", "buffer_size",
                 )},
             }

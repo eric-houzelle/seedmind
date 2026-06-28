@@ -6,14 +6,32 @@
 <title>SeedMind — Fouloïdes</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a2a14; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;            /* desktop : pas de scroll */
+    overflow-x: hidden;          /* mobile : jamais de scroll horizontal */
+    background: #1a2a14;
+    -webkit-text-size-adjust: 100%;
+  }
   body { font-family: 'Courier New', monospace; }
+
+  /* Le conteneur de la carte : plein écran sous le HUD, sous l'onglet actif. */
+  #map-view {
+    position: absolute; inset: 0;
+    touch-action: none;          /* on gère le pan/zoom tactile nous-mêmes */
+  }
 
   #world-canvas {
     position: absolute; inset: 0; width: 100%; height: 100%;
     image-rendering: pixelated; cursor: grab;
+    touch-action: none;
   }
   #world-canvas.dragging { cursor: grabbing; }
+
+  /* La vue est masquée quand l'onglet Stats est actif. */
+  body.tab-stats #map-view { display: none; }
+  body.tab-stats .hud { display: none !important; }
+  body.tab-map #dashboard { display: none; }
 
   /* ---- HUD (style fouloïdes) ---- */
   .hud { position: absolute; user-select: none; pointer-events: none; }
@@ -102,10 +120,93 @@
     opacity: 0; transition: opacity 0.4s ease;
   }
   #event-ticker.show { opacity: 1; }
+
+  /* ---- Barre d'onglets Carte / Stats ---- */
+  #tabbar {
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 4px; z-index: 50;
+    background: rgba(10, 20, 8, 0.8); padding: 4px; border-radius: 8px;
+    border: 2px solid #16323a; box-shadow: 0 4px 8px rgba(0,0,0,0.45);
+  }
+  /* En mode Stats, on remonte la barre tout en haut (le HUD est masqué). */
+  body.tab-stats #tabbar { top: 10px; }
+  #tabbar button {
+    font-family: inherit; font-size: 12px; font-weight: 700; letter-spacing: 1px;
+    color: #9fd28a; background: transparent; border: none; cursor: pointer;
+    padding: 7px 16px; border-radius: 5px; text-transform: uppercase;
+  }
+  #tabbar button.active { background: #2bb3c9; color: #fff; }
+
+  /* L'objectif central laisse la place à la barre d'onglets. */
+  #objective { top: 58px; }
+
+  /* ---- Tableau de bord d'apprentissage ---- */
+  #dashboard {
+    position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+    background: #14210f; color: #cfe8c0; padding: 64px 18px 28px;
+    -webkit-overflow-scrolling: touch;
+  }
+  #dashboard h1 {
+    font-size: 16px; color: #9fd28a; letter-spacing: 1px; margin-bottom: 4px;
+  }
+  #dashboard .subtitle { font-size: 11px; color: #7fae6f; margin-bottom: 16px; }
+
+  .metric-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px; margin-bottom: 20px;
+  }
+  .metric {
+    background: rgba(10, 20, 8, 0.6); border: 2px solid #16323a;
+    border-radius: 6px; padding: 10px 12px;
+  }
+  .metric .k { font-size: 10px; color: #7fae6f; letter-spacing: 1px; text-transform: uppercase; }
+  .metric .v { font-size: 20px; color: #f2e6b8; font-weight: 700; margin-top: 3px; }
+  .metric .v small { font-size: 11px; color: #9fd28a; font-weight: 400; }
+
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .chart-card {
+    background: rgba(10, 20, 8, 0.5); border: 2px solid #16323a;
+    border-radius: 6px; padding: 10px 12px 12px;
+  }
+  .chart-card .title {
+    font-size: 11px; color: #9fd28a; letter-spacing: 1px; text-transform: uppercase;
+    margin-bottom: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .chart-card .legend-dot { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: #cfe8c0; }
+  .chart-card .legend-dot i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
+  .chart-card canvas { width: 100%; height: 130px; display: block; }
+  #dashboard .waiting { color: #7fae6f; font-size: 12px; padding: 20px 0; }
+
+  /* ---- Adaptation mobile / téléphone ---- */
+  @media (max-width: 760px) {
+    /* Le HUD volumineux est réduit pour ne pas masquer la carte. */
+    #legend { display: none; }
+    #badge-pop { top: 10px; left: 10px; width: 56px; height: 56px; border-width: 3px; }
+    #badge-pop .icon { font-size: 16px; }
+    #badge-pop .count { font-size: 16px; }
+    #objective { max-width: 92vw; font-size: 11px; top: 64px; }
+    #objective .label { padding: 6px 7px; font-size: 9px; }
+    #objective .text { padding: 6px 9px; font-size: 10px; }
+    #menu-btn { top: 14px; right: 14px; }
+    #tools-btn { width: 56px; height: 56px; bottom: 14px; right: 14px; font-size: 22px; }
+    #help { display: none; }
+    #status { font-size: 10px; bottom: 12px; left: 12px; }
+    #dashboard { padding: 60px 12px 28px; }
+    #dashboard h1 { font-size: 14px; }
+    .metric .v { font-size: 17px; }
+    .charts { grid-template-columns: 1fr; }   /* empilé verticalement */
+    .chart-card canvas { height: 120px; }
+  }
 </style>
 </head>
-<body>
+<body class="tab-map">
 
+<div id="tabbar">
+  <button id="tab-map-btn" class="active">Carte</button>
+  <button id="tab-stats-btn">Stats</button>
+</div>
+
+<div id="map-view">
 <canvas id="world-canvas"></canvas>
 
 <div class="hud" id="badge-pop">
@@ -127,6 +228,15 @@
 
 <div class="hud" id="status">connexion&hellip;</div>
 <div class="hud" id="help">glisser : d&eacute;placer &middot; molette : zoom &middot; fl&egrave;ches : cam&eacute;ra</div>
+</div><!-- /#map-view -->
+
+<div id="dashboard">
+  <h1>Apprentissage en direct</h1>
+  <div class="subtitle">Le fouloïde apprend à survivre &mdash; m&eacute;triques collect&eacute;es tick par tick.</div>
+  <div class="metric-grid" id="metric-grid"></div>
+  <div class="charts" id="charts"></div>
+  <div class="waiting" id="dash-waiting">En attente de donn&eacute;es du flux&hellip;</div>
+</div>
 
 <script>
 'use strict';
@@ -454,17 +564,35 @@ const world = {
 // ===========================================================================
 
 const canvas = document.getElementById('world-canvas');
+const mapView = document.getElementById('map-view');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
 const cam = { x: 0, y: 0, zoom: 3 };  // x,y = centre en pixels-monde
 
+// Dimensions en pixels CSS (logiques) ; le backing store est multiplié par le
+// devicePixelRatio pour rester net sur écran HiDPI / téléphone.
+const view = { w: 0, h: 0 };
+
 function resize() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  // On dimensionne le canvas sur son conteneur (#map-view), pas sur la fenêtre :
+  // cela permet à la carte d'occuper toute la largeur disponible sur mobile.
+  const rect = mapView.getBoundingClientRect();
+  const cssW = Math.max(1, Math.round(rect.width || window.innerWidth));
+  const cssH = Math.max(1, Math.round(rect.height || window.innerHeight));
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);  // cap à 2 (perfs mobile)
+  view.w = cssW; view.h = cssH;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  // Le reste du rendu raisonne en pixels CSS ; on applique le dpr ici.
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.imageSmoothingEnabled = false;
+  clampCam();
 }
 window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 100));
 resize();
 
 let dragging = false, lastX = 0, lastY = 0;
@@ -487,6 +615,42 @@ canvas.addEventListener('wheel', e => {
   clampCam();
 }, { passive: false });
 
+// --- Tactile : un doigt = pan, deux doigts = pinch-zoom ---------------------
+let touchPanX = 0, touchPanY = 0, pinchDist = 0;
+function touchMid(t1, t2) { return [(t1.clientX + t2.clientX) / 2, (t1.clientY + t2.clientY) / 2]; }
+function touchDist(t1, t2) {
+  return Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+}
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 1) {
+    touchPanX = e.touches[0].clientX; touchPanY = e.touches[0].clientY;
+  } else if (e.touches.length === 2) {
+    pinchDist = touchDist(e.touches[0], e.touches[1]);
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    cam.x -= (e.touches[0].clientX - touchPanX) / cam.zoom;
+    cam.y -= (e.touches[0].clientY - touchPanY) / cam.zoom;
+    touchPanX = e.touches[0].clientX; touchPanY = e.touches[0].clientY;
+    clampCam();
+  } else if (e.touches.length === 2) {
+    const d = touchDist(e.touches[0], e.touches[1]);
+    if (pinchDist > 0) {
+      cam.zoom = Math.max(1, Math.min(6, cam.zoom * (d / pinchDist)));
+    }
+    pinchDist = d;
+    clampCam();
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  if (e.touches.length === 1) {
+    touchPanX = e.touches[0].clientX; touchPanY = e.touches[0].clientY;
+  }
+  pinchDist = 0;
+}, { passive: false });
+
 const keys = {};
 window.addEventListener('keydown', e => { keys[e.key] = true; });
 window.addEventListener('keyup', e => { keys[e.key] = false; });
@@ -504,16 +668,16 @@ function clampCam() {
 
 function drawSprite(spr, wx, wy, ox, oy) {
   // wx, wy en pixels-monde ; ox, oy = offset d'ancrage
-  const sx = Math.round((wx - ox - cam.x) * cam.zoom + canvas.width / 2);
-  const sy = Math.round((wy - oy - cam.y) * cam.zoom + canvas.height / 2);
+  const sx = Math.round((wx - ox - cam.x) * cam.zoom + view.w / 2);
+  const sy = Math.round((wy - oy - cam.y) * cam.zoom + view.h / 2);
   ctx.drawImage(spr, sx, sy, spr.width * cam.zoom, spr.height * cam.zoom);
 }
 
 function drawBar(wx, wy, frac, color) {
   // mini-barre de drive (style Sims) en pixels-monde
   const w = 14, h = 2;
-  const sx = Math.round((wx - cam.x) * cam.zoom + canvas.width / 2);
-  const sy = Math.round((wy - cam.y) * cam.zoom + canvas.height / 2);
+  const sx = Math.round((wx - cam.x) * cam.zoom + view.w / 2);
+  const sy = Math.round((wy - cam.y) * cam.zoom + view.h / 2);
   ctx.fillStyle = 'rgba(10, 16, 8, 0.75)';
   ctx.fillRect(sx, sy, w * cam.zoom, h * cam.zoom);
   ctx.fillStyle = color;
@@ -534,21 +698,21 @@ function render(now) {
   if (keys.ArrowLeft || keys.ArrowRight || keys.ArrowUp || keys.ArrowDown) clampCam();
 
   ctx.fillStyle = '#1a2a14';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, view.w, view.h);
 
   if (world.terrain) {
     const ts = TILE * cam.zoom;
-    const x0 = Math.floor((cam.x - canvas.width / 2 / cam.zoom) / TILE) - 1;
-    const y0 = Math.floor((cam.y - canvas.height / 2 / cam.zoom) / TILE) - 1;
-    const x1 = x0 + Math.ceil(canvas.width / ts) + 2;
-    const y1 = y0 + Math.ceil(canvas.height / ts) + 2;
+    const x0 = Math.floor((cam.x - view.w / 2 / cam.zoom) / TILE) - 1;
+    const y0 = Math.floor((cam.y - view.h / 2 / cam.zoom) / TILE) - 1;
+    const x1 = x0 + Math.ceil(view.w / ts) + 2;
+    const y1 = y0 + Math.ceil(view.h / ts) + 2;
 
     for (let ty = Math.max(0, y0); ty <= Math.min(world.height - 1, y1); ty++)
       for (let tx = Math.max(0, x0); tx <= Math.min(world.width - 1, x1); tx++) {
         const kind = TILES[world.terrain[ty][tx]] ? world.terrain[ty][tx] : 0;
         const v = Math.floor(hash(tx, ty, 3) * 3);
-        const sx = Math.round((tx * TILE - cam.x) * cam.zoom + canvas.width / 2);
-        const sy = Math.round((ty * TILE - cam.y) * cam.zoom + canvas.height / 2);
+        const sx = Math.round((tx * TILE - cam.x) * cam.zoom + view.w / 2);
+        const sy = Math.round((ty * TILE - cam.y) * cam.zoom + view.h / 2);
         ctx.drawImage(TILES[kind][v], sx, sy, ts, ts);
       }
 
@@ -610,8 +774,8 @@ function render(now) {
             if (d < dmin) dmin = d;
           }
           if (dmin > world.visionRadius + 0.01) {
-            const sx = Math.round((tx * TILE - cam.x) * cam.zoom + canvas.width / 2);
-            const sy = Math.round((ty * TILE - cam.y) * cam.zoom + canvas.height / 2);
+            const sx = Math.round((tx * TILE - cam.x) * cam.zoom + view.w / 2);
+            const sy = Math.round((ty * TILE - cam.y) * cam.zoom + view.h / 2);
             ctx.fillRect(sx, sy, ts, ts);
           }
         }
@@ -683,6 +847,7 @@ function onStep(d, now) {
   if (d.stats && d.stats.population !== undefined) popEl.textContent = d.stats.population;
   if (d.objective) objEl.textContent = d.objective;
   if (d.stats && d.stats.event) showEvent(d.stats.event);
+  if (d.stats) dashboard.push(d.stats, d.step);
 }
 
 // --- Ticker des découvertes -------------------------------------------------
@@ -708,6 +873,268 @@ function showEvent(event) {
   if (tickerTimeout) clearTimeout(tickerTimeout);
   tickerTimeout = setTimeout(() => tickerEl.classList.remove('show'), 2500);
 }
+
+// ===========================================================================
+// Tableau de bord d'apprentissage
+//
+// Collecte les stats du flux WS côté client (tableaux roulants, max 2000 pts)
+// et trace des séries temporelles légères en canvas pur (aucune lib externe :
+// la CSP du déploiement bloque tout CDN).
+// ===========================================================================
+
+const dashboard = (() => {
+  const CAP = 2000;
+  const steps = [];
+  // Séries collectées tick par tick (valeurs ou null si absentes ce tick).
+  const series = {
+    wellbeing: [], wellbeing_avg: [],
+    wm_loss: [], wm_recon: [], wm_kl: [], wm_reward: [], wm_continue: [],
+    td_loss: [], imag_return: [], imag_entropy: [],
+    deaths: [],   // nb cumulé de morts (dérivé de "life")
+  };
+  let lastLife = null;
+  let totalDeaths = 0;
+  let lastStep = 0;
+  let dirty = false;
+  let visible = false;
+
+  const num = (v) => (typeof v === 'number' && isFinite(v)) ? v : null;
+
+  function push(stats, step) {
+    lastStep = (step !== undefined && step !== null) ? step : lastStep + 1;
+    // "life" est le numéro de vie courant ; chaque incrément = une mort.
+    const life = num(stats.life);
+    if (life !== null) {
+      if (lastLife !== null && life > lastLife) totalDeaths += (life - lastLife);
+      lastLife = life;
+    } else if (num(stats.deaths) !== null) {
+      totalDeaths = stats.deaths;
+    }
+    steps.push(lastStep);
+    series.wellbeing.push(num(stats.wellbeing));
+    series.wellbeing_avg.push(num(stats.wellbeing_avg));
+    series.wm_loss.push(num(stats.wm_loss));
+    series.wm_recon.push(num(stats.wm_recon));
+    series.wm_kl.push(num(stats.wm_kl));
+    series.wm_reward.push(num(stats.wm_reward));
+    series.wm_continue.push(num(stats.wm_continue));
+    series.td_loss.push(num(stats.td_loss));
+    series.imag_return.push(num(stats.imag_return));
+    series.imag_entropy.push(num(stats.imag_entropy));
+    series.deaths.push(totalDeaths);
+    if (steps.length > CAP) {
+      steps.shift();
+      for (const k in series) series[k].shift();
+    }
+    latest = stats;
+    dirty = true;
+  }
+
+  let latest = null;
+
+  // -- Cartes de métriques instantanées --------------------------------------
+  const METRICS = [
+    ['wellbeing', 'bien-être', v => v.toFixed(2)],
+    ['health', 'santé', v => v.toFixed(2)],
+    ['life', 'vie n°', v => String(Math.round(v))],
+    ['life_steps', 'steps cette vie', v => String(Math.round(v))],
+    ['best_life_steps', 'record steps', v => String(Math.round(v))],
+    ['wm_loss', 'wm_loss', v => v.toFixed(3)],
+    ['epsilon', 'exploration ε', v => v.toFixed(2)],
+    ['step', 'steps totaux', v => String(Math.round(v))],
+  ];
+  const gridEl = document.getElementById('metric-grid');
+  const metricEls = {};
+  for (const [key, label] of METRICS) {
+    const card = document.createElement('div');
+    card.className = 'metric';
+    const k = document.createElement('div'); k.className = 'k'; k.textContent = label;
+    const v = document.createElement('div'); v.className = 'v'; v.textContent = '—';
+    card.appendChild(k); card.appendChild(v);
+    gridEl.appendChild(card);
+    metricEls[key] = v;
+  }
+  // Carte dérivée : morts cumulées + cadence.
+  const deathCard = document.createElement('div');
+  deathCard.className = 'metric';
+  deathCard.innerHTML = '<div class="k">morts cumulées</div><div class="v" id="m-deaths">—</div>';
+  gridEl.appendChild(deathCard);
+  const deathsEl = deathCard.querySelector('.v');
+
+  // -- Graphiques (canvas) ----------------------------------------------------
+  // Chaque graphe = une carte avec un canvas + une ou plusieurs séries.
+  const CHART_DEFS = [
+    {
+      title: 'Bien-être',
+      lines: [
+        { key: 'wellbeing', color: '#b777e8', label: 'brut' },
+        { key: 'wellbeing_avg', color: '#f2e6b8', label: 'moyenne' },
+      ],
+    },
+    {
+      title: 'Morts cumulées',
+      lines: [{ key: 'deaths', color: '#e0705a', label: 'morts' }],
+    },
+    {
+      title: 'Modèle du monde (RSSM)',
+      lines: [
+        { key: 'wm_loss', color: '#9fd28a', label: 'wm_loss' },
+        { key: 'wm_recon', color: '#5aa7e0', label: 'recon' },
+        { key: 'wm_kl', color: '#e9b84d', label: 'kl' },
+        { key: 'wm_reward', color: '#e25b51', label: 'reward' },
+        { key: 'wm_continue', color: '#82c4ef', label: 'continue' },
+      ],
+    },
+    {
+      title: 'Imagination (acteur-critique)',
+      lines: [
+        { key: 'imag_return', color: '#6fbf6a', label: 'return' },
+        { key: 'imag_entropy', color: '#f08a3c', label: 'entropie' },
+      ],
+    },
+  ];
+  const chartsEl = document.getElementById('charts');
+  const charts = [];
+  for (const def of CHART_DEFS) {
+    const card = document.createElement('div');
+    card.className = 'chart-card';
+    const title = document.createElement('div');
+    title.className = 'title';
+    const tspan = document.createElement('span');
+    tspan.textContent = def.title;
+    title.appendChild(tspan);
+    for (const line of def.lines) {
+      const dot = document.createElement('span');
+      dot.className = 'legend-dot';
+      const i = document.createElement('i'); i.style.background = line.color;
+      dot.appendChild(i);
+      dot.appendChild(document.createTextNode(line.label));
+      title.appendChild(dot);
+    }
+    const cv = document.createElement('canvas');
+    card.appendChild(title);
+    card.appendChild(cv);
+    chartsEl.appendChild(card);
+    charts.push({ def, canvas: cv, ctx: cv.getContext('2d') });
+  }
+
+  function drawChart(chart) {
+    const { canvas: cv, ctx: c, def } = chart;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssW = cv.clientWidth || 280;
+    const cssH = cv.clientHeight || 130;
+    if (cv.width !== Math.round(cssW * dpr) || cv.height !== Math.round(cssH * dpr)) {
+      cv.width = Math.round(cssW * dpr);
+      cv.height = Math.round(cssH * dpr);
+    }
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, cssW, cssH);
+    c.fillStyle = 'rgba(10,20,8,0.35)';
+    c.fillRect(0, 0, cssW, cssH);
+
+    const pad = 4;
+    const n = steps.length;
+    if (n < 2) return;
+
+    // Échelle Y commune à toutes les lignes de la carte.
+    let lo = Infinity, hi = -Infinity;
+    for (const line of def.lines) {
+      const arr = series[line.key];
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i];
+        if (v === null) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    }
+    if (!isFinite(lo) || !isFinite(hi)) return;
+    if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+    const range = hi - lo;
+
+    const x = (i) => pad + (cssW - 2 * pad) * (i / (n - 1));
+    const y = (v) => cssH - pad - (cssH - 2 * pad) * ((v - lo) / range);
+
+    // Grille horizontale (3 lignes).
+    c.strokeStyle = 'rgba(159,210,138,0.12)';
+    c.lineWidth = 1;
+    for (let g = 0; g <= 2; g++) {
+      const gy = pad + (cssH - 2 * pad) * (g / 2);
+      c.beginPath(); c.moveTo(pad, gy); c.lineTo(cssW - pad, gy); c.stroke();
+    }
+
+    for (const line of def.lines) {
+      const arr = series[line.key];
+      c.strokeStyle = line.color;
+      c.lineWidth = 1.5;
+      c.beginPath();
+      let started = false;
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i];
+        if (v === null) { started = false; continue; }
+        const px = x(i), py = y(v);
+        if (!started) { c.moveTo(px, py); started = true; }
+        else c.lineTo(px, py);
+      }
+      c.stroke();
+    }
+
+    // Étiquettes min/max.
+    c.fillStyle = 'rgba(207,232,192,0.7)';
+    c.font = '9px "Courier New", monospace';
+    c.textBaseline = 'top';
+    c.fillText(hi.toFixed(2), pad + 2, pad + 1);
+    c.textBaseline = 'bottom';
+    c.fillText(lo.toFixed(2), pad + 2, cssH - pad - 1);
+  }
+
+  function renderMetrics() {
+    if (!latest) return;
+    for (const [key, , fmt] of METRICS) {
+      const v = num(latest[key]);
+      metricEls[key].textContent = (v === null) ? '—' : fmt(v);
+    }
+    let rate = '';
+    if (totalDeaths > 0 && lastStep > 0) {
+      rate = ` <small>~1 / ${Math.round(lastStep / totalDeaths)} steps</small>`;
+    }
+    deathsEl.innerHTML = String(totalDeaths) + rate;
+  }
+
+  // Boucle de rendu : seulement quand l'onglet Stats est visible et qu'il y a
+  // de nouvelles données (économie CPU/batterie sur mobile).
+  function tick() {
+    if (visible && dirty) {
+      document.getElementById('dash-waiting').style.display = steps.length ? 'none' : '';
+      renderMetrics();
+      for (const ch of charts) drawChart(ch);
+      dirty = false;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  function setVisible(v) { visible = v; if (v) dirty = true; }
+
+  return { push, setVisible };
+})();
+
+// --- Bascule d'onglets Carte / Stats ----------------------------------------
+(function setupTabs() {
+  const body = document.body;
+  const mapBtn = document.getElementById('tab-map-btn');
+  const statsBtn = document.getElementById('tab-stats-btn');
+  function show(tab) {
+    const isMap = tab === 'map';
+    body.classList.toggle('tab-map', isMap);
+    body.classList.toggle('tab-stats', !isMap);
+    mapBtn.classList.toggle('active', isMap);
+    statsBtn.classList.toggle('active', !isMap);
+    dashboard.setVisible(!isMap);
+    if (isMap) resize();   // recalcule le canvas (il était masqué : taille 0)
+  }
+  mapBtn.addEventListener('click', () => show('map'));
+  statsBtn.addEventListener('click', () => show('stats'));
+})();
 
 const BUILT_WS_URL = "__SEEDMIND_WS_URL__";
 

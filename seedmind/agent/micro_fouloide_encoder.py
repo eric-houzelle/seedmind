@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Sequence, Tuple
 import numpy as np
 import torch
 
-from seedmind.envs.micro_fouloide_world import NUM_ENTITIES
+from seedmind.envs.micro_fouloide_world import NUM_ENTITIES, OBSTACLE
 
 MICRO_FOULOIDE_NUM_CHANNELS = NUM_ENTITIES
 MICRO_FOULOIDE_NUM_SCALARS = 4 + NUM_ENTITIES
@@ -160,6 +160,101 @@ def make_micro_fouloide_property_obs_fns(
     num_channels = p + (p + 1 if mem else 0)
     num_scalars = len(_SCALAR_KEYS) + p + (p + 1 if inv else 0)
     return obs_to_vec, obs_batch, num_channels, num_scalars
+
+
+# ---------------------------------------------------------------------------
+# Egocentric perception: a fixed window centred on the agent.
+#
+# Domain-agnostic on purpose — it crops the *grid* before any channel encoding,
+# so it composes with both the onehot and the property obs modes. The window
+# size is independent of the world size, which is what lets the same network
+# transfer across worlds of any size (and lets the world grow / be infinite).
+# Cells outside the world are filled with a sentinel (default OBSTACLE: the
+# world edge already behaves like a wall).
+# ---------------------------------------------------------------------------
+
+def egocentric_grid(
+    grid: Any, agent_pos: Tuple[int, int], radius: int, oob_fill: float = OBSTACLE,
+    dtype=np.int64,
+) -> np.ndarray:
+    """Crop ``grid`` to a ``(2*radius+1, 2*radius+1)`` window centred on the agent.
+
+    Out-of-world cells are filled with ``oob_fill``. The agent sits at the
+    centre ``(radius, radius)`` of the returned window. ``dtype`` lets the same
+    crop serve the int entity grid and the float memory-freshness grid.
+    """
+    grid = np.asarray(grid, dtype=dtype)
+    k = int(radius)
+    win = 2 * k + 1
+    ar, ac = int(agent_pos[0]), int(agent_pos[1])
+    out = np.full((win, win), oob_fill, dtype=dtype)
+    # Source rectangle in world coords, then clipped to the world bounds.
+    r0, c0 = ar - k, ac - k
+    sr0, sr1 = max(r0, 0), min(ar + k + 1, grid.shape[0])
+    sc0, sc1 = max(c0, 0), min(ac + k + 1, grid.shape[1])
+    if sr0 < sr1 and sc0 < sc1:
+        dr, dc = sr0 - r0, sc0 - c0
+        out[dr:dr + (sr1 - sr0), dc:dc + (sc1 - sc0)] = grid[sr0:sr1, sc0:sc1]
+    return out
+
+
+def egocentric_observation(
+    observation: Dict[str, Any], radius: int, oob_fill: int = OBSTACLE,
+) -> Dict[str, Any]:
+    """Return ``observation`` with its grid replaced by an egocentric window.
+
+    ``agent_pos`` is rewritten to the window centre so downstream consumers
+    (channel encoders, memory keys) stay consistent. All other keys — scalar
+    drives, ``standing_entity``, inventory — are preserved untouched.
+    """
+    obs = dict(observation)
+    pos = observation.get("agent_pos", (-1, -1))
+    obs["grid"] = egocentric_grid(observation["grid"], pos, radius, oob_fill)
+    # MapMemory channels must be cropped to the same window, else they stay at
+    # world size and break the channel concat. Unknown cells: -1 (memory_grid),
+    # 0.0 freshness (memory_fresh).
+    if observation.get("memory_grid") is not None:
+        obs["memory_grid"] = egocentric_grid(
+            observation["memory_grid"], pos, radius, -1, dtype=np.int64,
+        )
+    if observation.get("memory_fresh") is not None:
+        obs["memory_fresh"] = egocentric_grid(
+            observation["memory_fresh"], pos, radius, 0.0, dtype=np.float32,
+        )
+    obs["agent_pos"] = (int(radius), int(radius))
+    return obs
+
+
+def wrap_egocentric(
+    obs_to_vec_fn: Callable[[Dict[str, Any]], np.ndarray],
+    obs_batch_fn: Callable[[Sequence[Dict[str, Any]]], Tuple[torch.Tensor, torch.Tensor]],
+    radius: int,
+    oob_fill: int = OBSTACLE,
+) -> Tuple[
+    Callable[[Dict[str, Any]], np.ndarray],
+    Callable[[Sequence[Dict[str, Any]]], Tuple[torch.Tensor, torch.Tensor]],
+]:
+    """Wrap base obs encoders so they perceive an egocentric window.
+
+    Crops each observation to a window of side ``2*radius+1`` *before* applying
+    the base channel/scalar encoders, so channel and scalar counts are
+    unchanged — only the spatial extent shrinks to the fixed window.
+    """
+    k = int(radius)
+    fill = int(oob_fill)
+
+    def _crop(o: Dict[str, Any]) -> Dict[str, Any]:
+        return egocentric_observation(o, k, fill)
+
+    def ego_to_vec(observation: Dict[str, Any]) -> np.ndarray:
+        return obs_to_vec_fn(_crop(observation))
+
+    def ego_batch(
+        observations: Sequence[Dict[str, Any]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return obs_batch_fn([_crop(o) for o in observations])
+
+    return ego_to_vec, ego_batch
 
 
 # ---------------------------------------------------------------------------

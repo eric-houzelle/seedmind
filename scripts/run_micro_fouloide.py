@@ -17,20 +17,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from seedmind.agent.agent import Agent
 from seedmind.agent.curiosity import compute_prediction_error_tensor
-from seedmind.agent.encoder import Encoder
+from seedmind.agent.actor_critic import Actor
+from seedmind.agent.encoder import ConvEncoder, Encoder
 from seedmind.agent.goal_generator import GoalGenerator
 from seedmind.agent.map_memory import MapMemory
 from seedmind.agent.micro_fouloide_encoder import (
     make_micro_fouloide_obs_fns,
     make_micro_fouloide_property_obs_fns,
+    wrap_egocentric,
 )
 from seedmind.agent.latent_q_network import LatentQNetwork
 from seedmind.agent.policy import EpsilonGreedyPolicy
 from seedmind.agent.q_network import QNetwork
-from seedmind.agent.value_model import ValueModel
-from seedmind.agent.world_model import WorldModel
+from seedmind.agent.value_model import TwoHotCritic, ValueModel
+from seedmind.agent.world_model import RecurrentWorldModel, RSSMWorldModel, WorldModel
 from seedmind.envs.entities import load_registry
-from seedmind.envs.micro_fouloide_world import MicroFouloideWorld
+from seedmind.envs.micro_fouloide_world import MicroFouloideWorld, OBSTACLE
 from seedmind.memory.experience_buffer import ExperienceBuffer, make_experience
 from seedmind.memory.persistent_memory import PersistentMemory
 from seedmind.objectives import build_objective_scorer
@@ -173,50 +175,121 @@ def build_agent(config: dict, seed: int) -> Agent:
             registry.size, inventory=inventory_enabled,
         )
     actions = _probe_env(config).actions
-    input_dim = grid_size * grid_size * num_channels + num_scalars
+
+    # Egocentric perception: a fixed window centred on the agent makes the
+    # network independent of the world size (and lets the world grow). It crops
+    # the grid before the channel encoders, so it composes with both obs modes.
+    ego_cfg = obs_cfg.get("egocentric", {})
+    egocentric = bool(ego_cfg.get("enabled", False))
+    if egocentric:
+        radius = int(ego_cfg.get("radius", 5))
+        oob_fill = int(ego_cfg.get("oob_fill", OBSTACLE))
+        obs_to_vec_fn, obs_batch_fn = wrap_egocentric(
+            obs_to_vec_fn, obs_batch_fn, radius, oob_fill,
+        )
+        net_grid_size = 2 * radius + 1
+    else:
+        net_grid_size = grid_size
+
+    input_dim = net_grid_size * net_grid_size * num_channels + num_scalars
     structured_latent_features = bool(ac.get("structured_latent_features", False))
     structured_feature_dim = len(causal_feature_names(config)) if structured_latent_features else 0
     structured_feature_env = _probe_env(config) if structured_latent_features else None
+    structured_features_fn = (
+        structured_feature_env.causal_features
+        if structured_feature_env is not None else None
+    )
 
-    encoder = Encoder(
-        grid_size=grid_size,
-        latent_dim=latent_dim,
-        num_entities=num_channels,
-        seed=seed or 0,
-        input_dim=input_dim,
-        obs_to_vec_fn=obs_to_vec_fn,
-        structured_features_fn=(
-            structured_feature_env.causal_features
-            if structured_feature_env is not None else None
-        ),
-        structured_feature_dim=structured_feature_dim,
+    if egocentric:
+        enc_cfg = ac.get("encoder", {})
+        encoder = ConvEncoder(
+            num_channels=num_channels,
+            num_scalars=num_scalars,
+            window_size=net_grid_size,
+            latent_dim=latent_dim,
+            conv_channels=int(enc_cfg.get("conv_channels", 32)),
+            hidden_dim=int(enc_cfg.get("hidden_dim", 256)),
+            seed=seed or 0,
+            obs_batch_fn=obs_batch_fn,
+            structured_features_fn=structured_features_fn,
+            structured_feature_dim=structured_feature_dim,
+        )
+    else:
+        encoder = Encoder(
+            grid_size=grid_size,
+            latent_dim=latent_dim,
+            num_entities=num_channels,
+            seed=seed or 0,
+            input_dim=input_dim,
+            obs_to_vec_fn=obs_to_vec_fn,
+            structured_features_fn=structured_features_fn,
+            structured_feature_dim=structured_feature_dim,
+        )
+    # Recurrent world model (RSSM trajectory): a GRU state h_t gives the agent
+    # memory beyond its egocentric view. deter_dim sizes h_t; the Q-network
+    # receives h_t (recurrent_dim) so the policy can act on memory.
+    recurrent_wm = bool(wmc.get("recurrent", False))
+    rssm_stochastic = recurrent_wm and bool(wmc.get("rssm_stochastic", False))
+    deter_dim = int(wmc.get("deter_dim", 128))
+    wm_causal_dim = (
+        len(causal_feature_names(config)) if bool(cwm.get("enabled", False)) else 0
     )
-    world_model = WorldModel(
-        latent_dim=latent_dim,
-        num_actions=len(actions),
-        hidden_dim=int(wmc.get("hidden_dim", 128)),
-        num_layers=int(wmc.get("num_layers", 2)),
-        causal_feature_dim=(
-            len(causal_feature_names(config)) if bool(cwm.get("enabled", False)) else 0
-        ),
-        num_events=(
-            len(causal_event_names(config)) if bool(cwm.get("predict_events", False)) else 0
-        ),
+    wm_num_events = (
+        len(causal_event_names(config)) if bool(cwm.get("predict_events", False)) else 0
     )
+    if rssm_stochastic:
+        # DreamerV3 stochastic RSSM: state (h, z); embed = the (frozen) encoder latent.
+        world_model = RSSMWorldModel(
+            embed_dim=latent_dim,
+            num_actions=len(actions),
+            stoch=int(wmc.get("rssm_stoch", 32)),
+            discrete=int(wmc.get("rssm_discrete", 32)),
+            deter=deter_dim,
+            hidden=int(wmc.get("hidden_dim", 128)),
+            unimix=float(wmc.get("rssm_unimix", 0.01)),
+            causal_feature_dim=wm_causal_dim,
+            num_events=wm_num_events,
+            reward_twohot=bool(wmc.get("reward_twohot", True)),
+            reward_bins=int(wmc.get("reward_bins", 255)),
+            reward_vmax=float(wmc.get("reward_vmax", 20.0)),
+        )
+    elif recurrent_wm:
+        world_model = RecurrentWorldModel(
+            latent_dim=latent_dim,
+            num_actions=len(actions),
+            hidden_dim=int(wmc.get("hidden_dim", 128)),
+            deter_dim=deter_dim,
+            num_layers=int(wmc.get("num_layers", 2)),
+            causal_feature_dim=wm_causal_dim,
+            num_events=wm_num_events,
+        )
+    else:
+        world_model = WorldModel(
+            latent_dim=latent_dim,
+            num_actions=len(actions),
+            hidden_dim=int(wmc.get("hidden_dim", 128)),
+            num_layers=int(wmc.get("num_layers", 2)),
+            causal_feature_dim=wm_causal_dim,
+            num_events=wm_num_events,
+        )
     from seedmind.agent.curiosity import CuriosityModule
     curiosity = CuriosityModule(
         weight=float(cc.get("weight", 0.5)),
         max_reward=float(cc.get("max_reward", 1.0)),
         enabled=bool(cc.get("enabled", True)),
     )
+    # Feature the policy (actor/critic, and the Q-net's recurrent input) reads:
+    # the model feature feat=[z,h] for the stochastic RSSM, else just h.
+    policy_feat_dim = world_model.feat_dim if rssm_stochastic else deter_dim
     q_network = QNetwork(
-        grid_size=grid_size,
+        grid_size=net_grid_size,
         num_actions=len(actions),
         conv_channels=int(dc.get("conv_channels", 64)),
         hidden_dim=int(dc.get("hidden_dim", 256)),
         num_grid_channels=num_channels,
         num_scalars=num_scalars,
         obs_batch_fn=obs_batch_fn,
+        recurrent_dim=policy_feat_dim if recurrent_wm else 0,
     )
     plc = config.get("planning", {})
     planning_enabled = bool(plc.get("enabled", False))
@@ -227,6 +300,34 @@ def build_agent(config: dict, seed: int) -> Agent:
             hidden_dim=int(vc.get("hidden_dim", 128)),
             num_layers=int(vc.get("num_layers", 2)),
         )
+    # Imagination policy (Dreamer-style): actor + critic over the recurrent
+    # state h_t, trained on imagined rollouts. Requires the recurrent world model.
+    actor = None
+    critic = None
+    if bool(ac.get("imagination_policy", False)) and recurrent_wm:
+        acc = ac.get("actor", {})
+        actor = Actor(
+            input_dim=policy_feat_dim,
+            num_actions=len(actions),
+            hidden_dim=int(acc.get("hidden_dim", 128)),
+            num_layers=int(acc.get("num_layers", 2)),
+        )
+        imc = config.get("imagination", {})
+        if bool(imc.get("critic_twohot", False)):
+            critic = TwoHotCritic(
+                latent_dim=policy_feat_dim,
+                hidden_dim=int(acc.get("critic_hidden_dim", 128)),
+                num_layers=int(acc.get("critic_num_layers", 2)),
+                num_bins=int(imc.get("critic_num_bins", 255)),
+                vmax=float(imc.get("critic_vmax", 20.0)),
+            )
+        else:
+            critic = ValueModel(
+                latent_dim=policy_feat_dim,
+                hidden_dim=int(acc.get("critic_hidden_dim", 128)),
+                num_layers=int(acc.get("critic_num_layers", 2)),
+            )
+
     force_indices, force_thresholds = _planner_force_thresholds(config)
     return Agent(
         encoder=encoder,
@@ -268,6 +369,8 @@ def build_agent(config: dict, seed: int) -> Agent:
         ),
         planner_margin_threshold=float(plc.get("margin_threshold", 0.0)),
         planner_q_advantage_threshold=float(plc.get("q_advantage_threshold", 0.0)),
+        actor=actor,
+        critic=critic,
     )
 
 
