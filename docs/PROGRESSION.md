@@ -4884,6 +4884,21 @@ size-invariant) mais ne survit pas comme le prod. Survie **parkée** (`seedmind-
 Détail : section « Reprise 2026-06-25 » du bilan ; mémoire bd
 `rssm-survie-verdict-budget-2026-06-25`.
 
+### Reprise 26-29 juin 2026 — port DreamerV3 fidèle + déploiement live + le mur de la policy
+
+Plutôt que tuner, on a porté un **DreamerV3 fidèle complet** (RSSM stochastique z+KL,
+twohot critic & reward, normalisation returns percentile, LayerNorm, continue predictor +
+death-discount, schedule d'entropie) — tout opt-in, ~50 tests verts. **Déployé live**
+(cerveau vierge, prod `releaskills:8443`) avec front responsive + dashboard + API
+`/fouloides-stats`. **Acquis** : le WM apprend remarquablement (recon/continue ~1e-4,
+reward-loss 1.9→0.7 à 124k), calibration réparée, size-invariant. **MUR** : la policy ne
+s'engage **pas** vers le fourrage — testé entropie fixe haute (uniforme), fixe basse et
+schedule (commit sur non-fourrage). Cause (probes) : le **prior d'imagination ne
+différencie pas la conséquence-reward de chaque action** → l'avantage de INTERACT n'est
+jamais décisif. Confirmé en prod à 124k (entropie ~1.81, wellbeing ~0.1, record survie
+18221 = variance). **Ce n'est pas une brique/hyperparamètre manquant : vrai mur RL.**
+Bilan complet + pistes de reprise : **`BILAN_DREAMERV3_2026-06-29.md`** ; epic bd `seedmind-10e`.
+
 ---
 
-*Dernière mise à jour : 25 juin 2026*
+*Dernière mise à jour : 29 juin 2026*
