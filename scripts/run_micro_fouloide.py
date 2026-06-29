@@ -197,6 +197,7 @@ def build_agent(config: dict, seed: int) -> Agent:
         oob_fill = int(ego_cfg.get("oob_fill", OBSTACLE))
         obs_to_vec_fn, obs_batch_fn = wrap_egocentric(
             obs_to_vec_fn, obs_batch_fn, radius, oob_fill,
+            reveal_standing=bool(ego_cfg.get("reveal_standing", False)),
         )
         net_grid_size = 2 * radius + 1
     else:

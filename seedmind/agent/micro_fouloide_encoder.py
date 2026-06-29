@@ -200,16 +200,29 @@ def egocentric_grid(
 
 def egocentric_observation(
     observation: Dict[str, Any], radius: int, oob_fill: int = OBSTACLE,
+    reveal_standing: bool = False,
 ) -> Dict[str, Any]:
     """Return ``observation`` with its grid replaced by an egocentric window.
 
     ``agent_pos`` is rewritten to the window centre so downstream consumers
     (channel encoders, memory keys) stay consistent. All other keys — scalar
     drives, ``standing_entity``, inventory — are preserved untouched.
+
+    ``reveal_standing``: in egocentric mode the agent is *always* at the centre,
+    so the AGENT marker on the centre cell carries no information yet HIDES what
+    the agent is standing on (the env overlays AGENT over the resource). With this
+    flag the centre cell shows ``standing_entity`` instead → the conv can tell
+    "I am ON a resource" from "a resource is merely nearby", which the AGENT
+    overlay otherwise destroys (diagnosed: WM confused on-goal with near-goal →
+    no navigation gradient). Opt-in; default preserves the legacy AGENT overlay.
     """
     obs = dict(observation)
     pos = observation.get("agent_pos", (-1, -1))
     obs["grid"] = egocentric_grid(observation["grid"], pos, radius, oob_fill)
+    if reveal_standing:
+        se = int(observation.get("standing_entity", -1))
+        if se >= 0:
+            obs["grid"][int(radius), int(radius)] = se
     # MapMemory channels must be cropped to the same window, else they stay at
     # world size and break the channel concat. Unknown cells: -1 (memory_grid),
     # 0.0 freshness (memory_fresh).
@@ -230,6 +243,7 @@ def wrap_egocentric(
     obs_batch_fn: Callable[[Sequence[Dict[str, Any]]], Tuple[torch.Tensor, torch.Tensor]],
     radius: int,
     oob_fill: int = OBSTACLE,
+    reveal_standing: bool = False,
 ) -> Tuple[
     Callable[[Dict[str, Any]], np.ndarray],
     Callable[[Sequence[Dict[str, Any]]], Tuple[torch.Tensor, torch.Tensor]],
@@ -239,12 +253,16 @@ def wrap_egocentric(
     Crops each observation to a window of side ``2*radius+1`` *before* applying
     the base channel/scalar encoders, so channel and scalar counts are
     unchanged — only the spatial extent shrinks to the fixed window.
+
+    ``reveal_standing`` (opt-in): show ``standing_entity`` on the centre cell
+    instead of the redundant AGENT marker (see ``egocentric_observation``).
     """
     k = int(radius)
     fill = int(oob_fill)
+    reveal = bool(reveal_standing)
 
     def _crop(o: Dict[str, Any]) -> Dict[str, Any]:
-        return egocentric_observation(o, k, fill)
+        return egocentric_observation(o, k, fill, reveal_standing=reveal)
 
     def ego_to_vec(observation: Dict[str, Any]) -> np.ndarray:
         return obs_to_vec_fn(_crop(observation))
