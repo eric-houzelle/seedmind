@@ -76,6 +76,7 @@ def build_env(config: dict, seed: int):
             size=int(ec.get("size", 6)),
             max_steps=int(ec.get("max_steps", 0)),
             num_obstacles=int(ec.get("num_obstacles", 0)),
+            num_goals=int(ec.get("num_goals", 1)),
             goal_reward=float(ec.get("goal_reward", 1.0)),
             step_penalty=float(ec.get("step_penalty", 0.01)),
             noop_penalty=float(ec.get("noop_penalty", 0.02)),

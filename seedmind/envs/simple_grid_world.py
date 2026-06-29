@@ -52,6 +52,7 @@ class SimpleGridWorld(EnvironmentAdapter):
         size: int = 6,
         max_steps: int = 0,           # 0 = pas de timeout (flux online infini)
         num_obstacles: int = 0,
+        num_goals: int = 1,           # nb de cibles simultanées (densifie le reward)
         goal_reward: float = 1.0,
         step_penalty: float = 0.01,
         noop_penalty: float = 0.02,   # INTERACT/REST/WAIT hors cible : léger malus
@@ -61,6 +62,7 @@ class SimpleGridWorld(EnvironmentAdapter):
         self.size = int(size)
         self.max_steps = int(max_steps)
         self.num_obstacles = int(num_obstacles)
+        self.num_goals = max(1, int(num_goals))
         self.goal_reward = float(goal_reward)
         self.step_penalty = float(step_penalty)
         self.noop_penalty = float(noop_penalty)
@@ -105,7 +107,8 @@ class SimpleGridWorld(EnvironmentAdapter):
         ar, ac = self._place_random(AGENT)
         self.agent_pos = (int(ar), int(ac))
         self.grid[ar, ac] = EMPTY  # l'agent n'occupe pas la grille (overlay à l'observe)
-        self._respawn_goal()
+        for _ in range(self.num_goals):
+            self._respawn_goal()
         self._steps = 0
         self._last_event = "reset"
         return self.observe()

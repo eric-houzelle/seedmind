@@ -396,9 +396,21 @@ def train_rssm_world_model(
             feat = world_model.get_feat(post)
             heads = world_model.heads(feat)
             recon_t.append(((heads["recon"] - z[:, k]) ** 2).mean())
-            reward_t.append(world_model.reward_loss(feat, rewards[:, k]))
-            # continue predictor: target = 1 − done (probability the episode goes on)
-            cont_t.append(F.binary_cross_entropy_with_logits(heads["continue"], 1.0 - dones[:, k]))
+            # Reward/continue use the DreamerV3 ARRIVAL convention: r_t / c_t describe
+            # the transition that LANDED in state k (i.e. the consequence of action
+            # a[k-1], which `feat`=post_k encodes via prev_a). The buffer stores
+            # rewards[k]/dones[k] against action a[k] (Gym convention), so the reward
+            # that arrived INTO state k is rewards[k-1]. Regressing feat_k against
+            # rewards[k] (the NEXT action's reward, not yet in the state) would force
+            # the reward head to predict an action-averaged reward — it could never
+            # tell INTERACT-on-resource from anything else, and imagination (which
+            # reads the reward from the post-ACTION state) would be inconsistent with
+            # training. Hence the k-1 shift; step 0 has no in-sequence predecessor.
+            if k >= 1:
+                reward_t.append(world_model.reward_loss(feat, rewards[:, k - 1]))
+                cont_t.append(
+                    F.binary_cross_entropy_with_logits(heads["continue"], 1.0 - dones[:, k - 1])
+                )
             kl, _, _ = world_model.rssm.kl_loss(post, prior, kl_free, kl_dyn_scale, kl_rep_scale)
             kl_t.append(kl)
             if feature_deltas is not None and "causal_feature_delta" in heads:
@@ -408,8 +420,8 @@ def train_rssm_world_model(
             state = post
 
         recon = torch.stack(recon_t).mean()
-        reward = torch.stack(reward_t).mean()
-        cont = torch.stack(cont_t).mean()
+        reward = torch.stack(reward_t).mean() if reward_t else torch.zeros((), device=device)
+        cont = torch.stack(cont_t).mean() if cont_t else torch.zeros((), device=device)
         kl = torch.stack(kl_t).mean()
         feat_loss = torch.stack(feat_t).mean() if feat_t else torch.zeros((), device=device)
         event_loss = torch.stack(event_t).mean() if event_t else torch.zeros((), device=device)
