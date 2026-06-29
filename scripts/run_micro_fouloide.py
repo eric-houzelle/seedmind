@@ -68,8 +68,20 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def build_env(config: dict, seed: int) -> MicroFouloideWorld:
+def build_env(config: dict, seed: int):
     ec = config.get("env", {})
+    if str(ec.get("type", "micro_fouloide")) == "simple_grid":
+        from seedmind.envs.simple_grid_world import SimpleGridWorld
+        return SimpleGridWorld(
+            size=int(ec.get("size", 6)),
+            max_steps=int(ec.get("max_steps", 0)),
+            num_obstacles=int(ec.get("num_obstacles", 0)),
+            goal_reward=float(ec.get("goal_reward", 1.0)),
+            step_penalty=float(ec.get("step_penalty", 0.01)),
+            noop_penalty=float(ec.get("noop_penalty", 0.02)),
+            visibility_radius=ec.get("visibility_radius", None),
+            seed=seed,
+        )
     return MicroFouloideWorld(
         size=int(ec.get("size", 16)),
         max_steps=int(ec.get("max_steps", 500)),
