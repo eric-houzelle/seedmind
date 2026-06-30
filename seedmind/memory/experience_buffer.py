@@ -164,6 +164,42 @@ class ExperienceBuffer:
         order = sorted(range(len(self._data)), key=total_reward, reverse=True)
         return [self._data[i] for i in order[:batch_size]]
 
+    def sample_sequences_high_reward(self, batch_size: int, seq_len: int) -> List[List[Dict[str, Any]]]:
+        """Sequences (length ``seq_len``) that **end** at high-reward transitions.
+
+        Used to bias imagination start states toward reward-relevant (e.g. on-goal)
+        states. In a sparse world only ~few % of buffer states are on-goal, so a
+        uniform start sample dilutes the reward signal below the critic's noise floor
+        (V collapses to a state-independent constant). Anchoring some starts on the
+        highest-reward transitions makes the critic see the reward often enough to
+        learn ``V(near-goal) > V(far)`` — the gradient navigation needs.
+        """
+        if not self._data or seq_len < 1:
+            return []
+
+        def total_reward(i: int) -> float:
+            e = self._data[i]
+            return e.get("reward_external", 0.0) + e.get("reward_intrinsic", 0.0)
+
+        order = sorted(range(len(self._data)), key=total_reward, reverse=True)
+        sequences: List[List[Dict[str, Any]]] = []
+        for i in order[: max(batch_size * 8, 32)]:
+            if len(sequences) >= batch_size:
+                break
+            anchor = self._data[i]
+            episode_id = str(anchor.get("episode_id"))
+            end_step = int(anchor.get("step", 0))
+            steps = self._episode_index.get(episode_id, {})
+            seq: List[Dict[str, Any]] = []
+            for off in range(seq_len - 1, -1, -1):  # build the context ending at the anchor
+                idx = steps.get(end_step - off)
+                if idx is None:
+                    break
+                seq.append(self._data[idx])
+            if len(seq) == seq_len and not any(t.get("done", False) for t in seq[:-1]):
+                sequences.append(seq)
+        return sequences
+
     def sample_causal(self, batch_size: int) -> List[Dict[str, Any]]:
         """Sample informative causal transitions without world-specific rules.
 

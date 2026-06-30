@@ -48,8 +48,21 @@ def _sample_start_states(world_model, buffer, batch_size, context_len, device, m
     possibly degenerate — policy. The narrow ``final``-only start distribution
     starves REINFORCE of off-target starts → it learns the marginal ("INTERACT pays
     on average") instead of the conditional policy (the couche-5 local optimum).
+
+    ``mode="highreward"``: like ``all`` but half the sequences end at high-reward
+    (e.g. on-goal) transitions. In a sparse world reward-relevant states are a few %
+    of the buffer, so uniform starts dilute the reward signal below the critic's
+    noise floor (V → state-independent constant). Anchoring half the starts on
+    reward gives the critic enough on-goal returns to learn ``V(near) > V(far)``.
     """
-    sequences = buffer.sample_sequences(batch_size, context_len)
+    if mode == "highreward":
+        half = max(1, batch_size // 2)
+        sequences = (
+            buffer.sample_sequences_high_reward(half, context_len)
+            + buffer.sample_sequences(batch_size - half, context_len)
+        )
+    else:
+        sequences = buffer.sample_sequences(batch_size, context_len)
     sequences = [
         s for s in sequences
         if all(t.get("latent_state") is not None and t.get("action_index") is not None for t in s)
@@ -74,7 +87,7 @@ def _sample_start_states(world_model, buffer, batch_size, context_len, device, m
         else:
             state = world_model.observe_step(z[:, k], prev_a, state)
         posts.append(state)
-    if mode == "all":
+    if mode in ("all", "highreward"):
         return _stack_states(posts)  # B·L diverse starts (DreamerV3-faithful)
     return state  # warmed final state: h (deterministic) or (h,z) dict (RSSM)
 

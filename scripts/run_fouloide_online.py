@@ -347,6 +347,8 @@ def main() -> None:
                         help="Override imagination.entropy_coef (Dreamer exploration bonus).")
     parser.add_argument("--horizon", type=int, default=None,
                         help="Override imagination.horizon (imagined rollout length).")
+    parser.add_argument("--start-states", default=None,
+                        help="Override imagination.start_states (final|all|highreward).")
     parser.add_argument("--resume", default=None,
                         help="checkpoint online à reprendre")
     args = parser.parse_args()
@@ -360,6 +362,9 @@ def main() -> None:
     if args.horizon is not None:
         config.setdefault("imagination", {})["horizon"] = int(args.horizon)
         print(f"[override] imagination.horizon = {args.horizon}")
+    if args.start_states is not None:
+        config.setdefault("imagination", {})["start_states"] = str(args.start_states)
+        print(f"[override] imagination.start_states = {args.start_states}")
     out_dir = Path(args.out_dir or f"runs/fouloide_online_seed{args.seed}")
     out_dir.mkdir(parents=True, exist_ok=True)
 

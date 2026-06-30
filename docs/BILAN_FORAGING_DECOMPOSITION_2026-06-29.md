@@ -138,3 +138,50 @@ le **régime DreamerV3 complet** (§6.1, replay + envs parallèles + GPU — pro
 issue `seedmind-10e.5`) ou l'admettre comme **limite d'approche**. Le world-model — la partie
 dure et générique — marche, est size-invariant, déployé : c'est le livrable. Code `start_states`
 conservé (infra fidèle, opt-in).
+
+**⚠️ CET ADDENDUM EST DÉPASSÉ — voir §9.** Le verdict ci-dessus reposait encore sur des évals
+greedy biaisées par un bug de checkpoint (l'actor n'était jamais sauvegardé). Cf. §9.
+
+---
+
+## 9. Addendum 2026-06-30 (suite) — DEUX causes racines, dont un bug
+
+Après le résultat négatif de `start_states`, j'ai voulu comprendre *pourquoi* l'actor était
+uniforme à l'éval. Deux découvertes successives **invalident la majeure partie du tableau
+de réfutations** (qui testait via une éval cassée) :
+
+### 9.1 — CAUSE RACINE #1 : bug de checkpoint (artefact d'éval) 🟢 CORRIGÉ
+`save_checkpoint`/`load_checkpoint` (`checkpointing.py`) ne persistaient **ni `agent.actor`
+ni `agent.critic`** (l'actor-critic d'imagination). L'actor s'entraînait puis était **jeté
+au save** → toute éval via `sess.resume()` chargeait un actor **vierge** (uniforme, entropie
+ln7 exacte) → 0 collecte greedy. **Toute la saga couche 5 évaluait un réseau non entraîné**
+— comme l'off-by-one, un bug mécanique. Non détecté car `test_session_save_and_resume_roundtrip`
+est cassé en amont par le bug `reward_key`. **Fix (commit 0ac3381)** : actor/critic + optimizers
++ target_critic EMA persistés ; round-trip vérifié. Issue `seedmind-cto` (P0).
+
+Avec le vrai actor enfin évalué (DreamerV3 se déploie en **échantillonnant**, pas en argmax) :
+la policy **échantillonnée collecte ~3× l'aléatoire** (dense ET éparse) → **elle apprend**.
+
+### 9.2 — CAUSE RACINE #2 : la représentation n'encode pas la position de la cible
+Le critic reste constant (V(on)=V(off)) même biaisé sur des départs on-cible (`start_states=
+highreward`). Probe décisif (états réels labellisés par distance-à-cible, monde éparse) :
+
+| Représentation | R² (probe linéaire frais → distance) |
+|---|---|
+| observation → **encodeur (64d)** | **+0.26** (faible) |
+| → **feat RSSM (1152d)** | **−0.42** (≈ bruit) |
+| · `h` déterministe (128d) | **+0.00** |
+| · `z` stochastique (1024d) | **−0.39** |
+
+`corr(V, distance) = −0.05`, V identique de dist 0 à 7. **La position relative de la cible est
+faiblement captée par l'encodeur puis ENTIÈREMENT perdue dans le goulot RSSM.** L'actor et le
+critic consomment le feat → ils naviguent **à l'aveugle**. Le critic constant n'est pas un bug
+de crédit : son entrée ne contient pas l'information de navigation. Cohérent avec
+`rssm-survie-verdict-budget` (« perception égocentrée = désavantage structurel »).
+
+**Conséquence** : le « mur couche 5 » = bug de checkpoint (artefact) **+** limite de
+représentation/perception (le WM n'encode pas la position de la cible). Le levier réel n'est
+ni l'actor-critic, ni le critic, ni la couverture : c'est **faire encoder la position de la
+cible par la représentation** (encodeur spatial / loss auxiliaire / goulot RSSM). Travail
+côté world-model, identifié et borné. Mémoires : `couche5-cause-racine-checkpoint-2026-06-30`,
+`couche5-representation-aveugle-2026-06-30`.
