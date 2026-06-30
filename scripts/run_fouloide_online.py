@@ -290,6 +290,9 @@ class OnlineFouloideSession:
             target_network=learner.target_network,
             value_optimizer=learner.value_optimizer,
             target_value_model=learner.target_value_model,
+            actor_optimizer=learner.actor_optimizer,
+            critic_optimizer=learner.critic_optimizer,
+            target_critic=learner.target_critic,
         )
         tmp.replace(target)
 
@@ -303,6 +306,9 @@ class OnlineFouloideSession:
             target_network=learner.target_network,
             value_optimizer=learner.value_optimizer,
             target_value_model=learner.target_value_model,
+            actor_optimizer=learner.actor_optimizer,
+            critic_optimizer=learner.critic_optimizer,
+            target_critic=learner.target_critic,
         )
         m = info.get("metrics", {})
         self.steps = int(m.get("session_steps", 0))

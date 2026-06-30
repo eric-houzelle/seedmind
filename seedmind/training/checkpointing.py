@@ -30,6 +30,9 @@ def save_checkpoint(
     latent_q_network: Optional[Any] = None,
     latent_q_optimizer: Optional[torch.optim.Optimizer] = None,
     target_latent_q_network: Optional[Any] = None,
+    actor_optimizer: Optional[torch.optim.Optimizer] = None,
+    critic_optimizer: Optional[torch.optim.Optimizer] = None,
+    target_critic: Optional[Any] = None,
 ) -> None:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -76,6 +79,18 @@ def save_checkpoint(
         payload["target_latent_q_network_state"] = target_latent_q_network.state_dict()
     if latent_q_optimizer is not None:
         payload["latent_q_optimizer_state"] = latent_q_optimizer.state_dict()
+    # Imagination actor-critic (DreamerV3 policy). Without these the trained policy
+    # is silently dropped on save → eval/resume loads a fresh random actor (uniform).
+    if getattr(agent, "actor", None) is not None:
+        payload["actor_state"] = agent.actor.state_dict()
+    if getattr(agent, "critic", None) is not None:
+        payload["critic_state"] = agent.critic.state_dict()
+    if actor_optimizer is not None:
+        payload["actor_optimizer_state"] = actor_optimizer.state_dict()
+    if critic_optimizer is not None:
+        payload["critic_optimizer_state"] = critic_optimizer.state_dict()
+    if target_critic is not None:
+        payload["target_critic_state"] = target_critic.state_dict()
 
     torch.save(payload, p)
 
@@ -92,6 +107,9 @@ def load_checkpoint(
     latent_q_network: Optional[Any] = None,
     latent_q_optimizer: Optional[torch.optim.Optimizer] = None,
     target_latent_q_network: Optional[Any] = None,
+    actor_optimizer: Optional[torch.optim.Optimizer] = None,
+    critic_optimizer: Optional[torch.optim.Optimizer] = None,
+    target_critic: Optional[Any] = None,
 ) -> Dict[str, Any]:
     payload = torch.load(path, map_location="cpu", weights_only=False)
 
@@ -134,6 +152,17 @@ def load_checkpoint(
         target_latent_q_network.load_state_dict(payload["target_latent_q_network_state"])
     if latent_q_optimizer is not None and "latent_q_optimizer_state" in payload:
         latent_q_optimizer.load_state_dict(payload["latent_q_optimizer_state"])
+    # Imagination actor-critic (DreamerV3 policy).
+    if getattr(agent, "actor", None) is not None and "actor_state" in payload:
+        agent.actor.load_state_dict(payload["actor_state"])
+    if getattr(agent, "critic", None) is not None and "critic_state" in payload:
+        agent.critic.load_state_dict(payload["critic_state"])
+    if actor_optimizer is not None and "actor_optimizer_state" in payload:
+        actor_optimizer.load_state_dict(payload["actor_optimizer_state"])
+    if critic_optimizer is not None and "critic_optimizer_state" in payload:
+        critic_optimizer.load_state_dict(payload["critic_optimizer_state"])
+    if target_critic is not None and "target_critic_state" in payload:
+        target_critic.load_state_dict(payload["target_critic_state"])
 
     return {
         "metrics": payload.get("metrics", {}),
@@ -141,4 +170,5 @@ def load_checkpoint(
         "has_q_network": "q_network_state" in payload,
         "has_value_model": "value_model_state" in payload,
         "has_latent_q_network": "latent_q_network_state" in payload,
+        "has_actor": "actor_state" in payload,
     }
