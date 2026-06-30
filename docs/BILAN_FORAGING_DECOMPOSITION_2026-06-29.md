@@ -185,3 +185,24 @@ ni l'actor-critic, ni le critic, ni la couverture : c'est **faire encoder la pos
 cible par la représentation** (encodeur spatial / loss auxiliaire / goulot RSSM). Travail
 côté world-model, identifié et borné. Mémoires : `couche5-cause-racine-checkpoint-2026-06-30`,
 `couche5-representation-aveugle-2026-06-30`.
+
+### 9.3 — Localisation fine + fix cheap RÉFUTÉ → le vrai fix est un redesign WM
+L'encodeur est **gelé** (projection aléatoire fixe, `encoder.py:337`). Étage par étage :
+features **conv** (3872d, random) → distance **R²=0.65** (la position y est !), mais la
+**projection aléatoire figée → 64d** l'écrase à **R²=0.09**. Fix cheap tenté : élargir
+`latent_dim` 64→256 (`simple_grid_sparse_wide.yaml`, run `w1_sparse_wide256_12k`).
+
+**Résultat : embed R² 0.09→0.38 (le fix prend au niveau embed) MAIS navigation INCHANGÉE**
+(critic constant V=−0.346 ∀dist, collecte ~4/1000 ≈ 3× aléatoire, greedy 0). Mesure fiable
+(PCA-48+ridge) : embed R²=0.37 **mais feat RSSM R²=−0.02**, `h` déterministe **R²=0.00**.
+`recon(feat→embed)` parfait (0.00008) : le décodeur *entraîné* récupère l'embed, mais la
+position vit dans `z` (catégoriel) sous une forme **inexploitable** par un probe propre comme
+par les MLP actor/critic, et **n'atteint jamais `h`**.
+
+**Verdict** : améliorer la capacité de la représentation ne suffit pas — la position, même
+présente dans l'embed, ne se propage pas en `h` et reste inutilisable dans `z`. Les leviers
+cheap sont épuisés (checkpoint #1 corrigé ; start_states all+highreward, critic/crédit,
+couverture, largeur encodeur : tous réfutés). **Le vrai fix = redesign façon DreamerV3 :
+encodeur ENTRAÎNABLE + reconstruction de l'OBSERVATION** (pas de l'embed) → le latent
+s'organise pour exposer la position de façon utilisable par la policy. Projet délibéré.
+Mémoire : `couche5-latent-width-refute-2026-06-30`.

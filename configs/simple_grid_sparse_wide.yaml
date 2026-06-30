@@ -1,0 +1,124 @@
+project:
+  name: SeedMind
+
+# === W1-SPARSE — instrument de diagnostic couche 5 (navigation pure) =============
+# MÊME cerveau/stack que simple_grid_dense_reveal.yaml, SEULE différence : num_goals=1.
+#
+# POURQUOI : le monde DENSE (10 cibles/36 cases) a une valeur d'état quasi-PLATE
+# (une cible est toujours à 1-2 pas) -> presque aucun gradient de valeur pour guider
+# la navigation -> mauvais instrument pour tester le crédit multi-pas (couche 5).
+# Avec UNE cible visible (grille 6×6 ⊂ fenêtre 11×11, toujours observable), la valeur
+# DOIT être discriminante (haute près de la cible, basse loin) -> si le critic l'apprend,
+# l'actor navigue ; sinon, on isole proprement le problème de crédit, sans le confound
+# de densité. C'est aussi la tâche de navigation canonique.
+
+env:
+  type: simple_grid
+  size: 6
+  max_steps: 0              # flux online infini (la cible réapparaît ailleurs à chaque collecte)
+  visibility_radius: null   # pas de brouillard : tout est visible dans la fenêtre
+  num_obstacles: 0
+  num_goals: 1              # <<< ÉPARS : une seule cible -> vraie structure spatiale à apprendre
+  goal_reward: 1.0
+  step_penalty: 0.01
+  noop_penalty: 0.02
+
+agent:
+  latent_dim: 256        # élargi: la projection aléatoire 64d détruisait la position (R²0.09 vs conv 0.65); 256 -> R²~0.30
+  memory_top_k: 5
+  observation:
+    egocentric:
+      enabled: true
+      radius: 5
+      reveal_standing: true   # case centrale = entité sous l agent (au lieu de AGENT) -> "sur cible" net
+  encoder:
+    conv_channels: 32
+  imagination_policy: true
+  actor:
+    hidden_dim: 128
+    num_layers: 2
+
+imagination:
+  horizon: 15
+  context_len: 8
+  lambda: 0.95
+  entropy_coef: 0.001
+  entropy_coef_start: 0.03
+  entropy_coef_end: 0.001
+  entropy_decay_steps: 15000
+  advantage_norm: percentile
+  start_states: all
+  critic_twohot: true
+  critic_num_bins: 255
+  critic_vmax: 5.0
+  actor_lr: 0.0004
+  critic_lr: 0.0004
+
+world_model:
+  enabled: true
+  recurrent: true
+  rssm_stochastic: true
+  rssm_stoch: 32
+  rssm_discrete: 32
+  reward_twohot: true
+  reward_vmax: 2.0
+  kl_free: 1.0
+  kl_dyn_scale: 0.5
+  kl_rep_scale: 0.1
+  deter_dim: 128
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+  sampler: causal
+  uncertainty_head_updates_per_train: 2
+  reward_key: reward_learning
+
+causal_world_model:
+  enabled: false
+
+value_model:
+  enabled: false
+
+curiosity:
+  enabled: true
+  weight: 0.5
+  max_reward: 1.0
+
+drive_reward:
+  enabled: false
+
+resource_reward:
+  enabled: false
+
+policy:
+  type: epsilon_greedy
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay_steps: 10000
+
+planning:
+  enabled: false
+
+dqn:
+  enabled: true
+  conv_channels: 64
+  hidden_dim: 256
+  learning_rate: 0.0005
+  gamma: 0.97
+  batch_size: 64
+  target_update: 500
+  double_dqn: true
+  sampler: causal
+  curiosity_weight: 1.0
+  reward_key: reward_learning
+
+online:
+  update_every: 8
+  updates_per_cycle: 4
+  seq_len: 16
+  burn_in: 8
+  warmup_steps: 1000
+  threshold_refresh_steps: 500
+  threshold_quantile: 0.60
+  threshold_samples: 2000
