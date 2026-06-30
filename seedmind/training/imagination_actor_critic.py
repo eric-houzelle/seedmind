@@ -24,9 +24,31 @@ _ZERO = {"actor_loss": 0.0, "critic_loss": 0.0, "entropy": 0.0,
          "imag_return": 0.0, "updates": 0.0}
 
 
+def _stack_states(states):
+    """Concatenate a list of recurrent states along the batch dim.
+
+    Handles both the stochastic RSSM ``State`` (dict of batch-leading tensors) and
+    the deterministic model's plain ``h`` tensor. ``L`` states of batch ``B`` → one
+    state of batch ``B·L``.
+    """
+    if isinstance(states[0], dict):
+        return {k: torch.cat([s[k] for s in states], dim=0) for k in states[0]}
+    return torch.cat(states, dim=0)
+
+
 @torch.no_grad()
-def _sample_start_states(world_model, buffer, batch_size, context_len, device):
-    """Realistic starting recurrent states: roll the WM over real sequences."""
+def _sample_start_states(world_model, buffer, batch_size, context_len, device, mode="final"):
+    """Realistic starting recurrent states: roll the WM over real sequences.
+
+    ``mode="final"`` (legacy): return only the warmed final state of each sequence
+    → ``B`` starts. ``mode="all"`` (DreamerV3-faithful): flatten **every** posterior
+    state along the sequence → ``B·L`` starts. DreamerV3 imagines from the flattened
+    ``(B, T)`` posterior batch precisely so the actor sees the whole *visited*
+    distribution (including off-target states), not just the tail of the current —
+    possibly degenerate — policy. The narrow ``final``-only start distribution
+    starves REINFORCE of off-target starts → it learns the marginal ("INTERACT pays
+    on average") instead of the conditional policy (the couche-5 local optimum).
+    """
     sequences = buffer.sample_sequences(batch_size, context_len)
     sequences = [
         s for s in sequences
@@ -44,12 +66,16 @@ def _sample_start_states(world_model, buffer, batch_size, context_len, device):
     ).to(device)
     rssm = hasattr(world_model, "get_feat")  # stochastic RSSM has the (h,z) feature
     state = world_model.initial_state(B, device=device)
+    posts = []
     for k in range(L):
         prev_a = torch.zeros(B, dtype=torch.long, device=device) if k == 0 else a[:, k - 1]
         if rssm:
             state, _prior = world_model.observe_step(z[:, k], prev_a, state)
         else:
             state = world_model.observe_step(z[:, k], prev_a, state)
+        posts.append(state)
+    if mode == "all":
+        return _stack_states(posts)  # B·L diverse starts (DreamerV3-faithful)
     return state  # warmed final state: h (deterministic) or (h,z) dict (RSSM)
 
 
@@ -139,6 +165,7 @@ def train_imagination_actor_critic(
     advantage_norm: str = "return_range",
     ret_decay: float = 0.99,
     critic_symlog: bool = True,
+    start_states: str = "final",
 ) -> Dict[str, float]:
     """Run ``num_updates`` actor-critic updates over imagined rollouts.
 
@@ -172,7 +199,7 @@ def train_imagination_actor_critic(
     done = 0
 
     for _ in range(num_updates):
-        start_h = _sample_start_states(world_model, buffer, batch_size, context_len, device)
+        start_h = _sample_start_states(world_model, buffer, batch_size, context_len, device, mode=start_states)
         if start_h is None:
             continue
 

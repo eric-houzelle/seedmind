@@ -46,6 +46,7 @@ imagination:
   entropy_coef_end: 0.001
   entropy_decay_steps: 15000   # tâche facile → on laisse commiter plus tôt
   advantage_norm: percentile
+  start_states: all      # DreamerV3-faithful: imaginer depuis TOUS les B×L états posterior (couverture), pas le seul final -> sort l'actor de l'optimum local 'INTERACT sur place'
   critic_twohot: true
   critic_num_bins: 255
   critic_vmax: 5.0       # idem critic (returns ~quelques unités)

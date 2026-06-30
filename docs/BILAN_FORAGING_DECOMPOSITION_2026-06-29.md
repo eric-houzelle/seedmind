@@ -68,6 +68,9 @@ dans l'imaginaire) mais la policy apprise (argmax) reste bloquée → 0 collecte
 8. **Plan2Explore** — l'`uncertainty_head` est plat (mean 0.775, std 0.05) car le
    monde trivial est entièrement modélisé → aucune incertitude à exploiter. Plan2Explore
    est l'outil des mondes **sous-explorés** ; ici le problème est la **policy**, pas le monde.
+9. **Couverture des états de départ d'imagination** (2026-06-30) — imaginer depuis
+   **tous** les `B×L` états posterior au lieu du seul état final (`start_states=all`,
+   fidèle à DreamerV3) : **testé, négatif** (voir §8).
 
 ## 6. Recommandations (structurelles, pas des correctifs)
 
@@ -94,5 +97,44 @@ EVAL_CKPT=runs/w1_reveal_12k/checkpoint_online.pt .venv/bin/python scripts/diagn
 ```
 
 Mémoires bd : `mur-policy-v3-deux-mecanismes`, `reward-off-by-one-cause-racine`,
-`trois-couches-du-mur`, `couche3-critic-proximale`, `couche3-model-exploitation` (2026-06-29).
+`trois-couches-du-mur`, `couche3-critic-proximale`, `couche3-model-exploitation` (2026-06-29),
+`couche5-startstates-refute-2026-06-30`.
 NB : MPS fuit la mémoire sur les longs entraînements RSSM → **CPU obligatoire** pour les runs.
+
+---
+
+## 8. Addendum 2026-06-30 — la couverture des départs réfutée (couche 5 reste structurelle)
+
+**Hypothèse testée** : l'actor commit sur la marginale (« INTERAGIR sur place ») parce
+qu'il imagine depuis trop peu d'états — notre `_sample_start_states` ne gardait que
+l'état **final** de chaque séquence (`B` départs), là où DreamerV3 imagine depuis **tous**
+les `B×T` états posterior aplatis (couverture large de la distribution visitée). C'est la
+seule **divergence de fidélité** claire trouvée en comparant notre actor-critic à la
+référence (le REINFORCE pour actions discrètes, lui, est *correct* en DreamerV3 — le
+gradient-à-travers-la-dynamique n'est que pour le continu, donc §6.2 était une fausse piste).
+
+**Fix** (opt-in, fidèle) : `imagination.start_states=all` → `_sample_start_states(mode="all")`
+aplatit les `B×L` états posterior (`_stack_states`). Défaut `final` inchangé (fouloïde
+déployé + ~50 tests bit-à-bit intacts).
+
+**Résultat : NÉGATIF.** Run `w1_reveal_startall_12k` (config `simple_grid_dense_reveal` +
+`start_states=all`), éval greedy :
+
+- **0 collecte** (vs aléatoire 24.6/1000) ; policy = `INTERACT`(4232) + `REST`(768), **jamais MOVE**.
+- `imag_return` **0 → 10** (la policy *échantillonnée* collecte dans l'imaginaire),
+  `imag_entropy` 1.95 → 0.94, mais `critic_loss` **monte** 0.21 → 2.29 → ~1.7 : le critic
+  **ne converge pas** sur un monde *trivial* — il chasse une cible qui grandit.
+
+**Pourquoi ça réfute la couverture** : quand `imagination_policy=true`, l'epsilon-greedy est
+**court-circuité** (`agent.py:186` échantillonne l'actor, `greedy=False`) — l'agent bougeait
+donc déjà via sampling (`entropy` 0.94), le buffer avait **déjà** de la couverture off-cible,
+et `start_states=all` l'a encore élargie. La couverture **n'était pas** le verrou.
+(Artefact repéré : l'`epsilon` loggé reste 1.0, jamais utilisé sur ce chemin.)
+
+**Verdict** : la couche 5 est la **scission sampled-collecte / greedy-collapse** + un critic
+non convergent — le cœur dur du model-based RL (crédit/policy). **8 hypothèses réfutées**
+en session (les 8 ci-dessus + la couverture). Le patching online ne la craquera pas. Restent :
+le **régime DreamerV3 complet** (§6.1, replay + envs parallèles + GPU — projet délibéré,
+issue `seedmind-10e.5`) ou l'admettre comme **limite d'approche**. Le world-model — la partie
+dure et générique — marche, est size-invariant, déployé : c'est le livrable. Code `start_states`
+conservé (infra fidèle, opt-in).
