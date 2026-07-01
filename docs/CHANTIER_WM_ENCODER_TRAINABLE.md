@@ -131,6 +131,30 @@ où est la valeur, l'actor ne grimpe pas le gradient.
 **→ Branche §5 confirmée** : le verrou résiduel est le **crédit/policy**, désormais proprement
 isolé (représentation levée) → `seedmind-10e.5`. Mémoire : `couche5-obsrecon-encodeur-2026-07-01`.
 
+## 9. Suivi — isolation du verrou résiduel (2026-07-01)
+
+Outil ajouté : `scripts/diagnostics/probe_actor_navigation.py` (l'actor tracke-t-il la
+cible, ou colle-t-il à la marginale ?). Sur le checkpoint 12k il **réfute** « l'actor
+ignore le critic » : il a **appris la structure conditionnelle** — corr(P(R)−P(L), dc)=
++0.49 (nav horizontale), +0.22 (verticale), P(INTERACT | **sur** la cible)=0.35 vs 0.001
+loin — mais trop mollement pour chaîner (argmax sur la cible = WAIT, pas INTERACT).
+
+Hypothèse testée : **sous-affûtage** (`entropy_decay_steps=15000` > run 12000 → entropie
+jamais au plancher). Test : reprise 12k→24k (`runs/w1_obsrecon_24k`), entropie au plancher
+0.001 dès 15k. **RÉFUTÉE** — le sharpening **empire** la collecte (1.6 → ~0/1000). La
+policy se committe (entropie/état 0.88→0.29, dépendance +0.40→+1.02) mais vers un **mauvais
+attracteur** : `MOVE_DOWN=0.000` (n'atteint jamais une cible en-dessous), argmax sur la
+cible = MOVE_LEFT (elle **quitte** la cible). Représentation stable (embed 0.70, feat 0.31).
+
+**Verrou résiduel isolé = model-exploitation / imagination-reality gap.** `imag_return`
+reste ~2.6 alors que la collecte **réelle** est nulle : l'actor optimise un retour *imaginé*
+que le world model hallucine mais qui ne transfère pas au réel (cf. mémoire
+`couche3-model-exploitation`). C'est la classe `seedmind-10e.5` (fidélité du WM en
+imagination), **pas** la représentation ni un simple réglage d'entropie. Diagnostic
+CPU-friendly ; mitigations CPU à tenter avant le régime GPU (horizon d'imagination,
+posterior-in-imagination, calibration de la reward-head, équilibrage KL).
+Mémoire : `couche5-actor-sous-affute-2026-07-01`.
+
 ## 7. Références
 
 - Bilan : `docs/BILAN_FORAGING_DECOMPOSITION_2026-06-29.md` §8–§9 (chaîne causale complète).
