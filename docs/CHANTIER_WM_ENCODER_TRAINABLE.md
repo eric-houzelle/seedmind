@@ -191,14 +191,24 @@ C'est *exactement* pourquoi le sharpening empire (§9). L'`imag_return≈2.6` du
 est encore plus haut que `G_imag` reward-only car la λ-return injecte le bootstrap d'un
 critic inflé (V≈2.6) — **levier distinct** (runaway-bootstrap, `couche5-cause-racine-checkpoint`).
 
-**Leviers CPU classés par la sonde** (opt-in, à tester un à un en mesurant) :
-1. **Pénaliser l'imagination par l'incertitude** — `corr(unc, reward imaginé) > 0` et se
-   renforce dans le régime d'échec → déflate *spécifiquement* le retour halluciné
-   (« Plan2Explore inversé », déjà flaggé par `couche3-model-exploitation`). `uncertainty_head`
-   existe déjà (softplus). **Premier candidat.**
-2. **Horizon d'imagination plus court** — la rampe est monotone, le gros de l'hallucination
-   s'accumule aux pas profonds (8–15).
-3. **Resserrer la KL dynamique** — rapproche le prior du posterior (nécessite un ré-entraînement WM).
+**⚠️ Le levier « pénaliser par l'incertitude » n'est PAS viable tel quel.** Lecture code :
+pour le WM RSSM, l'`uncertainty_head` n'est **jamais entraînée** (`_update_models` délègue
+à `_update_models_recurrent` et `return` avant l'appel `train_world_model_uncertainty_head`,
+online.py:295/320 ; et `train_rssm_world_model` ne l'inclut pas dans sa loss). Le réglage
+`uncertainty_head_updates_per_train: 2` est **mort** pour le chemin RSSM. La tête est donc
+une projection linéaire **aléatoire** → la corr(unc, reward imaginé)=+0.24/+0.31 est un
+**artefact** (la magnitude du feat croît off-manifold), pas un signal épistémique. Utiliser
+ce levier exigerait d'abord d'entraîner une vraie tête d'erreur/désaccord (Plan2Explore).
+Mémoire : `couche5-uncertainty-head-morte-rssm-2026-07-01`.
+
+**Leviers CPU classés (opt-in, à tester un à un en mesurant) :**
+1. **Horizon d'imagination plus court** — config-only (`--horizon` / `imagination.horizon`),
+   zéro risque représentation, attaque directement le compounding monotone (le gros de
+   l'hallucination s'accumule aux pas profonds 8–15). **Premier test** : run `w1_obsrecon_h6_12k`.
+2. **Resserrer la KL dynamique** (`kl_dyn_scale`) — rapproche le prior du posterior → moins de
+   dérive par pas (attaque la racine). Config-only mais ré-entraîne le WM ; risque = collapse
+   de la représentation → re-vérifier `probe_goal_distance` après.
+3. **Vraie tête d'incertitude/désaccord** (Plan2Explore) puis pénalité — plus de travail (code).
 4. Reward-head (`reward_vmax`/bins) — **déprioritisé** : la head est calibrée on-manifold.
 
 ⚠️ La « dérive `|feat_prior−feat_post|≈6.7` » est quasi constante 12k↔24k alors que
