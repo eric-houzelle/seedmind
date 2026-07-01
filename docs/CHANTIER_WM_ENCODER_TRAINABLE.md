@@ -155,6 +155,58 @@ CPU-friendly ; mitigations CPU à tenter avant le régime GPU (horizon d'imagina
 posterior-in-imagination, calibration de la reward-head, équilibrage KL).
 Mémoire : `couche5-actor-sous-affute-2026-07-01`.
 
+## 10. Localisation du model-exploitation (2026-07-01, seedmind-10e.7)
+
+Nouvelle sonde `scripts/diagnostics/probe_imag_real_gap.py` (CPU) : pilote l'actor
+**une fois** dans l'env réel puis décompose l'écart imaginé↔réel. Ici
+`reward_learning == reward` extrinsèque pur (drive/resource off) et la reward-head
+RSSM est entraînée **sans** curiosité → l'imaginé se compare directement au reward
+de l'env.
+
+**[A] La reward-head est BIEN calibrée one-step** (teacher-forced sur la trajectoire
+réellement visitée) — donc **pas** la cause primaire :
+
+| Mesure (12k / 24k) | 12k | 24k affûté |
+|---|---|---|
+| `r_post` (head sur le vrai latent suivant) vs `r_real` | −0.005 / −0.010 | −0.002 / −0.012 |
+| reward prédit sur les VRAIES collectes (`r_real=+1`) | +0.83 | +0.99 |
+| fuite hors-cible (`r_prior` sur `r_real≤0`) | −0.006 (négatif) | −0.003 (négatif) |
+
+**[B] L'hallucination = dérive prior COMPOSÉE.** Sur un rollout imaginé libre de H=15
+pas sous l'actor, le reward imaginé **monte monotone avec la profondeur** alors que le
+réel reste plat à ~−0.011 :
+
+| Mesure | 12k | 24k affûté |
+|---|---|---|
+| `G_imag` (retour actualisé, reward-only) | +0.34 | **+1.26** |
+| `G_real` (idem, réel) | −0.11 | −0.15 |
+| fraction de pas « cible-like » (reward>0.3) imaginée vs réelle | 5.3 % vs 0.1 % | **13.4 %** vs 0.1 % |
+| courbe reward imaginé (pas 0→14) | −0.003 → 0.067 | −0.003 → 0.18 |
+| **corr(incertitude imaginée, reward imaginé)** | **+0.24** | **+0.31** |
+
+**Mécanisme confirmé par 12k→24k** : affûter fait **commettre l'actor plus fort dans
+l'hallucination** (l'imagination plonge plus profond dans le fantasme : goal-like
+5.3→13.4 %, `G_imag` ×3.7) pendant que la collecte réelle **baisse** (1.0→0.5/1000).
+C'est *exactement* pourquoi le sharpening empire (§9). L'`imag_return≈2.6` du training
+est encore plus haut que `G_imag` reward-only car la λ-return injecte le bootstrap d'un
+critic inflé (V≈2.6) — **levier distinct** (runaway-bootstrap, `couche5-cause-racine-checkpoint`).
+
+**Leviers CPU classés par la sonde** (opt-in, à tester un à un en mesurant) :
+1. **Pénaliser l'imagination par l'incertitude** — `corr(unc, reward imaginé) > 0` et se
+   renforce dans le régime d'échec → déflate *spécifiquement* le retour halluciné
+   (« Plan2Explore inversé », déjà flaggé par `couche3-model-exploitation`). `uncertainty_head`
+   existe déjà (softplus). **Premier candidat.**
+2. **Horizon d'imagination plus court** — la rampe est monotone, le gros de l'hallucination
+   s'accumule aux pas profonds (8–15).
+3. **Resserrer la KL dynamique** — rapproche le prior du posterior (nécessite un ré-entraînement WM).
+4. Reward-head (`reward_vmax`/bins) — **déprioritisé** : la head est calibrée on-manifold.
+
+⚠️ La « dérive `|feat_prior−feat_post|≈6.7` » est quasi constante 12k↔24k alors que
+`G_imag` triple → dominée par la variance d'échantillonnage de `z` catégoriel, **pas** le
+signal discriminant. Se fier au reward-space (rampe + fraction cible-like).
+
+Mémoire : `couche5-model-exploit-localise-2026-07-01`.
+
 ## 7. Références
 
 - Bilan : `docs/BILAN_FORAGING_DECOMPOSITION_2026-06-29.md` §8–§9 (chaîne causale complète).
