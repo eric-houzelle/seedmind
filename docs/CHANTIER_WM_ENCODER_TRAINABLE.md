@@ -217,6 +217,41 @@ signal discriminant. Se fier au reward-space (rampe + fraction cible-like).
 
 Mémoire : `couche5-model-exploit-localise-2026-07-01`.
 
+## 11. Mitigations CPU testées une à une (2026-07-01, seedmind-10e.7)
+
+| Levier | Verdict | Preuve |
+|---|---|---|
+| Pénaliser par l'incertitude | **non viable** | `uncertainty_head` RSSM jamais entraînée (§10 ⚠️) |
+| Calibration reward-head | **déprioritisé** | head calibrée on-manifold (§10 [A]) |
+| **Horizon court (H=6)** | **RÉFUTÉ** (fix) | run `w1_obsrecon_h6_12k` : 0 collecte (pire qu'aléatoire) |
+| **λ plus bas** (TD) | **RÉFUTÉ** (no-train) | `probe_critic_td_advantage` : q-TD non-navigational |
+| **Prior déterministe** | **en test** | `probe_critic_td_advantage` : corr 0.07→0.33 (horiz.) |
+
+**Horizon court (H=6) — le résultat le plus instructif.** Run frais 12k identique
+sauf `--horizon 6`. L'imagination devient **honnête** (`probe_imag_real_gap` @H6 :
+`G_imag` −0.02 ≈ `G_real` −0.06, gap +0.036 vs +0.45 ; fraction cible-like 0.8 % vs
+5.3 %) — le model-exploitation est éliminé. **Mais la collecte tombe à 0** (greedy ET
+sampled), la policy collapse en oscillation MOVE_DOWN (0.76)/rams-bord (47 % blocked).
+Représentation intacte (embed 0.65) et **critic bon** (corr(V,dist)=−0.41, non inflé).
+
+→ **Les deux cornes du verrou.** *H=15* : l'imagination atteint des cibles **hallucinées**
+(dérive prior) → gradient fantôme. *H=6* : imagination honnête mais **ne peut atteindre
+aucune vraie cible en 6 pas** (monde éparse) → aucun gradient Monte-Carlo → collapse
+marginal. Le résiduel n'est donc pas *seulement* le model-exploitation : c'est
+l'incapacité du WM à imaginer atteindre de **vraies** cibles sur l'horizon requis.
+
+**λ plus bas — réfuté sans entraînement** (`probe_critic_td_advantage`). Le q-TD one-step
+`q(s,a)=r_pred+γV(prior(s,a))` **ne pointe pas vers la cible** en prior échantillonné
+(corr 0.07/0.045). Deux causes localisées : (1) **le bruit d'échantillonnage de `z`
+lave le signal** — en prior **déterministe** la corr horizontale remonte à **+0.33** ;
+(2) **le vertical est cassé même déterministe** (corr −0.18) — asymétrie plus profonde
+(cohérent avec le collapse MOVE_DOWN). Le critic corrèle avec la distance *en population*
+(−0.41) mais ne **se compose pas** avec la dynamique une-étape en gradient d'action.
+
+**→ Levier en test : imagination à prior déterministe** (opt-in `imagination.deterministic_prior`,
+run `w1_obsrecon_detprior_12k`). Attaque (1). Ne corrige pas (2) → attendu partiel.
+Mémoires : `couche5-horizon-court-refute`, `couche5-znoise-lave-navigation` (2026-07-01).
+
 ## 7. Références
 
 - Bilan : `docs/BILAN_FORAGING_DECOMPOSITION_2026-06-29.md` §8–§9 (chaîne causale complète).

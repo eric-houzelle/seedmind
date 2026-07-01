@@ -179,6 +179,7 @@ def train_imagination_actor_critic(
     ret_decay: float = 0.99,
     critic_symlog: bool = True,
     start_states: str = "final",
+    imagine_sample: bool = True,
 ) -> Dict[str, float]:
     """Run ``num_updates`` actor-critic updates over imagined rollouts.
 
@@ -188,6 +189,12 @@ def train_imagination_actor_critic(
     it). Advantages are normalised per batch. Pass ``target_critic`` (a copy of
     ``critic``); it is EMA-updated here. Without it, the online critic is used
     (only safe for short/test runs).
+
+    ``imagine_sample`` (default ``True``, DreamerV3-faithful): sample the prior ``z``
+    at each imagined step. Set ``False`` for a **deterministic-prior** rollout (RSSM
+    only) — the prior ``z`` is taken at its mode, so the categorical z-sampling noise
+    does not wash out / compound the one-step navigation signal (see
+    ``probe_critic_td_advantage``). Opt-in; the deterministic recurrent WM ignores it.
 
     ``critic_symlog`` (DreamerV3): the critic predicts values in **symlog space**
     and regresses toward ``symlog(returns)``; values are ``symexp``-decoded before
@@ -227,7 +234,18 @@ def train_imagination_actor_critic(
             for _t in range(horizon):
                 feat = world_model.get_feat(state) if rssm else state
                 a = actor.act(feat)
-                state, _b, r, _unc = world_model.imagine_batch(state, a)
+                if imagine_sample or not rssm:
+                    state, _b, r, _unc = world_model.imagine_batch(state, a)
+                else:
+                    # Deterministic-prior imagination (opt-in): take the prior z at
+                    # its mode instead of sampling. The 32×32 categorical z sampling
+                    # noise otherwise washes out the one-step navigation signal in
+                    # V(s') (measured: probe_critic_td_advantage — corr(q,dir) jumps
+                    # 0.07→0.33 horizontally when the prior is deterministic) and
+                    # compounds over the rollout. Reward read the same way as
+                    # imagine_batch (reward head on the arrival feature).
+                    state = world_model.img_step(state, a, sample=False)
+                    r = world_model.reward_value(world_model.get_feat(state))
                 states.append(feat)
                 actions.append(a)
                 rewards.append(r)
