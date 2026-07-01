@@ -225,7 +225,7 @@ Mémoire : `couche5-model-exploit-localise-2026-07-01`.
 | Calibration reward-head | **déprioritisé** | head calibrée on-manifold (§10 [A]) |
 | **Horizon court (H=6)** | **RÉFUTÉ** (fix) | run `w1_obsrecon_h6_12k` : 0 collecte (pire qu'aléatoire) |
 | **λ plus bas** (TD) | **RÉFUTÉ** (no-train) | `probe_critic_td_advantage` : q-TD non-navigational |
-| **Prior déterministe** | **en test** | `probe_critic_td_advantage` : corr 0.07→0.33 (horiz.) |
+| **Prior déterministe** | **améliore, ne résout pas** | imagination honnête + INTERACT-sur-cible 0.44, mais 0 collecte (UP mort) |
 
 **Horizon court (H=6) — le résultat le plus instructif.** Run frais 12k identique
 sauf `--horizon 6`. L'imagination devient **honnête** (`probe_imag_real_gap` @H6 :
@@ -248,9 +248,25 @@ lave le signal** — en prior **déterministe** la corr horizontale remonte à *
 (cohérent avec le collapse MOVE_DOWN). Le critic corrèle avec la distance *en population*
 (−0.41) mais ne **se compose pas** avec la dynamique une-étape en gradient d'action.
 
-**→ Levier en test : imagination à prior déterministe** (opt-in `imagination.deterministic_prior`,
-run `w1_obsrecon_detprior_12k`). Attaque (1). Ne corrige pas (2) → attendu partiel.
-Mémoires : `couche5-horizon-court-refute`, `couche5-znoise-lave-navigation` (2026-07-01).
+**Prior déterministe** (opt-in `imagination.deterministic_prior`, run `w1_obsrecon_detprior_12k`) —
+**améliore mais ne résout pas**. Positif : imagination **honnête** tout le run (`imag_return`
+−0.28→−0.36, jamais le +2.6 halluciné → le prior MAP tue le model-exploitation) ; **meilleur
+comportement sur cible** de tous les runs (argmax sur cible = **INTERACT**, P=0.44 vs 0.35/0.17) ;
+tracking vertical +0.47, horizontal +0.14 ; MOVE_RIGHT récupéré. **Mais 0 collecte** : la marginale
+collapse encore — `MOVE_UP=0.011` (quasi mort), MOVE_DOWN=0.71.
+
+**Fil rouge (baseline H15, H6, detprior).** L'actor **apprend** la structure conditionnelle
+(tracke la cible, INTERACT sur cible) mais une **partie de sa marginale meurt** (RIGHT mort à H6,
+UP mort en detprior) → navigation partielle impossible → 0 collecte. Ce **collapse marginal** est
+le vrai killer, robuste aux variations horizon/prior/λ, et non levé par l'entropie (haute à 1.85 en
+detprior). **Conclusion : les leviers config-only CPU bougent des pièces mais aucun ne produit une
+policy naviguant complètement.** Le résiduel = collapse marginal sous gradient imaginé
+faible/incomplet en monde éparse (le « cœur dur » du MBRL) → régime structurel `seedmind-10e.5`
+(gros replay + envs parallèles + GPU) et/ou fix vertical `seedmind-10e.8`. `deterministic_prior` est
+gardé comme infra opt-in (imagination honnête, sans régression).
+
+Mémoires : `couche5-horizon-court-refute`, `couche5-znoise-lave-navigation`,
+`couche5-detprior-collapse-marginal` (2026-07-01).
 
 ## 7. Références
 
