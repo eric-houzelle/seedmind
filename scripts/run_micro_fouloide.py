@@ -214,6 +214,12 @@ def build_agent(config: dict, seed: int) -> Agent:
 
     if egocentric:
         enc_cfg = ac.get("encoder", {})
+        encoder_trainable = bool(enc_cfg.get("trainable", False))
+        if encoder_trainable and structured_feature_dim > 0:
+            raise ValueError(
+                "agent.encoder.trainable does not support structured latent features "
+                "(the structured tail is not reconstructable from the obs window)"
+            )
         encoder = ConvEncoder(
             num_channels=num_channels,
             num_scalars=num_scalars,
@@ -225,6 +231,7 @@ def build_agent(config: dict, seed: int) -> Agent:
             obs_batch_fn=obs_batch_fn,
             structured_features_fn=structured_features_fn,
             structured_feature_dim=structured_feature_dim,
+            trainable=encoder_trainable,
         )
     else:
         encoder = Encoder(
@@ -264,6 +271,9 @@ def build_agent(config: dict, seed: int) -> Agent:
             reward_twohot=bool(wmc.get("reward_twohot", True)),
             reward_bins=int(wmc.get("reward_bins", 255)),
             reward_vmax=float(wmc.get("reward_vmax", 20.0)),
+            obs_recon=bool(wmc.get("obs_reconstruction", False)),
+            obs_channels=num_channels,
+            obs_window=net_grid_size,
         )
     elif recurrent_wm:
         world_model = RecurrentWorldModel(

@@ -326,6 +326,9 @@ class RSSMWorldModel(nn.Module):
         reward_twohot: bool = True,
         reward_bins: int = 255,
         reward_vmax: float = 20.0,
+        obs_recon: bool = False,
+        obs_channels: int = 0,
+        obs_window: int = 0,
     ) -> None:
         super().__init__()
         self.embed_dim = int(embed_dim)
@@ -340,6 +343,21 @@ class RSSMWorldModel(nn.Module):
             nn.Linear(feat, hidden), nn.LayerNorm(hidden), nn.SiLU(),
             nn.Linear(hidden, self.embed_dim),
         )
+        # Observation decoder (DreamerV3 grounding, opt-in). The default decoder
+        # above reconstructs the (frozen) *embedding* — which can never recover
+        # information the frozen random projection threw away (e.g. the goal
+        # position). Reconstructing the *observation* window instead forces feat
+        # — hence z, hence the policy's input — to encode the whole scene. Paired
+        # with a trainable encoder, this is the standard DreamerV3 world model.
+        self.obs_recon = bool(obs_recon)
+        self.obs_channels = int(obs_channels)
+        self.obs_window = int(obs_window)
+        if self.obs_recon:
+            obs_flat = self.obs_channels * self.obs_window * self.obs_window
+            self.decoder_obs = nn.Sequential(
+                nn.Linear(feat, hidden), nn.LayerNorm(hidden), nn.SiLU(),
+                nn.Linear(hidden, obs_flat),
+            )
         # Reward predictor: a two-hot categorical head (DreamerV3) captures the rare
         # foraging-reward spikes that a scalar MSE head regresses to the mean (the
         # probe showed the scalar head predicting ~0 for INTERACT-on-water).
@@ -398,6 +416,15 @@ class RSSMWorldModel(nn.Module):
         if self._reward_twohot:
             return self.reward_head.twohot_loss(feat, target_reward)
         return ((self.reward_head(feat).squeeze(-1) - target_reward) ** 2).mean()
+
+    def decode_obs(self, feat: torch.Tensor) -> torch.Tensor:
+        """Reconstruct the egocentric observation window ``(B, C, W, W)`` from feat.
+
+        Only available when ``obs_recon`` is enabled. This is the DreamerV3
+        grounding signal that forces the latent to encode the full scene.
+        """
+        out = self.decoder_obs(feat)
+        return out.view(-1, self.obs_channels, self.obs_window, self.obs_window)
 
     # -- heads -----------------------------------------------------------
     def heads(self, feat: torch.Tensor, detach_uncertainty: bool = False) -> Dict[str, torch.Tensor]:

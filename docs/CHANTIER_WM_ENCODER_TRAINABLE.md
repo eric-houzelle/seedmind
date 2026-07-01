@@ -104,6 +104,33 @@ proprement isolé.
 - **Mémoire buffer** : stocker l'obs (11×11×C) augmente le buffer ; borné, OK pour W1 ; vérifier
   pour le bigmap fouloïde si on étend.
 
+## 8. Résultat (exécuté le 2026-07-01)
+
+Implémenté en opt-in (`agent.encoder.trainable`, `world_model.obs_reconstruction`),
+config `configs/simple_grid_sparse_obsrecon.yaml`, run `runs/w1_obsrecon_12k` (12k CPU).
+**0 régression** (290 tests verts ; les 4 échecs sont un bug préexistant `train_world_model`/
+`reward_key` du chemin feed-forward, filé à part).
+
+**Verrou représentation CASSÉ (thèse validée).** Probe (frozen → 4k → 8k → 12k) :
+
+| Mesure | frozen | 4k | 8k | 12k |
+|---|---|---|---|---|
+| encodeur embed R²→dist | 0.09 | 0.24 | 0.61 | **0.65** |
+| feat RSSM [z,h] R² | ~0 | −0.01 | 0.18 | **0.34** (en montée) |
+| · h déterministe R² | 0.00 | 0.00 | 0.28 | **0.37** |
+| · z stochastique R² | ~0 | −0.02 | 0.03 | 0.03 |
+| corr(V, distance) | ~0 | +0.01 | −0.10 | **−0.24** |
+
+Le `h` qui n'encodait **rien** encode désormais la position ; le critic devient discriminant
+(V=2.95 sur la cible → 2.0 à distance 5).
+
+**MAIS navigation toujours bloquée.** `eval_sampled` @12k : greedy dégénéré (0 collecte,
+argmax quasi-constant MOVE_RIGHT/LEFT), sampled **1.6/1000 ≈ aléatoire** (1.4). Le critic sait
+où est la valeur, l'actor ne grimpe pas le gradient.
+
+**→ Branche §5 confirmée** : le verrou résiduel est le **crédit/policy**, désormais proprement
+isolé (représentation levée) → `seedmind-10e.5`. Mémoire : `couche5-obsrecon-encodeur-2026-07-01`.
+
 ## 7. Références
 
 - Bilan : `docs/BILAN_FORAGING_DECOMPOSITION_2026-06-29.md` §8–§9 (chaîne causale complète).

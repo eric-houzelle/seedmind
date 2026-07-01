@@ -1,0 +1,129 @@
+project:
+  name: SeedMind
+
+# === W1-SPARSE-OBSRECON — couche 5, cause racine #2 (seedmind-10e.6) =============
+# IDENTIQUE à simple_grid_sparse_reveal.yaml SAUF deux flags DreamerV3 (opt-in) :
+#   - agent.encoder.trainable    : l'encodeur conv co-entraîne avec le WM (n'est
+#     plus une projection aléatoire gelée qui jette la position de la cible) ;
+#   - world_model.obs_reconstruction : le décodeur reconstruit l'OBSERVATION
+#     égocentrique (la fenêtre 11×11×C) au lieu de l'embedding gelé.
+# Ensemble = world model DreamerV3 standard : la reconstruction d'obs (cible
+# EXTERNE) force le feat [z,h] — donc l'entrée de la policy — à encoder TOUTE la
+# scène (où est la cible), pendant que la KL garde le prior imaginable et que la
+# cible externe empêche le collapse latent.
+#
+# CRITÈRE (probe_goal_distance.py): feat R²→distance passe de ~0 à >0.5, h R²>0,
+# corr(V,distance) << 0. (eval_sampled.py): collecte greedy ET sampled >> aléatoire.
+
+env:
+  type: simple_grid
+  size: 6
+  max_steps: 0
+  visibility_radius: null
+  num_obstacles: 0
+  num_goals: 1
+  goal_reward: 1.0
+  step_penalty: 0.01
+  noop_penalty: 0.02
+
+agent:
+  latent_dim: 64
+  memory_top_k: 5
+  observation:
+    egocentric:
+      enabled: true
+      radius: 5
+      reveal_standing: true
+  encoder:
+    conv_channels: 32
+    trainable: true          # <<< DreamerV3 : encodeur entraînable (co-train avec le WM)
+  imagination_policy: true
+  actor:
+    hidden_dim: 128
+    num_layers: 2
+
+imagination:
+  horizon: 15
+  context_len: 8
+  lambda: 0.95
+  entropy_coef: 0.001
+  entropy_coef_start: 0.03
+  entropy_coef_end: 0.001
+  entropy_decay_steps: 15000
+  advantage_norm: percentile
+  start_states: all
+  critic_twohot: true
+  critic_num_bins: 255
+  critic_vmax: 5.0
+  actor_lr: 0.0004
+  critic_lr: 0.0004
+
+world_model:
+  enabled: true
+  recurrent: true
+  rssm_stochastic: true
+  rssm_stoch: 32
+  rssm_discrete: 32
+  obs_reconstruction: true   # <<< DreamerV3 : reconstruire l'OBS (fenêtre), pas l'embed
+  reward_twohot: true
+  reward_vmax: 2.0
+  kl_free: 1.0
+  kl_dyn_scale: 0.5
+  kl_rep_scale: 0.1
+  deter_dim: 128
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 0.0003
+  batch_size: 64
+  sampler: causal
+  uncertainty_head_updates_per_train: 2
+  reward_key: reward_learning
+
+causal_world_model:
+  enabled: false
+
+value_model:
+  enabled: false
+
+curiosity:
+  enabled: true
+  weight: 0.5
+  max_reward: 1.0
+
+drive_reward:
+  enabled: false
+
+resource_reward:
+  enabled: false
+
+policy:
+  type: epsilon_greedy
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay_steps: 10000
+
+planning:
+  enabled: false
+
+dqn:
+  enabled: true
+  conv_channels: 64
+  hidden_dim: 256
+  learning_rate: 0.0005
+  gamma: 0.97
+  batch_size: 64
+  target_update: 500
+  double_dqn: true
+  sampler: causal
+  curiosity_weight: 1.0
+  reward_key: reward_learning
+
+online:
+  update_every: 8
+  updates_per_cycle: 4
+  seq_len: 16
+  burn_in: 8
+  warmup_steps: 1000
+  threshold_refresh_steps: 500
+  threshold_quantile: 0.60
+  threshold_samples: 2000

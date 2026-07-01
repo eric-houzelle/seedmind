@@ -302,6 +302,7 @@ class ConvEncoder(nn.Module):
         obs_batch_fn: Optional[Any] = None,
         structured_features_fn: Optional[Any] = None,
         structured_feature_dim: int = 0,
+        trainable: bool = False,
     ) -> None:
         super().__init__()
         if obs_batch_fn is None:
@@ -334,10 +335,18 @@ class ConvEncoder(nn.Module):
             nn.Tanh(),
         )
 
-        # Freeze: the encoder is a fixed random projection, like Encoder.
-        for p in self.parameters():
-            p.requires_grad_(False)
-        self.eval()
+        # By default the encoder is a fixed random projection (like Encoder): the
+        # World Model needs a *stable* latent target to predict. The DreamerV3
+        # ``trainable`` path (opt-in) instead co-trains the encoder with the WM
+        # while the decoder reconstructs the OBSERVATION (not the embedding) — so
+        # the latent is no longer a fixed target but the grounding stays external,
+        # which is what forces the latent to encode the full scene (e.g. WHERE the
+        # goal is). See ``encode_from_channels`` and ``RSSMWorldModel.decode_obs``.
+        self.trainable = bool(trainable)
+        if not self.trainable:
+            for p in self.parameters():
+                p.requires_grad_(False)
+            self.eval()
 
     def _structured_features(self, observation: Dict[str, Any]) -> np.ndarray:
         if self.structured_feature_dim == 0:
@@ -352,15 +361,46 @@ class ConvEncoder(nn.Module):
             )
         return features
 
-    @torch.no_grad()
-    def _project(self, observations) -> torch.Tensor:
-        channels, scalars = self._obs_batch_fn(observations)
+    def _features_from_tensors(
+        self, channels: torch.Tensor, scalars: torch.Tensor
+    ) -> torch.Tensor:
+        """Projected latent from pre-extracted ``(channels, scalars)`` tensors.
+
+        Grad-tracking follows the ambient context: ``_project`` wraps it in
+        ``no_grad`` for inference, ``encode_from_channels`` calls it with grad
+        enabled for joint World-Model training.
+        """
         device = next(self.parameters()).device
         channels = channels.to(device).float()
         scalars = scalars.to(device).float()
         x = self.conv(channels).flatten(1)
         x = torch.cat([x, scalars], dim=1)
         return self.head(x)
+
+    @torch.no_grad()
+    def _project(self, observations) -> torch.Tensor:
+        channels, scalars = self._obs_batch_fn(observations)
+        return self._features_from_tensors(channels, scalars)
+
+    def encode_from_channels(
+        self, channels: torch.Tensor, scalars: torch.Tensor
+    ) -> torch.Tensor:
+        """Grad-enabled embed from a *stored* egocentric window (DreamerV3).
+
+        Used by the World-Model training loop when the encoder is ``trainable``:
+        the embed fed to the RSSM posterior must be recomputed from the stored
+        observation *with* gradient, so the encoder learns (jointly with the
+        decoder reconstructing the observation) to encode the whole scene.
+
+        Requires ``structured_feature_dim == 0``: the structured tail comes from
+        a separate non-differentiable hook over the full observation and cannot
+        be reconstructed from the window tensors alone.
+        """
+        if self.structured_feature_dim != 0:
+            raise ValueError(
+                "encode_from_channels requires structured_feature_dim == 0"
+            )
+        return self._features_from_tensors(channels, scalars)
 
     @torch.no_grad()
     def encode_tensor(self, observation: Dict[str, Any]) -> torch.Tensor:

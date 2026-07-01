@@ -101,6 +101,13 @@ class OnlineLearner:
         self.wm_sampler = str(wmc.get("sampler", "uniform"))
         self.wm_reward_key = str(wmc.get("reward_key", "reward_external"))
         self.wm_uncertainty_head_updates = int(wmc.get("uncertainty_head_updates_per_train", 0))
+        # DreamerV3 obs-reconstruction + trainable encoder (opt-in). When on, the
+        # WM reconstructs the observation window and the encoder co-trains, so the
+        # encoder must join the WM optimizer.
+        self.obs_reconstruction = bool(wmc.get("obs_reconstruction", False))
+        self.encoder_trainable = bool(
+            config.get("agent", {}).get("encoder", {}).get("trainable", False)
+        )
         self.q_batch = int(dc.get("batch_size", 64))
         self.gamma = float(dc.get("gamma", 0.97))
         self.target_update = int(dc.get("target_update", 500))
@@ -120,9 +127,15 @@ class OnlineLearner:
         self._vc = vc
 
         self.buffer = buffer if buffer is not None else ExperienceBuffer(seed=seed)
-        self.wm_optimizer = make_optimizer(
-            agent.world_model, learning_rate=float(wmc.get("learning_rate", 3e-4)),
-        )
+        wm_lr = float(wmc.get("learning_rate", 3e-4))
+        if self.encoder_trainable:
+            # Joint DreamerV3 optimizer: WM (incl. obs decoder) + encoder.
+            self.wm_optimizer = torch.optim.Adam(
+                list(agent.world_model.parameters()) + list(agent.encoder.parameters()),
+                lr=wm_lr,
+            )
+        else:
+            self.wm_optimizer = make_optimizer(agent.world_model, learning_rate=wm_lr)
         self.wm_uncertainty_optimizer = torch.optim.Adam(
             agent.world_model.uncertainty_head.parameters(),
             lr=float(wmc.get("uncertainty_head_learning_rate", wmc.get("learning_rate", 3e-4))),
@@ -213,6 +226,9 @@ class OnlineLearner:
                 causal_feature_weight=float(cwm.get("feature_loss_weight", 0.0)),
                 causal_event_weight=float(cwm.get("event_loss_weight", 0.0)),
                 reward_key=self.wm_reward_key,
+                obs_reconstruction=self.obs_reconstruction,
+                encoder=self.agent.encoder,
+                encoder_trainable=self.encoder_trainable,
             )
             # Keep the DreamerV3 RSSM loss breakdown for live monitoring.
             self.last_wm_recon = float(wm_losses.get("recon", 0.0))

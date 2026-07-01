@@ -82,6 +82,18 @@ def _assemble_sequences(
     ev = col("event_index")
     if all(e is not None for row in ev for e in row):
         out["events"] = torch.from_numpy(np.asarray(ev, dtype=np.int64)).to(device)
+
+    # Stored egocentric observation window (opt-in, DreamerV3 obs-reconstruction).
+    # Each step's ``observation`` is ``{"channels": (C, W, W), "scalars": (S,)}``,
+    # the exact window the encoder consumed at collection time.
+    obs = col("observation")
+    out["obs_channels"] = None
+    out["obs_scalars"] = None
+    if all(o is not None for row in obs for o in row):
+        ch = np.asarray([[o["channels"] for o in row] for row in obs], dtype=np.float32)
+        sc = np.asarray([[o["scalars"] for o in row] for row in obs], dtype=np.float32)
+        out["obs_channels"] = torch.from_numpy(ch).to(device)   # (B, L, C, W, W)
+        out["obs_scalars"] = torch.from_numpy(sc).to(device)    # (B, L, S)
     return out
 
 
@@ -357,17 +369,27 @@ def train_rssm_world_model(
     causal_event_weight: float = 0.0,
     reward_key: str = "reward_external",
     grad_clip: float = 100.0,
+    obs_reconstruction: bool = False,
+    encoder=None,
+    encoder_trainable: bool = False,
 ) -> Dict[str, float]:
     """BPTT training of the stochastic RSSM world model (DreamerV3, phase 1 brick 3).
 
     Rolls the RSSM over each sequence with the **posterior** (which sees the encoder
     embedding ``z_t = latent_state``), and at every step minimises:
-      - **recon**  : ``decoder(feat_t)`` vs the embedding ``z_t`` (grounding signal,
-        replacing the old "predict next latent");
+      - **recon**  : by default ``decoder(feat_t)`` vs the embedding ``z_t`` (grounding
+        signal, replacing the old "predict next latent"). With ``obs_reconstruction``
+        the decoder instead reconstructs the stored egocentric **observation window**
+        (DreamerV3 grounding) — which is what forces the latent to encode the full
+        scene (e.g. the goal position the frozen projection used to discard);
       - **reward** : ``reward_head(feat_t)`` vs the stored reward;
       - **KL**     : balanced KL(post‖prior) with free bits — trains the prior to
         imagine the posterior, which is what makes imagination usable;
       - optional causal-feature (MSE) / event (CE) heads.
+
+    When ``encoder_trainable`` the embedding fed to the posterior is *recomputed*
+    from the stored observation window through ``encoder`` (with gradient), so the
+    encoder co-trains with the RSSM — the standard DreamerV3 joint world model.
     """
     if len(buffer) == 0:
         return dict(_RSSM_ZERO)
@@ -387,15 +409,28 @@ def train_rssm_world_model(
         B, L = batch["B"], batch["L"]
         z, a, rewards, dones = batch["latents"], batch["actions"], batch["rewards"], batch["dones"]
         feature_deltas, events = batch["feature_deltas"], batch["events"]
+        obs_ch, obs_sc = batch["obs_channels"], batch["obs_scalars"]
+        use_obs_recon = obs_reconstruction and obs_ch is not None
 
         recon_t, reward_t, cont_t, kl_t, feat_t, event_t = [], [], [], [], [], []
         state = world_model.initial_state(B, device=device)
         for k in range(L):
             prev_a = torch.zeros(B, dtype=torch.long, device=device) if k == 0 else a[:, k - 1]
-            post, prior = world_model.observe_step(z[:, k], prev_a, state)
+            # The posterior embedding: the stored frozen-encoder latent, or — when
+            # the encoder is trainable — recomputed from the stored window with
+            # gradient so the encoder co-trains (the latent target becomes
+            # non-stationary; the obs-recon below keeps it grounded).
+            if use_obs_recon and encoder_trainable and encoder is not None:
+                embed_k = encoder.encode_from_channels(obs_ch[:, k], obs_sc[:, k])
+            else:
+                embed_k = z[:, k]
+            post, prior = world_model.observe_step(embed_k, prev_a, state)
             feat = world_model.get_feat(post)
             heads = world_model.heads(feat)
-            recon_t.append(((heads["recon"] - z[:, k]) ** 2).mean())
+            if use_obs_recon:
+                recon_t.append(((world_model.decode_obs(feat) - obs_ch[:, k]) ** 2).mean())
+            else:
+                recon_t.append(((heads["recon"] - z[:, k]) ** 2).mean())
             # Reward/continue use the DreamerV3 ARRIVAL convention: r_t / c_t describe
             # the transition that LANDED in state k (i.e. the consequence of action
             # a[k-1], which `feat`=post_k encodes via prev_a). The buffer stores

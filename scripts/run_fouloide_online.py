@@ -120,6 +120,11 @@ class OnlineFouloideSession:
         self.causal_wm_enabled = bool(cwm.get("enabled", False))
         self.event_to_index = {event: i for i, event in enumerate(causal_event_names(config))}
 
+        # DreamerV3 obs-reconstruction (opt-in): persist the exact egocentric
+        # window the encoder consumed, as the decoder's reconstruction target.
+        self.store_obs_window = bool(
+            config.get("world_model", {}).get("obs_reconstruction", False)
+        )
         self.agent = build_agent(config, seed=seed)
         self.agent.encoder.to(device)
         self.agent.world_model.to(device)
@@ -212,11 +217,21 @@ class OnlineFouloideSession:
         reward_learning = _learning_reward(reward_ext, self.observation, info, self.config)
 
         self.steps += 1
+        observation_window = None
+        if self.store_obs_window and hasattr(agent.encoder, "_obs_batch_fn"):
+            # The exact (channels, scalars) window for THIS state's latent — the
+            # egocentric crop the encoder saw. Stored for the WM obs-recon target
+            # and (when the encoder is trainable) to recompute the embed with grad.
+            ch, sc = agent.encoder._obs_batch_fn([self.observation])
+            observation_window = {
+                "channels": ch[0].cpu().numpy().astype(np.float32),
+                "scalars": sc[0].cpu().numpy().astype(np.float32),
+            }
         experience = make_experience(
             episode_id=f"online_life_{self.lives:04d}",
             world_id=env.world_id,
             step=self.steps,
-            observation=None,
+            observation=observation_window,
             action=action,
             next_observation=None,
             reward_external=reward_ext,
