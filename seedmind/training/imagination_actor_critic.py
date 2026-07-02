@@ -180,6 +180,7 @@ def train_imagination_actor_critic(
     critic_symlog: bool = True,
     start_states: str = "final",
     imagine_sample: bool = True,
+    critic_slowreg: float = 0.0,
 ) -> Dict[str, float]:
     """Run ``num_updates`` actor-critic updates over imagined rollouts.
 
@@ -189,6 +190,14 @@ def train_imagination_actor_critic(
     it). Advantages are normalised per batch. Pass ``target_critic`` (a copy of
     ``critic``); it is EMA-updated here. Without it, the online critic is used
     (only safe for short/test runs).
+
+    ``critic_slowreg`` (default 0.0 = off, DreamerV3): weight of a regularizer pulling
+    the learning critic toward the EMA ``target_critic``'s own predictions. The EMA
+    target as *bootstrap source* alone does not stop the runaway loop (returns contain
+    γ·V terms the critic then chases — measured ×17 over-estimation on the fouloïde,
+    ×20 on the sparse grid). DreamerV3 additionally *regresses* the critic toward the
+    slow critic, which damps the feedback. Twohot: cross-entropy toward the target's
+    bin distribution; scalar: MSE toward the target's output. Needs ``target_critic``.
 
     ``imagine_sample`` (default ``True``, DreamerV3-faithful): sample the prior ``z``
     at each imagined step. Set ``False`` for a **deterministic-prior** rollout (RSSM
@@ -291,10 +300,22 @@ def train_imagination_actor_critic(
         # else → scalar MSE in symlog space (legacy).
         if twohot:
             critic_loss = critic.twohot_loss(states_t.reshape(T * B, D), returns.reshape(T * B))
+            if critic_slowreg > 0 and target_critic is not None:
+                # DreamerV3 slow-critic regularizer: CE toward the EMA critic's own
+                # bin distribution — damps the runaway loop the EMA bootstrap alone
+                # cannot stop (critic chases the γ·V terms inside its own targets).
+                with torch.no_grad():
+                    slow_probs = torch.softmax(target_critic(states_t.reshape(T * B, D)), dim=-1)
+                logp = torch.log_softmax(critic(states_t.reshape(T * B, D)), dim=-1)
+                critic_loss = critic_loss + critic_slowreg * (-(slow_probs * logp).sum(-1).mean())
         else:
             v_pred = critic(states_t.reshape(T * B, D)).reshape(T, B)
             critic_target = symlog(returns) if critic_symlog else returns
             critic_loss = ((v_pred - critic_target) ** 2).mean()
+            if critic_slowreg > 0 and target_critic is not None:
+                with torch.no_grad():
+                    slow_v = target_critic(states_t.reshape(T * B, D)).reshape(T, B)
+                critic_loss = critic_loss + critic_slowreg * ((v_pred - slow_v) ** 2).mean()
         critic_optimizer.zero_grad()
         critic_loss.backward()
         if grad_clip > 0:

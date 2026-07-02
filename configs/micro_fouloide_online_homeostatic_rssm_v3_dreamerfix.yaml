@@ -68,7 +68,8 @@ imagination:
   deterministic_prior: true     # <<< 10e.7 (universel): imagination à prior MAP -> tue le model-exploitation
   critic_twohot: true       # DreamerV3 : critic catégoriel (bins symlog + cross-entropy) → valeurs CALIBRÉES
   critic_num_bins: 255
-  critic_vmax: 20.0
+  critic_vmax: 5.0          # <<< 10e.9: 20->5 — retour réel ~0.5 (mesuré 50k), vmax=20 = bins hors échelle
+  critic_slowreg: 1.0       # <<< 10e.9: régularisation slow-critic DreamerV3 (anti-runaway; V était x17 sans)
   actor_lr: 0.0004
   critic_lr: 0.0004
 

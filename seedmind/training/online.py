@@ -89,6 +89,8 @@ class OnlineLearner:
         # Opt-in: deterministic-prior imagination (RSSM). Default False keeps the
         # DreamerV3-faithful sampled prior — no behaviour change for existing configs.
         self.imag_deterministic_prior = bool(ic.get("deterministic_prior", False))
+        # Opt-in: DreamerV3 slow-critic regularizer weight (0.0 = off, unchanged).
+        self.imag_critic_slowreg = float(ic.get("critic_slowreg", 0.0))
         self.imag_ret_decay = float(ic.get("ret_decay", 0.99))
         self.imag_critic_symlog = bool(ic.get("critic_symlog", True))
         self.imag_gamma = float(ic.get("gamma", float(dc.get("gamma", 0.97))))
@@ -273,6 +275,7 @@ class OnlineLearner:
                 critic_symlog=self.imag_critic_symlog,
                 start_states=self.imag_start_states,
                 imagine_sample=not self.imag_deterministic_prior,
+                critic_slowreg=self.imag_critic_slowreg,
             )
             self.last_actor_loss = float(ac["actor_loss"])
             self.last_critic_loss = float(ac["critic_loss"])
