@@ -62,7 +62,9 @@ imagination:
   lambda: 0.95              # λ-returns
   entropy_coef: 0.001           # fallback si pas de schedule
   entropy_coef_start: 0.03      # SCHEDULE explore→commit : forte au début (explorer, découvrir le fourrage)
-  entropy_coef_end: 0.0003      # → faible à la fin (commiter sur la politique de fourrage découverte)
+  entropy_coef_end: 0.012       # <<< 10e.9: plancher au SWEET SPOT mesuré (fourrage max à entropie ~1.6,
+                                #     traversée vers coef ~0.012 à 22-25k; le commit dur à 0.0003 tue le
+                                #     fourrage sur 2 runs 50k — eau/bouffe -> 0 dès le plancher atteint)
   entropy_decay_steps: 40000    # anneal linéaire sur 40k steps
   advantage_norm: percentile    # DreamerV3 : normalisation des returns par percentile EMA (5-95)
   deterministic_prior: true     # <<< 10e.7 (universel): imagination à prior MAP -> tue le model-exploitation
