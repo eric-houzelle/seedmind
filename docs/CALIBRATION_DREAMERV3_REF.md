@@ -40,39 +40,43 @@ Dépendance : `pip install gymnasium` (fait dans le venv local ; à refaire sur 
 framework que seedmind, donc diffable ligne à ligne si l'issue est « bug du
 port ». (Alternative de contrôle : `danijar/dreamerv3`, JAX, l'original.)
 
-Branchement (à ajuster à la version du repo) : dans leur fabrique d'envs
-(`envs/__init__.py`, dispatch par `--task suite_name`), ajouter une branche :
+Le branchement est **prêt à copier** (vérifié contre leur code du 2026-08-04 ;
+leur API est du vieux gym 4-tuple avec clés `is_first`/`is_last`/`is_terminal`
+dans l'obs, motif `envs/crafter.py`) :
+
+- `scripts/calibration/dreamerv3_torch/fouloide.py` — l'adaptateur, à copier
+  dans leur `envs/` (testé : `test_dreamerv3_torch_adapter_api`) ;
+- `scripts/calibration/dreamerv3_torch/fouloide_configs.yaml` — le bloc de
+  config à ajouter à leur `configs.yaml` (encodeur MLP sur la clé `vector`,
+  actor `onehot`, `video_pred_log: false`, time_limit 2000 via LEUR wrapper —
+  la mort reste le seul `is_terminal`, donc P(survie) apprenable).
+
+Dans leur `dreamer.py`, fonction `make_env` (~ligne 190, après la branche
+`crafter`), ajouter :
 
 ```python
-elif suite == "fouloide":
-    import sys; sys.path.append("/chemin/vers/seedmind")
-    from scripts.calibration.gym_micro_fouloide import MicroFouloideGymEnv
-    env = MicroFouloideGymEnv(
-        "/chemin/vers/seedmind/configs/micro_fouloide_online_homeostatic_rssm_v3_dreamerfix.yaml",
-        seed=config.seed,
-        reward_mode="learning",
-        obs_mode="vector",
-        time_limit=2000,
-    )
-    # puis appliquer leurs wrappers habituels (TimeLimit est déjà géré
-    # par time_limit ci-dessus ; garder leur action/obs bookkeeping)
-```
+    elif suite == "fouloide":
+        import envs.fouloide as fouloide
 
-Réglages de référence : encodeur/décodeur **MLP** (obs vectorielle), taille de
-modèle la plus petite de leur grille, `time_limit=2000` (le monde dreamerfix
-est infini — une référence a besoin d'épisodes bornés ; 2000 pas ≈ plusieurs
-cycles de famine, la mort par négligence reste possible donc apprenable).
+        env = fouloide.Fouloide(task, seed=config.seed + id)
+        env = wrappers.OneHotAction(env)
+```
 
 ## 4. Protocole de la session A10
 
 ```bash
 # une seule session, ~½ journée de GPU
-git pull                       # récupère wrapper + tests + ce doc
+cd ~/seedmind && git pull            # wrapper + adaptateur + ce doc
 pip install gymnasium
-git clone https://github.com/NM512/dreamerv3-torch && cd dreamerv3-torch
+cd ~ && git clone https://github.com/NM512/dreamerv3-torch && cd dreamerv3-torch
 pip install -r requirements.txt
-# ... ajouter la branche "fouloide" (§3), puis :
-python dreamer.py --configs defaults --task fouloide_default \
+
+# branchement (3 gestes)
+cp ~/seedmind/scripts/calibration/dreamerv3_torch/fouloide.py envs/
+cat ~/seedmind/scripts/calibration/dreamerv3_torch/fouloide_configs.yaml >> configs.yaml
+# + la branche elif "fouloide" dans make_env (dreamer.py, §3 ci-dessus)
+
+SEEDMIND_ROOT=~/seedmind python dreamer.py --configs fouloide \
   --logdir ~/logdir/fouloide_ref 2>&1 | tee ref_fouloide.log
 ```
 

@@ -1,0 +1,20 @@
+# Bloc à AJOUTER à la fin du configs.yaml de dreamerv3-torch
+# (lancé avec --configs fouloide ; voir docs/CALIBRATION_DREAMERV3_REF.md §4).
+#
+# Choix : tailles de modèle par défaut (calibration, pas SOTA), encodeur MLP
+# sur la clé 'vector' (pas d'image -> video_pred_log false), actor onehot
+# (actions discrètes), time_limit 2000 (leur wrapper TimeLimit tronque avec
+# discount 1.0 — la mort reste le seul is_terminal).
+
+fouloide:
+  task: fouloide_default
+  steps: 5e5
+  action_repeat: 1
+  envs: 1
+  time_limit: 2000
+  train_ratio: 512
+  prefill: 5000
+  video_pred_log: false
+  encoder: {mlp_keys: 'vector', cnn_keys: '$^'}
+  decoder: {mlp_keys: 'vector', cnn_keys: '$^'}
+  actor: {dist: 'onehot', std: 'none'}

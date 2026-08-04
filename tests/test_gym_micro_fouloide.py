@@ -90,3 +90,31 @@ def test_grid_obs_mode():
     assert obs["image"].shape == (11, 11, env._num_channels)
     assert obs["drives"].shape == (env._num_scalars,)
     assert env.observation_space.contains(obs)
+
+
+def test_dreamerv3_torch_adapter_api(monkeypatch):
+    """L'adaptateur de calibration parle bien le protocole dreamerv3-torch."""
+    import importlib
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.setenv("SEEDMIND_ROOT", str(root))
+    monkeypatch.syspath_prepend(str(root / "scripts/calibration/dreamerv3_torch"))
+    fouloide = importlib.import_module("fouloide")
+    importlib.reload(fouloide)  # relit SEEDMIND_ROOT si déjà importé
+
+    env = fouloide.Fouloide(seed=0)
+    obs = env.reset()
+    assert obs["is_first"] is True
+    assert obs["is_last"] is False and obs["is_terminal"] is False
+    assert obs["vector"].dtype == np.float32
+    assert env.action_space.discrete is True
+    for _ in range(10):
+        obs, reward, done, info = env.step(0)
+        assert isinstance(reward, np.float32)
+        assert set(obs) == {"vector", "is_first", "is_last", "is_terminal"}
+        assert obs["is_first"] is False
+        assert "discount" in info
+        if done:
+            break
