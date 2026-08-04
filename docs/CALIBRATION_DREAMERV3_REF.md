@@ -62,6 +62,28 @@ Dans leur `dreamer.py`, fonction `make_env` (~ligne 190, après la branche
         env = wrappers.OneHotAction(env)
 ```
 
+### 3bis. Pièges d'intégration (rencontrés et résolus, session du 4 août 2026)
+
+Le repo de référence n'a que des envs à pixels — un env vectoriel fait sauter
+ses hypothèses « image » une par une. Les 4 patchs, tous appliqués côté
+dreamerv3-torch après clone :
+
+1. **`requirements.txt` inutilisable** (pins morts : torch 2.4.1, numpy 1.23).
+   Ne PAS l'installer. À la place : `pip install "ruamel.yaml<0.18" tensorboard gym`
+   (le pin ruamel est obligatoire : `dreamer.py:346` utilise `yaml.safe_load`,
+   supprimé en 0.18+). Vérifier ensuite que torch/numpy n'ont pas bougé.
+2. **`dreamer.py` `make_env`** : ajouter la branche `elif suite == "fouloide"`
+   (§3) — patch python à ancre unique sur `else: raise NotImplementedError`.
+3. **`tools.py:208`** (`simulate`) : `cache[...]["image"]` → `.get("image")` et
+   garder `logger.video` sous `if video is not None:` (la vidéo d'éval suppose
+   une image).
+4. **`models.py:182`** (`WM.preprocess`) : garder `obs["image"] /= 255` sous
+   `if "image" in obs:`. Les 3 autres accès image de `models.py` sont dans
+   `video_pred`, appelé uniquement si `video_pred_log: true` — false chez nous.
+
+(Le 5ᵉ piège était chez nous : gym 0.26 refuse Box(±inf) sur uint8 → bornes
+0/1 pour les flags `is_*`, corrigé à la source dans `fouloide.py`.)
+
 ## 4. Protocole de la session A10
 
 ```bash
