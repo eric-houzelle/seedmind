@@ -85,15 +85,31 @@ python dreamer.py --configs defaults --task fouloide_default \
   déjà à budget égal au nôtre, le régime n'est même pas l'explication — c'est
   le port.
 
-## 5. Critères de lecture (à fixer AVANT le run)
+## 5. Critères de lecture (fixés avant le run, baseline MESURÉE)
 
-- **Fourrage** : return moyen par épisode de 2000 pas nettement > celui d'une
-  policy aléatoire (mesurer la baseline aléatoire avec le wrapper, 20 épisodes,
-  avant de lancer — 10 lignes de python).
-- **Survie** : fraction d'épisodes atteignant le time_limit sans mort.
-- Verdict « la référence fourrage » = les deux au-dessus de la baseline
-  aléatoire avec marge franche et tendance croissante ; tout le reste = échec
-  de la référence (→ env/régime).
+Baseline aléatoire mesurée le 4 août 2026
+(`python scripts/calibration/random_baseline.py`, 20 épisodes × 2000 pas max,
+config dreamerfix, graines 0-19 — déterministe, reproductible) :
+
+| Métrique | Policy aléatoire |
+|---|---|
+| return (reward_learning) / épisode | 76,5 ± 22,1 |
+| survie (time_limit 2000 atteint) | 2/20 |
+| fourrage (interact_food + interact_water) | **6,3 / 1000 pas** |
+| longueur moyenne d'épisode | 856 pas |
+
+Fait notable : le run seedmind `entfloor_50k` fourrageait à 0-4/1000 pas —
+**sous la policy aléatoire**. Le return seul est donc un critère piégé (le
+drive_reward absolu paie l'immobilité prudente) ; le fourrage/1000 pas est le
+critère principal.
+
+Verdict « la référence fourrage » (les trois, avec tendance croissante) :
+
+- fourrage **> 20/1000 pas** (≥ 3× l'aléatoire) ;
+- survie **> 10/20** épisodes d'éval ;
+- return moyen **> 150** (≈ 2× l'aléatoire).
+
+Tout le reste = échec de la référence (→ env/régime en cause).
 
 ## 6. Suites selon le verdict
 
