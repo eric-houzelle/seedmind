@@ -98,7 +98,7 @@ cp ~/seedmind/scripts/calibration/dreamerv3_torch/fouloide.py envs/
 cat ~/seedmind/scripts/calibration/dreamerv3_torch/fouloide_configs.yaml >> configs.yaml
 # + la branche elif "fouloide" dans make_env (dreamer.py, §3 ci-dessus)
 
-SEEDMIND_ROOT=~/seedmind python dreamer.py --configs fouloide \
+SEEDMIND_ROOT=~/seedmind python -u dreamer.py --configs fouloide \
   --logdir ~/logdir/fouloide_ref 2>&1 | tee ref_fouloide.log
 ```
 
