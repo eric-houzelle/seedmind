@@ -60,9 +60,9 @@ class Fouloide:
         dim = int(np.prod(self._env.observation_space.shape))
         spaces = {
             "vector": gym.spaces.Box(-np.inf, np.inf, (dim,), dtype=np.float32),
-            "is_first": gym.spaces.Box(-np.inf, np.inf, (1,), dtype=np.uint8),
-            "is_last": gym.spaces.Box(-np.inf, np.inf, (1,), dtype=np.uint8),
-            "is_terminal": gym.spaces.Box(-np.inf, np.inf, (1,), dtype=np.uint8),
+            "is_first": gym.spaces.Box(0, 1, (1,), dtype=np.uint8),
+            "is_last": gym.spaces.Box(0, 1, (1,), dtype=np.uint8),
+            "is_terminal": gym.spaces.Box(0, 1, (1,), dtype=np.uint8),
         }
         return gym.spaces.Dict(spaces)
 
