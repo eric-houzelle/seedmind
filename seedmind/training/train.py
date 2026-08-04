@@ -22,10 +22,13 @@ def _assemble_batch(
     event_sample_name_weight: float = 0.0,
     event_sample_done_weight: float = 0.0,
     event_sample_reward_abs_weight: float = 0.0,
+    reward_key: str = "reward_external",
 ):
     """Build training tensors from a list of experiences.
 
-    Skips experiences that lack cached latent vectors.
+    Skips experiences that lack cached latent vectors. ``reward_key`` selects
+    which stored reward the WM regresses on (same semantics as the recurrent
+    path); falls back to ``reward_external`` when the key is absent.
     """
     latents, actions, next_latents, rewards, dones = [], [], [], [], []
     feature_deltas, events, event_sample_weights = [], [], []
@@ -39,13 +42,15 @@ def _assemble_batch(
         latents.append(np.asarray(e["latent_state"], dtype=np.float32))
         next_latents.append(np.asarray(e["next_latent_state"], dtype=np.float32))
         actions.append(int(e["action_index"]))
-        rewards.append(float(e["reward_external"]))
+        rewards.append(float(e.get(reward_key, e.get("reward_external", 0.0))))
         dones.append(1.0 if e.get("done", False) else 0.0)
         event_sample_weight = 1.0
         if event_sample_done_weight > 0.0 and e.get("done", False):
             event_sample_weight += float(event_sample_done_weight)
         if event_sample_reward_abs_weight > 0.0:
-            event_sample_weight += float(event_sample_reward_abs_weight) * abs(float(e["reward_external"]))
+            event_sample_weight += float(event_sample_reward_abs_weight) * abs(
+                float(e.get(reward_key, e.get("reward_external", 0.0)))
+            )
         if (
             event_sample_names
             and event_sample_name_weight > 0.0
@@ -106,6 +111,7 @@ def train_world_model(
     event_sample_reward_abs_weight: float = 0.0,
     uncertainty_weight: float = 0.0,
     uncertainty_detach: bool = False,
+    reward_key: str = "reward_external",
 ) -> Dict[str, float]:
     """Run ``num_updates`` gradient steps; return mean loss components."""
     if len(buffer) == 0:
@@ -148,6 +154,7 @@ def train_world_model(
             event_sample_name_weight=event_sample_name_weight,
             event_sample_done_weight=event_sample_done_weight,
             event_sample_reward_abs_weight=event_sample_reward_abs_weight,
+            reward_key=reward_key,
         )
         if assembled is None:
             continue
