@@ -149,3 +149,48 @@ Tout le reste = échec de la référence (→ env/régime en cause).
   aléatoire ?), `time_limit` en entraînement seedmind aussi, régime 10e.5 sur
   A10 (gros replay, envs parallèles), et seulement ensuite l'observabilité
   (fenêtre 11×11).
+
+## 7. Résultat (5 août 2026) — verdict rendu
+
+Run complet : 514k steps sur A10, ~1 journée. Chiffres (fenêtres de 50k) :
+
+| Fenêtre | return train moyen | survie | eval_return (fin de fenêtre) |
+|---|---|---|---|
+| 0-50k | 52,5 | 14/34 | ~50 |
+| 100-150k | 81,3 | 13/49 | ~65 |
+| 250-300k | 113,9 | 12/50 | ~90 |
+| 400-450k | 136,0 | 11/52 | ~90 |
+| 450-500k | 134,5 | 9/47 | ~100 (pic 131,7) |
+
+Rappels : aléatoire = 76,5 ± 22,1, survie 10 %. Critères « la référence
+fourrage » : return >150 ET survie >50 % ET fourrage >20/1000.
+
+**Verdict pré-enregistré : la référence N'ATTEINT PAS les critères**
+(return ~135 < 150, survie ~20 % plate < 50 %) → env/régime en cause, pas de
+preuve de bug du port. Mais trois lectures fines changent la suite :
+
+1. **Le monde est apprenable.** La référence monte de 52 à ~135 de return
+   (+75 % au-dessus de l'aléatoire, pente toujours positive à 500k, moyenne de
+   ~50 épisodes → hautement significatif). L'hypothèse « la tâche ne contient
+   pas de signal » est réfutée.
+2. **La survie ne s'améliore pas** (~20 % constant, épisodes ~1000 pas).
+   La référence apprend à mieux vivre (wellbeing/step +44 %), pas à ne pas
+   mourir — les dangers/famine en fenêtre 11×11 restent durs même pour elle.
+3. **La lecture décisive : à 50k steps, la référence est AU NIVEAU ALÉATOIRE**
+   (52,5 en fenêtre 0-50k, 75,6 en 50-100k). Or TOUS nos runs seedmind
+   faisaient 50k. La séparation n'émerge qu'après ~150-200k steps. Le mur
+   `seedmind-10e` est donc compatible avec un simple problème de BUDGET
+   (l'hypothèse `seedmind-10e.5`, désormais étayée par des données) — les ~17
+   leviers réfutés ont été testés dans un régime où même DreamerV3 de
+   référence n'apprend rien.
+
+**Décision — Expérience 2 (la contre-épreuve)** : lancer NOTRE agent
+(config dreamerfix) à **500k steps sur l'A10**, mêmes conditions. Deux issues :
+
+- sa courbe rejoint ~130+ vers 400k → le port est bon, le mur était le budget ;
+  10e.5 devient le régime standard et on attaque la survie/le shaping ;
+- il reste plat là où la référence montait → LÀ un défaut de port est prouvé,
+  avec une cible de diff claire (gradient d'actor en premier).
+
+Artefact : checkpoint de la référence dans `~/logdir/fouloide_ref` (A10) —
+réutilisable pour mesurer son fourrage/1000 pas par rollout d'éval.
