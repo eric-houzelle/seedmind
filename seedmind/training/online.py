@@ -131,7 +131,14 @@ class OnlineLearner:
         self.value_reward_key = str(vc.get("reward_key", self.dqn_reward_key))
         self._vc = vc
 
-        self.buffer = buffer if buffer is not None else ExperienceBuffer(seed=seed)
+        # Sliding-window FIFO. DreamerV3 reference trains on FULL-history replay
+        # (its dataset grew to 514k in the calibration run) — a small window lets
+        # the training distribution follow the policy and collapse on itself
+        # (suspect #1 of the late-run forage collapse, see CALIBRATION doc §8).
+        buffer_capacity = int(oc.get("buffer_capacity", 100_000))
+        self.buffer = buffer if buffer is not None else ExperienceBuffer(
+            capacity=buffer_capacity, seed=seed,
+        )
         wm_lr = float(wmc.get("learning_rate", 3e-4))
         if self.encoder_trainable:
             # Joint DreamerV3 optimizer: WM (incl. obs decoder) + encoder.

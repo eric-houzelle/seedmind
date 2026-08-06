@@ -194,3 +194,54 @@ preuve de bug du port. Mais trois lectures fines changent la suite :
 
 Artefact : checkpoint de la référence dans `~/logdir/fouloide_ref` (A10) —
 réutilisable pour mesurer son fourrage/1000 pas par rollout d'éval.
+
+## 8. Expérience 2 (6 août 2026) — le port apprend, puis s'effondre
+
+Notre agent (config dreamerfix, `--device cuda`), 500k steps, ~11 h A10.
+Fourrage par fenêtres de 50k (aléatoire = 6,3/1000) :
+
+```
+3,7 → 4,3 → 4,8 → 5,4 → 7,9 → 8,3 → 10,3 → 9,0 → 7,2 → 6,3
+                              pic 300-350k ↑    effondrement ↑
+```
+
+**Verdicts acquis :**
+
+1. **Le mur 10e était un mur de budget** — fenêtre 0-50k à 3,7/1000 : tous les
+   runs historiques (50k) se sont arrêtés dans la zone morte où la référence
+   elle-même n'apprend rien. L'hypothèse `10e.5` est confirmée ; les ~17
+   leviers de juin-juillet ont été testés dans un régime ininterprétable.
+2. **La machinerie du port fonctionne** — montée monotone jusqu'à 1,6×
+   l'aléatoire à 300-350k, même trajectoire que la référence.
+3. **Divergence unique restante** : la référence TIENT son niveau en fin de
+   run (fenêtres 400-500k stables à ~135 de return) ; notre agent REDESCEND
+   au niveau aléatoire exact. Le diff n'est plus « pourquoi ça n'apprend
+   pas » mais « qu'est-ce qui stabilise la fin de run ».
+
+**Suspects de l'effondrement tardif, par ordre :**
+
+1. **Replay 100k FIFO vs full-history** — la référence entraîne sur TOUT
+   l'historique (`dataset_size` = 514k dans ses logs) ; nous sur une fenêtre
+   glissante de 100k (`ExperienceBuffer` défaut, non surchargé par la config).
+   Mécanisme : la distribution d'entraînement suit la policy qui se referme →
+   le WM se dégrade sur les états rares (cohérent : `wm_loss` remonte de 1,70
+   à 2,11 sur la fin) → l'imagination se trompe → la policy se dégrade →
+   boucle. Testable en 1 run : `buffer_capacity: 500000`.
+2. **Régulation d'entropie** — plancher 0,012 schedulé chez nous vs
+   coefficient fixe 3e-4 × entropie chez la référence.
+3. **Gradient d'actor** — REINFORCE+baseline avec imagination sous `no_grad`
+   (`imagination_actor_critic.py:332`) ; a permis d'apprendre, moins suspect
+   pour l'effondrement.
+
+**Expérience 3** : `configs/..._dreamerfix_buf500k.yaml` (buffer 500k, seul
+paramètre changé ; `online.buffer_capacity` branché dans `online.py`).
+Si l'effondrement disparaît et que le fourrage continue au-delà de 10/1000 →
+cause racine trouvée, port définitivement validé. Surveiller la RAM (≈ 4-5 Go
+de buffer avec les fenêtres d'observation stockées).
+
+```bash
+cd /var/projects/seedmind && git pull
+nohup python -u -m scripts.run_fouloide_online \
+  --config configs/micro_fouloide_online_homeostatic_rssm_v3_dreamerfix_buf500k.yaml \
+  --steps 500000 --device cuda > run_500k_buf.log 2>&1 &
+```
