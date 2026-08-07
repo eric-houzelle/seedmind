@@ -4899,6 +4899,39 @@ jamais décisif. Confirmé en prod à 124k (entropie ~1.81, wellbeing ~0.1, reco
 18221 = variance). **Ce n'est pas une brique/hyperparamètre manquant : vrai mur RL.**
 Bilan complet + pistes de reprise : **`BILAN_DREAMERV3_2026-06-29.md`** ; epic bd `seedmind-10e`.
 
+### Reprise 4-7 août 2026 — calibration externe : le mur 10e décomposé
+
+Campagne de 3 jours d'A10 pour rattraper la **Phase 0 sautée** du port (calibrer contre
+une implémentation de référence). Construit : wrapper Gymnasium information-fidèle du
+micro-fouloïde (`scripts/calibration/`), adaptateur `NM512/dreamerv3-torch`, baseline
+aléatoire mesurée (**6,25 fourrages/1000 pas**), + fix du chemin WM feed-forward
+(`reward_key`, 4 tests rouges depuis le 30/06).
+
+**Quatre résultats.** (1) *Le monde est apprenable* : la référence monte de 52 à ~135 de
+return (aléatoire 76) en 514k steps. (2) *Mais elle ne résout pas la survie non plus*
+(plate à ~20 %) → le mur de la survie n'était pas une faiblesse de notre port. (3) *Tous
+les runs de juin-juillet étaient dans la zone morte* : la référence elle-même est au
+niveau aléatoire à 50k, la séparation n'émerge qu'après ~150-200k → les ~17 hypothèses
+réfutées l'ont été dans un régime **ininterprétable** (`10e.5` avait raison). (4) *La
+pathologie est la **bistabilité**, pas la lenteur* : sur 3 runs à nous, le mode d'échec
+dominant est le **bassin idle** (agent immortel, jauges vides, fourrage ~1/1000) — une
+graine y passe **43 % du temps**. Le suspect « replay trop court » est **réfuté**
+(buffer 500k = pire que 100k, + OOM à 22 Go).
+
+**Erreur de lecture corrigée** : un premier run (une graine) montrait une belle montée
+3,7→10,3/1000 et avait été lu comme « port validé, mur = budget ». Deux graines de plus
+l'ont réfuté. **Règle adoptée : jamais de conclusion sur une seule graine ; tout run de
+validation fait désormais ≥ 300k steps et ≥ 2 graines.**
+
+**Suite immédiate — expérience 4 (prête, code poussé)** : `online.episode_limit`, reset
+périodique du monde tous les 2000 pas comme la référence (`wrappers.TimeLimit`). Notre
+boucle ne resette que sur mort → l'état idle-immortel n'est jamais interrompu ; c'est la
+seule différence structurelle qui explique la bistabilité et l'immunité de la référence.
+Opt-in, 2 garanties testées (troncature ≠ mort ; nouvel `episode_id`).
+Bilan complet, protocole, critères et suspects suivants :
+**`BILAN_CALIBRATION_2026-08-07.md`** + `CALIBRATION_DREAMERV3_REF.md` §7-9.
+Données brutes des 3 jours : `runs_a10/`.
+
 ---
 
-*Dernière mise à jour : 29 juin 2026*
+*Dernière mise à jour : 7 août 2026*
