@@ -152,6 +152,14 @@ class OnlineFouloideSession:
         self.steps = 0
         self.life_steps = 0
         self.best_life_steps = 0
+        # Episode-limit (exp 4, CALIBRATION §9) : la référence DreamerV3 reset le
+        # monde toutes les 2000 pas (wrappers.TimeLimit), nous seulement à la mort
+        # — d'où un bassin idle jamais interrompu. 0 = désactivé (comportement
+        # historique). Une troncature N'EST PAS une mort : `done` reste False pour
+        # le continue predictor, mais l'episode_id change (séquences RSSM propres).
+        self.episode_limit = int(config.get("online", {}).get("episode_limit", 0))
+        self.episode_counter = 1
+        self.truncations = 0
         self.last_info: Dict[str, Any] = {"drives": dict(self.observation_drives()), "event": "reset"}
         self.last_action = "reset"
         self.last_planner_used = False
@@ -228,7 +236,7 @@ class OnlineFouloideSession:
                 "scalars": sc[0].cpu().numpy().astype(np.float32),
             }
         experience = make_experience(
-            episode_id=f"online_life_{self.lives:04d}",
+            episode_id=f"online_life_{self.episode_counter:04d}",
             world_id=env.world_id,
             step=self.steps,
             observation=observation_window,
@@ -262,10 +270,19 @@ class OnlineFouloideSession:
         self.recent_events.append(event)
 
         self.life_steps += 1
-        if done:
+        truncated = (
+            not done
+            and self.episode_limit > 0
+            and self.life_steps >= self.episode_limit
+        )
+        if done or truncated:
             self.best_life_steps = max(self.best_life_steps, self.life_steps)
             self.life_steps = 0
-            self.lives += 1
+            self.episode_counter += 1
+            if done:
+                self.lives += 1  # seule la mort compte comme une vie perdue
+            else:
+                self.truncations += 1
             agent.reset_state()  # the recurrent memory dies with the individual
             self.observation = self.env.reset()
             if self.map_memory is not None:
@@ -286,6 +303,8 @@ class OnlineFouloideSession:
             "lives": self.lives,
             "life_steps": self.life_steps,
             "best_life_steps": self.best_life_steps,
+            "episode_counter": self.episode_counter,
+            "truncations": self.truncations,
             "env_steps": learner.env_steps,
             "total_q_updates": learner.total_q_updates,
             "total_value_updates": learner.total_value_updates,
@@ -330,6 +349,8 @@ class OnlineFouloideSession:
         self.lives = int(m.get("lives", 1))
         self.life_steps = int(m.get("life_steps", 0))
         self.best_life_steps = int(m.get("best_life_steps", 0))
+        self.episode_counter = int(m.get("episode_counter", self.lives))
+        self.truncations = int(m.get("truncations", 0))
         learner.env_steps = int(m.get("env_steps", 0))
         learner.total_q_updates = int(m.get("total_q_updates", 0))
         learner.total_value_updates = int(m.get("total_value_updates", 0))

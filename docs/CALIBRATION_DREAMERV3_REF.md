@@ -289,9 +289,36 @@ ré-exploration forcée, et le replay reste alimenté en trajectoires variées.
 C'est la seule différence structurelle qui explique à la fois la bistabilité,
 son intermittence, et pourquoi la référence n'en souffre pas.
 
-**Expérience 4 (à préparer à froid, une seule nuit de GPU)** : ajouter un
-`online.episode_limit` (reset du monde tous les N pas, N=2000) et relancer
-2 graines, buffer 100k (inutile de payer le 500k : réfuté). Critère : les
-fenêtres idle doivent tomber à ~0 et le fourrage rester > 8/1000 en 2ᵉ moitié
-sur les deux graines. Suspects suivants si échec : régulation d'entropie
-(plancher 0,012 vs coef fixe 3e-4), puis gradient d'actor.
+**Expérience 4 — PRÊTE (code écrit, testé, poussé)** : `online.episode_limit`
+(reset du monde tous les N pas ; 0 = désactivé, comportement historique
+inchangé). Implémentation dans `OnlineFouloideSession.step` avec deux garanties
+contractuelles, couvertes par `tests/test_episode_limit.py` :
+
+- une troncature **n'est pas une mort** : `done` reste False (sinon le
+  `continue_head` apprendrait une mort fantôme à 2000 pas) et `lives`
+  n'augmente pas — un compteur `truncations` distinct est tenu ;
+- une troncature **ouvre un nouvel `episode_id`** (sinon les séquences du RSSM
+  mélangeraient deux mondes) ; invariant testé :
+  `episode_counter == lives + truncations`.
+
+Config : `configs/..._dreamerfix_ep2000.yaml` (buffer laissé à 100k — le 500k
+est réfuté et coûte 22 Go). Deux graines en parallèle tiennent en RAM.
+
+```bash
+cd /var/projects/seedmind && git pull
+for s in 0 1; do
+  nohup python -u -m scripts.run_fouloide_online \
+    --config configs/micro_fouloide_online_homeostatic_rssm_v3_dreamerfix_ep2000.yaml \
+    --steps 500000 --device cuda --seed $s --checkpoint-every 50000 \
+    > run_ep2000_s$s.log 2>&1 &
+done
+```
+
+Critères (fixés avant le run) : fenêtres idle ≈ 0/49 sur les deux graines
+(contre 21/49 et 4/49), fourrage > 8/1000 en 2ᵉ moitié **sur les deux**, et
+tendance r > 0. Un succès sur une seule graine ne suffit plus — c'est la leçon
+de l'exp 3.
+
+Suspects suivants si échec : régulation d'entropie (plancher 0,012 schedulé vs
+coef fixe 3e-4 chez la référence), puis gradient d'actor (REINFORCE sous
+`no_grad` vs backprop-through-dynamics).
