@@ -245,3 +245,53 @@ nohup python -u -m scripts.run_fouloide_online \
   --config configs/micro_fouloide_online_homeostatic_rssm_v3_dreamerfix_buf500k.yaml \
   --steps 500000 --device cuda > run_500k_buf.log 2>&1 &
 ```
+
+## 9. Expérience 3 (7 août 2026) — buffer réfuté, et la vraie pathologie
+
+Deux graines, buffer 500k, en parallèle sur A10. Logs et métriques rapatriés
+dans `runs_a10/` (le GPU a été rendu ; toute l'analyse suivante est à froid).
+
+| run | steps | fourrage global | 2ᵉ moitié | tendance (r) | fenêtres idle |
+|---|---|---|---|---|---|
+| exp2 buffer 100k, seed 0 | 500k | 6,7 | 8,2 | **+0,68** | 4/49 |
+| exp3 buffer 500k, seed 0 | 350k (OOM) | 6,2 | 6,7 | +0,19 | 4/34 |
+| exp3 buffer 500k, seed 1 | 500k | **3,6** | 2,9 | **−0,30** | **21/49** |
+
+(aléatoire = 6,25 ; « fenêtre idle » = 10k pas sans aucune mort et wellbeing < 0,01)
+
+**Suspect n°1 (replay) : RÉFUTÉ.** Le buffer 500k ne corrige pas
+l'effondrement — les deux runs buf500k font *moins* bien que le buf100k.
+Coût annexe : 22,6 Go de RSS, seed 0 tué par l'OOM-killer à 350k (deux runs
+buf500k ne tiennent pas ensemble dans 40 Go ; un seul, oui).
+
+**Correction du verdict de l'exp 2.** Avec deux graines de plus, la belle
+montée monotone 3,7→10,3 apparaît comme une **trajectoire particulière, non
+reproductible**, pas comme une loi. Sur l'ensemble : aucun run ne bat
+significativement l'aléatoire en moyenne globale (6,7 / 6,2 / 3,6 contre 6,25).
+Ce qui reste acquis de l'exp 2 : **rien n'apprend avant ~150k steps** (donc les
+runs 50k de juin-juillet étaient bien ininterprétables). Ce qui tombe : « le
+budget suffit ».
+
+**La pathologie est nommée : bistabilité / bassin idle.** Le mode d'échec
+dominant n'est pas un apprentissage lent, c'est un agent qui bascule dans un
+état où il ne meurt plus, ne fourrage plus et laisse ses jauges à zéro — 43 %
+du temps pour seed 1. C'est le « bassin idle » déjà diagnostiqué en juin
+(`rssm-idle-basin-2026-06-22`) et le profil « critfix immortel, jauges vides »
+de `10e.10`. Il n'est pas absorbant (seed 1 en sort vers 350k puis y retombe) :
+c'est un attracteur qui capture par intermittence.
+
+**Nouveau suspect n°1 — l'absence de reset périodique.** La référence remet le
+monde à zéro **toutes les 2000 pas** (`wrappers.TimeLimit`, config `time_limit:
+2000`) ; notre boucle online ne reset **que sur mort**. Un agent idle-immortel
+n'est donc jamais interrompu chez nous, alors que chez la référence l'état est
+structurellement impossible à tenir : monde neuf toutes les 2000 pas,
+ré-exploration forcée, et le replay reste alimenté en trajectoires variées.
+C'est la seule différence structurelle qui explique à la fois la bistabilité,
+son intermittence, et pourquoi la référence n'en souffre pas.
+
+**Expérience 4 (à préparer à froid, une seule nuit de GPU)** : ajouter un
+`online.episode_limit` (reset du monde tous les N pas, N=2000) et relancer
+2 graines, buffer 100k (inutile de payer le 500k : réfuté). Critère : les
+fenêtres idle doivent tomber à ~0 et le fourrage rester > 8/1000 en 2ᵉ moitié
+sur les deux graines. Suspects suivants si échec : régulation d'entropie
+(plancher 0,012 vs coef fixe 3e-4), puis gradient d'actor.
